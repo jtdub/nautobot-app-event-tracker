@@ -55,10 +55,7 @@ def create_location(name="Test Location"):
 def create_ticket(user=None, event_type=None, **kwargs):
     """Create one ticket through the service layer."""
     if event_type is None:
-        event_type = EventType.objects.get_or_create(
-            name="Test Interface Down",
-            defaults={"default_severity": SeverityChoices.MAJOR},
-        )[0]
+        event_type = create_event_types()[0]
     if user is None:
         user = create_user()
     kwargs.setdefault("title", "Test ticket")
@@ -106,8 +103,3 @@ def create_eventticket():
         create_ticket(user=user, event_type=event_type, title=title)
         for title in ("Ticket One", "Ticket Two", "Ticket Three")
     ]
-
-
-def create_eventtype():
-    """Create event types for the generic view and API test cases."""
-    return create_event_types()

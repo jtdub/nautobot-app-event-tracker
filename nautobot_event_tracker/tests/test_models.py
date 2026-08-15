@@ -1,5 +1,6 @@
 """Test the Event Tracker models, their validation rules C1-C3, and the append-only guard."""
 
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db.models import ProtectedError
 from django.test import TestCase
@@ -269,8 +270,6 @@ class TestTicketUpdateValidation(TestCase):
 
     def test_c3_non_attachment_rejects_object(self):
         """Only an attachment update may carry an object reference."""
-        from django.contrib.contenttypes.models import ContentType  # pylint: disable=import-outside-toplevel
-
         update = self._update(
             related_object_type=ContentType.objects.get_for_model(self.location),
             related_object_id=self.location.pk,
