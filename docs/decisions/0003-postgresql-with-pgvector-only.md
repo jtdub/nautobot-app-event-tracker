@@ -17,7 +17,7 @@ PostgreSQL is the only supported database. The app declares this in its installa
 
 The `pgvector` extension is required from Phase 5 onward. Phase 1 does not require it and does not check for it.
 
-The cookiecutter template ships MySQL development plumbing (`invoke.mysql.yml`, `development/docker-compose.mysql.yml`, `development/development_mysql.env`) and a MySQL leg in the CI matrix. Those are scaffold artifacts, not a support commitment; whether to delete them or leave them inert is a housekeeping question, not an architectural one.
+The cookiecutter template shipped MySQL development plumbing (`invoke.mysql.yml`, `development/docker-compose.mysql.yml`, `development/development_mysql.env`) and a MySQL leg in the CI matrix. Those have been removed: a CI job testing a configuration the documentation tells operators not to run is worse than no job at all, and it would have started failing the moment a PostgreSQL-only feature landed.
 
 ## Consequences
 

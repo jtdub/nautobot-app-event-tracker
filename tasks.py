@@ -620,21 +620,14 @@ def dbshell(context, db_name="", input_file="", output_file="", query=""):
         "-- db sh -c '",
     ]
 
-    if _is_compose_included(context, "mysql"):
-        command += [
-            "mysql",
-            "--user=$MYSQL_USER",
-            "--password=$MYSQL_PASSWORD",
-            f"--database={db_name or '$MYSQL_DATABASE'}",
-        ]
-    elif _is_compose_included(context, "postgres"):
+    if _is_compose_included(context, "postgres"):
         command += [
             "psql",
             "--username=$POSTGRES_USER",
             f"--dbname={db_name or '$POSTGRES_DB'}",
         ]
     else:
-        raise ValueError("Unsupported database backend.")
+        raise ValueError("Unsupported database backend; this app supports PostgreSQL only.")
 
     command += [
         "'",
@@ -660,27 +653,7 @@ def import_db(context, db_name="", input_file="dump.sql"):
 
     command = ["exec -- db sh -c '"]
 
-    if _is_compose_included(context, "mysql"):
-        if not db_name:
-            db_name = "$MYSQL_DATABASE"
-        command += [
-            "mysql --user root --password=$MYSQL_ROOT_PASSWORD",
-            '--execute="',
-            f"DROP DATABASE IF EXISTS {db_name};",
-            f"CREATE DATABASE {db_name};",
-            (
-                ""
-                if db_name == "$MYSQL_DATABASE"
-                else f"GRANT ALL PRIVILEGES ON {db_name}.* TO $MYSQL_USER; FLUSH PRIVILEGES;"
-            ),
-            '"',
-            "&&",
-            "mysql",
-            f"--database={db_name}",
-            "--user=$MYSQL_USER",
-            "--password=$MYSQL_PASSWORD",
-        ]
-    elif _is_compose_included(context, "postgres"):
+    if _is_compose_included(context, "postgres"):
         if not db_name:
             db_name = "$POSTGRES_DB"
         command += [
@@ -689,7 +662,7 @@ def import_db(context, db_name="", input_file="dump.sql"):
             f"psql --user=$POSTGRES_USER --dbname={db_name}",
         ]
     else:
-        raise ValueError("Unsupported database backend.")
+        raise ValueError("Unsupported database backend; this app supports PostgreSQL only.")
 
     command += [
         "'",
@@ -715,15 +688,7 @@ def backup_db(context, db_name="", output_file="dump.sql", readable=True):
 
     command = ["exec -- db sh -c '"]
 
-    if _is_compose_included(context, "mysql"):
-        command += [
-            "mysqldump",
-            "--user=root",
-            "--password=$MYSQL_ROOT_PASSWORD",
-            "--skip-extended-insert" if readable else "",
-            db_name if db_name else "$MYSQL_DATABASE",
-        ]
-    elif _is_compose_included(context, "postgres"):
+    if _is_compose_included(context, "postgres"):
         command += [
             "pg_dump",
             "--username=$POSTGRES_USER",
@@ -731,7 +696,7 @@ def backup_db(context, db_name="", output_file="dump.sql", readable=True):
             "--inserts" if readable else "",
         ]
     else:
-        raise ValueError("Unsupported database backend.")
+        raise ValueError("Unsupported database backend; this app supports PostgreSQL only.")
 
     command += [
         "'",
