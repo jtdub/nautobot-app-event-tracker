@@ -8,6 +8,7 @@ from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.models import BaseModel, ChangeLoggedModel, OrganizationalModel, PrimaryModel, extras_features
 
@@ -24,7 +25,7 @@ class TicketUpdateImmutableError(Exception):
 
 
 @extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
-class EventType(OrganizationalModel):
+class EventType(OrganizationalModel):  # pylint: disable=too-many-ancestors
     """A kind of network event the system knows about."""
 
     name = models.CharField(max_length=CHARFIELD_MAX_LENGTH, unique=True)
@@ -70,7 +71,15 @@ class EventTicket(PrimaryModel):  # pylint: disable=too-many-ancestors
         help_text="Service-owned. Change it through services.tickets.transition(), never directly.",
     )
     severity = models.CharField(max_length=CHARFIELD_MAX_LENGTH, choices=SeverityChoices, db_index=True)
-    source = models.CharField(max_length=CHARFIELD_MAX_LENGTH, choices=TicketSourceChoices)
+    source = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        choices=TicketSourceChoices,
+        default=TicketSourceChoices.HUMAN,
+        help_text=(
+            "How the ticket came to exist. The service layer always sets this explicitly; the "
+            "default only applies to a ticket built from a form."
+        ),
+    )
     description = models.TextField(blank=True)
     assigned_to = models.ForeignKey(
         to=settings.AUTH_USER_MODEL,
@@ -86,8 +95,8 @@ class EventTicket(PrimaryModel):  # pylint: disable=too-many-ancestors
         help_text="Idempotency key. A repeat event with this key joins the open ticket instead of opening a new one.",
     )
     event_count = models.PositiveIntegerField(default=1)
-    first_seen = models.DateTimeField()
-    last_seen = models.DateTimeField(db_index=True)
+    first_seen = models.DateTimeField(default=timezone.now)
+    last_seen = models.DateTimeField(default=timezone.now, db_index=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
     resolution = models.TextField(blank=True)
@@ -200,7 +209,7 @@ class TicketUpdate(BaseModel, ChangeLoggedModel):
         """Stringify instance."""
         return f"{self.get_update_type_display()} on {self.ticket_id}"
 
-    def clean(self):
+    def clean(self):  # pylint: disable=too-many-branches
         """C3 - an update's payload and actor must match its type."""
         super().clean()
         errors = {}
