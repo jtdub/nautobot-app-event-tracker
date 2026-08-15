@@ -7,6 +7,7 @@ asserted rather than trusted.
 """
 
 import ast
+import tokenize
 from pathlib import Path
 
 from django.test import SimpleTestCase
@@ -87,6 +88,38 @@ class StatusAssignmentGuardTest(SimpleTestCase):
             offenders,
             [],
             "TicketUpdate rows must only be created by the service layer. Offending lines: " + ", ".join(offenders),
+        )
+
+
+class StringLiteralGuardTest(SimpleTestCase):
+    """No two string literals may sit adjacent on one line.
+
+    Python silently joins them, which reads exactly like a forgotten comma in an argument list.
+    The formatter creates these by collapsing a wrapped string that now fits on one line, so they
+    appear without anyone typing them. pylint reports it as implicit-str-concat, but only on some
+    versions - this caught a CI failure that the local pylint had passed.
+    """
+
+    def test_no_adjacent_string_literals_on_one_line(self):
+        """Scan the token stream; the AST cannot see the join because the parser has done it."""
+        offenders = []
+        for path in sorted(APP_ROOT.rglob("*.py")):
+            with open(path, "rb") as handle:
+                tokens = list(tokenize.tokenize(handle.readline))
+            previous = None
+            for token in tokens:
+                if token.type == tokenize.STRING:
+                    if previous is not None and previous.end[0] == token.start[0]:
+                        offenders.append(f"{path.relative_to(APP_ROOT)}:{token.start[0]}")
+                    previous = token
+                elif token.type not in (tokenize.NL, tokenize.COMMENT):
+                    previous = None
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Adjacent string literals on one line read as a missing comma. Join them into a "
+            "single literal. Offending lines: " + ", ".join(offenders),
         )
 
 

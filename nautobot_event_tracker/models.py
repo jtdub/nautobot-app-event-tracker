@@ -258,7 +258,7 @@ class TicketUpdate(BaseModel, ChangeLoggedModel):
         """Append-only: refuse to modify a row that already exists."""
         if self.present_in_database:
             raise TicketUpdateImmutableError(
-                "TicketUpdate is append-only; an existing update cannot be modified. " "Record a new update instead."
+                "TicketUpdate is append-only; an existing update cannot be modified. Record a new update instead."
             )
         super().save(*args, **kwargs)
 
