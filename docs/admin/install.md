@@ -2,21 +2,28 @@
 
 Here you will find detailed instructions on how to **install** and **configure** the App within your Nautobot environment.
 
-!!! warning "Developer Note - Remove Me!"
-    Detailed instructions on installing the App. You will need to update this section based on any additional dependencies or prerequisites.
-
 ## Prerequisites
 
-- The app is compatible with Nautobot 3.1.0 and higher.
-- Databases supported: PostgreSQL, MySQL
+- The app is compatible with Nautobot 3.2.0 and higher.
+- **Databases supported: PostgreSQL only.**
+
+!!! warning "PostgreSQL is required"
+    Unlike most Nautobot apps, Event Tracker does not support MySQL. Later phases index closed
+    tickets as vector embeddings using the `pgvector` extension, which has no MySQL equivalent
+    worth maintaining a second code path for. A MySQL-backed Nautobot deployment cannot install
+    this app. See [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md) for the full
+    reasoning.
+
+    `pgvector` itself is **not** required by this release and is not checked for. It becomes a
+    requirement when retrieval features land.
 
 !!! note
     Please check the [dedicated page](compatibility_matrix.md) for a full compatibility matrix and the deprecation policy.
 
 ### Access Requirements
 
-!!! warning "Developer Note - Remove Me!"
-    What external systems (if any) it needs access to in order to work.
+This release needs no access to anything outside Nautobot. It makes no outbound network calls,
+requires no API credentials, and has no external service dependencies.
 
 ## Install Guide
 
@@ -44,12 +51,31 @@ Once installed, the app needs to be enabled in your Nautobot configuration. The 
 # In your nautobot_config.py
 PLUGINS = ["nautobot_event_tracker"]
 
-# PLUGINS_CONFIG = {
-#   "nautobot_event_tracker": {
-#     ADD YOUR SETTINGS HERE
-#   }
-# }
+PLUGINS_CONFIG = {
+    "nautobot_event_tracker": {
+        # Object types that may be attached to a ticket. Anything not listed here is rejected.
+        # Defaults to the list below; override it to widen or narrow what operators can attach.
+        "attachable_object_types": [
+            "dcim.device",
+            "dcim.interface",
+            "dcim.cable",
+            "dcim.location",
+            "ipam.ipaddress",
+            "ipam.prefix",
+            "circuits.circuit",
+        ],
+    }
+}
 ```
+
+### Settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `attachable_object_types` | The seven DCIM/IPAM/Circuits models above | `app_label.model` strings naming the object types that may be attached to a ticket. Attaching anything else is refused, and the object picker only offers types on this list. |
+
+Widening the list is a deliberate act: it decides what a ticket — and, in later phases, an AI
+triage step — is allowed to point at. Adding `extras.secret` would be a poor idea.
 
 Once the Nautobot configuration is updated, run the Post Upgrade command (`nautobot-server post_upgrade`) to run migrations and clear any cache:
 
@@ -67,15 +93,53 @@ Then restart (if necessary) the Nautobot services which may include:
 sudo systemctl restart nautobot nautobot-worker nautobot-scheduler
 ```
 
-## App Configuration
+## Permissions
 
-!!! warning "Developer Note - Remove Me!"
-    Any configuration required to get the App set up. Edit the table below as per the examples provided.
+Alongside Django's usual four permissions per model, the app adds one:
 
-The app behavior can be controlled with the following list of settings:
+| Permission | Codename | Grants |
+| --- | --- | --- |
+| Can transition event ticket status | `nautobot_event_tracker.transition_eventticket` | Moving a ticket through the workflow |
 
-| Key     | Example | Default | Description                          |
-| ------- | ------ | -------- | ------------------------------------- |
-| `enable_backup` | `True` | `True` | A boolean to represent whether or not to run backup configurations within the app. |
-| `platform_slug_map` | `{"cisco_wlc": "cisco_aireos"}` | `None` | A dictionary in which the key is the platform slug and the value is what netutils uses in any "network_os" parameter. |
-| `per_feature_bar_width` | `0.15` | `0.15` | The width of the table bar within the overview report |
+It is deliberately separate from `change_eventticket`, and neither implies the other. That lets you
+give a first-line team the ability to move tickets through the workflow without the ability to
+rewrite ticket content — or the reverse, for a team that curates ticket detail but does not own
+the queue.
+
+A typical operator role needs `view` and `add` on all three models, `change` on Event Ticket, and
+`transition_eventticket`.
+
+### Planning ahead: the AI service account
+
+!!! note "Forward-looking — nothing to do yet"
+    This release contains no AI functionality. The section below describes the account you will
+    need when event triage arrives, so that a rollout can be planned now rather than discovered
+    later. No such account is required today.
+
+When automated triage lands it will act through its own Nautobot user, not through a person's
+account, so that its actions are attributable and its reach is bounded. That account will need:
+
+| Model | Permissions |
+| --- | --- |
+| Event Ticket | `view`, `add`, `change`, `transition_eventticket` |
+| Event Type | `view` |
+| Ticket Update | `view` |
+
+And explicitly **not**:
+
+- `delete` on any of the three models. Nothing in the AI path ever needs to remove a record.
+- `add` or `change` on Event Type. The catalogue of event types is an operator decision.
+- Any permission on Ticket Update beyond `view`. The trail is written by the service layer as a
+  side effect of ticket actions; nothing writes to it directly, including automation.
+
+Two guarantees will hold regardless of how that account is configured, because they are enforced
+in the service layer rather than by permissions:
+
+- An AI actor cannot modify a resolved or closed ticket — not its status, not its comments, not its
+  attachments. Permissions cannot grant this.
+- An AI action is never recorded against a person's username. The actor kind is stored on every
+  update, and AI entries carry no user.
+
+Restrict the account's API token as you would any other service credential, and consider limiting
+it with a Nautobot object permission so it can only act on tickets, rather than on every object in
+Nautobot.

@@ -10,12 +10,25 @@ from nautobot_event_tracker import views
 app_name = "nautobot_event_tracker"
 router = NautobotUIViewSetRouter()
 
-# The standard is for the route to be the hyphenated version of the model class name plural.
-# for example, ExampleModel would be example-models.
-router.register("event-tracker-example-models", views.EventTrackerExampleModelUIViewSet)
-
+router.register("event-types", views.EventTypeUIViewSet)
+router.register("tickets", views.EventTicketUIViewSet)
 
 urlpatterns = [
+    path(
+        "tickets/<uuid:pk>/transition/",
+        views.EventTicketTransitionView.as_view(),
+        name="eventticket_transition",
+    ),
+    path(
+        "tickets/<uuid:pk>/attach/",
+        views.EventTicketAttachView.as_view(),
+        name="eventticket_attach",
+    ),
+    path(
+        "tickets/<uuid:pk>/detach/",
+        views.EventTicketDetachView.as_view(),
+        name="eventticket_detach",
+    ),
     path("docs/", RedirectView.as_view(url=static("nautobot_event_tracker/docs/index.html")), name="docs"),
 ]
 

@@ -113,7 +113,9 @@ nav:
       - Frequently Asked Questions: "user/faq.md"
       - External Interactions: "user/external_interactions.md"
       - Data Models:
-          - Event Tracker Example Model: "models/eventtrackerexamplemodel.md"
+          - Event Ticket: "models/eventticket.md"
+          - Event Type: "models/eventtype.md"
+          - Ticket Update: "models/ticketupdate.md"
   - Administrator Guide:
       - Install and Configure: "admin/install.md"
       - Upgrade: "admin/upgrade.md"

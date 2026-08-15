@@ -18,9 +18,21 @@ class EventTrackerConfig(NautobotAppConfig):
     description = "Network event ticketing and AI-assisted network operations for Nautobot."
     base_url = "event-tracker"
     required_settings = []
-    default_settings = {}
+    default_settings = {
+        # Object types that may be attached to a ticket. Anything outside this list is rejected by
+        # services.tickets.attach_object(). See the Phase 1 spec, section 3.5.
+        "attachable_object_types": [
+            "dcim.device",
+            "dcim.interface",
+            "dcim.cable",
+            "dcim.location",
+            "ipam.ipaddress",
+            "ipam.prefix",
+            "circuits.circuit",
+        ],
+    }
     docs_view_name = "plugins:nautobot_event_tracker:docs"
-    searchable_models = ["eventtrackerexamplemodel"]
+    searchable_models = ["eventticket", "eventtype"]
 
 
 config = EventTrackerConfig  # pylint:disable=invalid-name
