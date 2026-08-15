@@ -1,7 +1,10 @@
 """Test the Event Tracker models, their validation rules C1-C3, and the append-only guard."""
 
+from datetime import timedelta
+
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.db.models import ProtectedError
 from django.test import TestCase
 from django.utils import timezone
@@ -355,3 +358,59 @@ class TestTicketUpdateAppendOnly(TestCase):
         self.assertTrue(update_ids)
         ticket.delete()
         self.assertFalse(models.TicketUpdate.objects.filter(pk__in=update_ids).exists())
+
+
+class TestIngestionStats(TestCase):
+    """The ingestion counter row."""
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        cls.bucket = timezone.now().replace(second=0, microsecond=0)
+
+    def _create(self, **kwargs):
+        """Create one counter row with the given overrides."""
+        defaults = {"consumer_name": "consumer-1", "topic": "network.events", "bucket_start": self.bucket}
+        return models.IngestionStats.objects.create(**{**defaults, **kwargs})
+
+    def test_counters_default_to_zero(self):
+        """A fresh bucket has counted nothing."""
+        stats = self._create()
+        for field in ("received", "errored", "dropped", "tickets_opened", "tickets_joined", "suppressed"):
+            self.assertEqual(getattr(stats, field), 0, field)
+        self.assertEqual(stats.drops_by_reason, {})
+        self.assertIsNone(stats.last_message_at)
+
+    def test_str_names_the_consumer_topic_and_window(self):
+        """A row stringifies as the three things that identify it."""
+        stats = self._create()
+        self.assertIn("consumer-1", str(stats))
+        self.assertIn("network.events", str(stats))
+
+    def test_accounted_for_sums_the_terminal_outcomes(self):
+        """Every message ends in exactly one of four places, and suppressed is not one of them."""
+        stats = self._create(received=10, errored=1, dropped=2, tickets_opened=4, tickets_joined=3, suppressed=2)
+        self.assertEqual(stats.accounted_for, 10)
+        self.assertEqual(stats.received, stats.accounted_for)
+
+    def test_one_row_per_consumer_topic_and_bucket(self):
+        """The unique constraint is what makes a flush able to find its row."""
+        self._create()
+        with self.assertRaises(IntegrityError):
+            self._create()
+
+    def test_the_same_bucket_for_a_different_consumer_is_a_different_row(self):
+        """Two instances count into their own rows, so their flushes never contend."""
+        self._create()
+        self._create(consumer_name="consumer-2")
+        self.assertEqual(models.IngestionStats.objects.count(), 2)
+
+    def test_ordering_is_newest_bucket_first(self):
+        """The list view answers 'what is happening now' without a sort."""
+        older = self._create(bucket_start=self.bucket - timedelta(minutes=5))
+        newer = self._create()
+        self.assertEqual(list(models.IngestionStats.objects.all()), [newer, older])
+
+    def test_stats_are_not_change_logged(self):
+        """A row rewritten every few seconds must not fill the change log."""
+        self.assertFalse(hasattr(self._create(), "to_objectchange"))

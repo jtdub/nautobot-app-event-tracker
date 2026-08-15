@@ -290,3 +290,79 @@ class TicketUpdate(BaseModel, ChangeLoggedModel):
         route reaches either operation.
         """
         raise TicketUpdateImmutableError("TicketUpdate is append-only; an update cannot be deleted.")
+
+
+@extras_features("graphql")
+class IngestionStats(BaseModel):
+    """Counters for one consumer, one topic, one time bucket.
+
+    Deliberately neither a PrimaryModel nor change-logged. The consumer rewrites a bucket row every
+    few seconds, so change logging it would write an ObjectChange per flush and bury the change log
+    under a record of arithmetic. It is derived data: what the consumer saw, not what anyone meant.
+
+    Written only by `ingestion.stats.StatsRecorder`. No UI or API route offers a write method.
+    """
+
+    consumer_name = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        db_index=True,
+        help_text="The consumer process these counts came from.",
+    )
+    topic = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        db_index=True,
+        help_text="Broker topic or channel.",
+    )
+    bucket_start = models.DateTimeField(
+        db_index=True,
+        help_text="Start of the window these counts cover.",
+    )
+    received = models.PositiveIntegerField(default=0, help_text="Messages taken from the broker.")
+    errored = models.PositiveIntegerField(default=0, help_text="Messages that could not be decoded or mapped.")
+    dropped = models.PositiveIntegerField(default=0, help_text="Messages discarded by the pre-filter.")
+    tickets_opened = models.PositiveIntegerField(default=0, help_text="Messages that opened a new ticket.")
+    tickets_joined = models.PositiveIntegerField(default=0, help_text="Messages that joined an existing ticket.")
+    suppressed = models.PositiveIntegerField(
+        default=0,
+        help_text="Messages a suppression rule accepted. Counted under opened or joined as well.",
+    )
+    drops_by_reason = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Drop counts keyed by the rule or filter that refused the message.",
+    )
+    last_message_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Broker timestamp of the newest message counted here.",
+    )
+
+    # A counter row is identified by nothing but itself.
+    natural_key_field_names = ["pk"]
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["-bucket_start", "consumer_name", "topic"]
+        get_latest_by = "bucket_start"
+        verbose_name = "Ingestion Stats"
+        verbose_name_plural = "Ingestion Stats"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["consumer_name", "topic", "bucket_start"],
+                name="event_tracker_stats_bucket_unique",
+            ),
+        ]
+
+    def __str__(self):
+        """Stringify instance."""
+        return f"{self.consumer_name} {self.topic} {self.bucket_start:%Y-%m-%d %H:%M}"
+
+    @property
+    def accounted_for(self):
+        """The counting invariant's right-hand side.
+
+        `received` must equal this. `suppressed` is not a term: a suppressed message still opened
+        or joined a ticket, so it is already counted there.
+        """
+        return self.errored + self.dropped + self.tickets_opened + self.tickets_joined
