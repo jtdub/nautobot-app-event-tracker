@@ -1,5 +1,6 @@
 """Test the ticket service layer: the transition matrix and rules S1-S5."""
 
+import uuid
 from unittest import mock
 
 from django.core.exceptions import ValidationError
@@ -563,6 +564,26 @@ class DedupTest(TestCase):
         first = fixtures.create_ticket(user=self.user)
         second = fixtures.create_ticket(user=self.user)
         self.assertNotEqual(first.pk, second.pk)
+
+    def test_was_created_distinguishes_a_new_ticket_from_a_recurrence(self):
+        """Callers can tell whether they opened the ticket or joined one."""
+        first = fixtures.create_ticket(user=self.user, dedup_key="key-5")
+        second = fixtures.create_ticket(user=self.user, dedup_key="key-5")
+        self.assertTrue(first.was_created)
+        self.assertFalse(second.was_created)
+
+    def test_recurrence_attaches_newly_implicated_objects(self):
+        """A later occurrence can name objects the first one did not."""
+        location = fixtures.create_location(name="Recurrence Location")
+        fixtures.create_ticket(user=self.user, dedup_key="key-6")
+        joined = fixtures.create_ticket(user=self.user, dedup_key="key-6", related_objects=[location])
+        self.assertEqual(list(ticket_service.get_related_objects(joined).values()), [[location]])
+
+    def test_a_chosen_primary_key_is_honoured(self):
+        """A caller may supply the ticket's ID; the REST API passes one through."""
+        chosen = uuid.uuid4()
+        ticket = fixtures.create_ticket(user=self.user, pk=chosen)
+        self.assertEqual(ticket.pk, chosen)
 
     def test_disabled_event_type_cannot_open_a_ticket(self):
         """A disabled type is refused at creation."""

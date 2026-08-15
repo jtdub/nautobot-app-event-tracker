@@ -16,7 +16,7 @@ Rules implemented here, referenced by number from the Phase 1 spec:
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 
 from nautobot_event_tracker.choices import (
@@ -201,6 +201,25 @@ def ticket_ids_with_attached_types(queryset, content_types):
     return {ticket_id for ticket_id, _, _ in _replay_attachments(rows)}
 
 
+def _lock_dedup_key(dedup_key):
+    """Hold a transaction-scoped lock on this dedup key until the surrounding transaction ends.
+
+    `select_for_update()` cannot serialize this: until the first ticket for a key exists there is
+    no row to lock, so two simultaneous first deliveries would each find nothing and each open a
+    ticket - the one case rule S5 exists to prevent. An advisory lock is keyed on the value rather
+    than on a row, so it holds before the row exists. PostgreSQL only, which ADR 0003 requires
+    anyway. Two different keys that happen to share a hash serialize needlessly and correctly.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [f"nautobot_event_tracker:{dedup_key}"])
+
+
+def _attach_all(*, ticket, objects, source, user):
+    """Attach each object to the ticket, skipping the ones already attached."""
+    for obj in objects or []:
+        attach_object(ticket=ticket, obj=obj, source=source, user=user)
+
+
 def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
     *,
     title,
@@ -213,10 +232,18 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
     payload=None,
     related_objects=None,
     occurred_at=None,
+    pk=None,
 ):
     """Create a ticket in `new`, or join an existing open ticket with the same dedup key (S5).
 
-    Returns the `EventTicket`, which may be a pre-existing one.
+    `pk` lets a caller choose the ticket's primary key, which the REST API allows on create and
+    data imports rely on. It is ignored when the call joins an existing ticket, which keeps its own.
+
+    Returns the `EventTicket`, which may be a pre-existing one. The returned instance carries
+    `was_created`: True when this call opened the ticket, False when it joined an existing one.
+    Callers that must not treat a recurrence as a new ticket - the UI and REST create paths, which
+    would otherwise apply the caller's custom fields to somebody else's ticket - read that flag
+    rather than guessing from the event count.
     """
     _validate_actor(source, user)
 
@@ -228,9 +255,9 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
 
     with transaction.atomic():
         if dedup_key:
+            _lock_dedup_key(dedup_key)
             existing = (
-                EventTicket.objects.select_for_update()
-                .filter(dedup_key=dedup_key)
+                EventTicket.objects.filter(dedup_key=dedup_key)
                 .exclude(status__in=TERMINAL_STATUSES)
                 .order_by("-last_seen")
                 .first()
@@ -249,6 +276,11 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
                     user=user,
                     message=f"Event recurred; this is occurrence {existing.event_count}.",
                 )
+                # A recurrence can implicate objects the first occurrence did not name, so the
+                # attachments are applied to the joined ticket too. Ones already attached are
+                # no-ops.
+                _attach_all(ticket=existing, objects=related_objects, source=source, user=user)
+                existing.was_created = False
                 return existing
 
         ticket = EventTicket(
@@ -264,6 +296,10 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
             last_seen=occurred_at,
             payload=payload or {},
         )
+        if pk is not None:
+            # Set rather than passed to the constructor: `id=None` would override the field's
+            # uuid4 default with a null.
+            ticket.id = pk
         ticket.full_clean()
         ticket.save()
 
@@ -275,9 +311,8 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
             message=f"Ticket opened with severity '{severity}'.",
         )
 
-        for obj in related_objects or []:
-            attach_object(ticket=ticket, obj=obj, source=source, user=user)
-
+        _attach_all(ticket=ticket, objects=related_objects, source=source, user=user)
+        ticket.was_created = True
         return ticket
 
 
@@ -292,6 +327,7 @@ def create_ticket_for_user(  # pylint: disable=too-many-arguments
     payload=None,
     assignee=None,
     tags=None,
+    pk=None,
 ):
     """Create a human-sourced ticket, applying optional assignment and tags.
 
@@ -307,6 +343,7 @@ def create_ticket_for_user(  # pylint: disable=too-many-arguments
         description=description,
         dedup_key=dedup_key,
         payload=payload,
+        pk=pk,
     )
     if assignee is not None:
         assign(ticket=ticket, assignee=assignee, source=TicketSourceChoices.HUMAN, user=user)
