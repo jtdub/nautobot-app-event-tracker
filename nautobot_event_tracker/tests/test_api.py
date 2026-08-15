@@ -2,8 +2,11 @@
 
 # pylint: disable=too-many-ancestors,duplicate-code
 
+from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
+from nautobot.apps.choices import CustomFieldTypeChoices
 from nautobot.apps.testing import APITestCase, APIViewTestCases
+from nautobot.extras.models import CustomField
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketStatusChoices, UpdateTypeChoices
 from nautobot_event_tracker.models import EventTicket, EventType
@@ -251,6 +254,98 @@ class EventTicketAPITest(APITestCase):
         ticket = EventTicket.objects.get(pk=response.data["id"])
         self.assertEqual(ticket.status, TicketStatusChoices.NEW)
         self.assertTrue(ticket.updates.filter(update_type=UpdateTypeChoices.CREATED).exists())
+
+    def test_bulk_create(self):
+        """A list payload creates one ticket per entry, each through the service."""
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
+        url = reverse("plugins-api:nautobot_event_tracker-api:eventticket-list")
+        response = self.client.post(
+            url,
+            [
+                {"title": "Bulk one", "event_type": str(self.event_type.pk), "severity": SeverityChoices.MAJOR},
+                {"title": "Bulk two", "event_type": str(self.event_type.pk), "severity": SeverityChoices.MINOR},
+            ],
+            format="json",
+            **self.header,
+        )
+        self.assertHttpStatus(response, 201)
+        for title in ("Bulk one", "Bulk two"):
+            ticket = EventTicket.objects.get(title=title)
+            self.assertTrue(ticket.updates.filter(update_type=UpdateTypeChoices.CREATED).exists())
+
+    def test_create_keeps_custom_field_values(self):
+        """The serializer's own fields survive the trip through the service layer."""
+        custom_field = CustomField.objects.create(type=CustomFieldTypeChoices.TYPE_TEXT, label="Runbook")
+        custom_field.content_types.set([ContentType.objects.get_for_model(EventTicket)])
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
+        url = reverse("plugins-api:nautobot_event_tracker-api:eventticket-list")
+        response = self.client.post(
+            url,
+            {
+                "title": "With a custom field",
+                "event_type": str(self.event_type.pk),
+                "severity": SeverityChoices.MAJOR,
+                "custom_fields": {custom_field.key: "runbook-42"},
+            },
+            format="json",
+            **self.header,
+        )
+        self.assertHttpStatus(response, 201)
+        ticket = EventTicket.objects.get(title="With a custom field")
+        self.assertEqual(ticket.cf[custom_field.key], "runbook-42")
+
+    def test_create_honours_a_supplied_id(self):
+        """A client may choose the ticket's ID, as it may for any other Nautobot object."""
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
+        chosen = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        response = self.client.post(
+            reverse("plugins-api:nautobot_event_tracker-api:eventticket-list"),
+            {
+                "id": chosen,
+                "title": "Chosen ID",
+                "event_type": str(self.event_type.pk),
+                "severity": SeverityChoices.MAJOR,
+            },
+            format="json",
+            **self.header,
+        )
+        self.assertHttpStatus(response, 201)
+        self.assertEqual(str(EventTicket.objects.get(title="Chosen ID").pk), chosen)
+
+    # --- updates route through the service too ---
+
+    def test_patch_severity_writes_an_update(self):
+        """A severity change carries its own update type, so it cannot be a silent write."""
+        self.add_permissions("nautobot_event_tracker.change_eventticket")
+        response = self.client.patch(
+            self.detail_url, {"severity": SeverityChoices.CRITICAL}, format="json", **self.header
+        )
+        self.assertHttpStatus(response, 200)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.severity, SeverityChoices.CRITICAL)
+        update = self.ticket.updates.get(update_type=UpdateTypeChoices.SEVERITY_CHANGE)
+        self.assertEqual(update.user, self.user)
+
+    def test_patch_assignment_writes_an_update(self):
+        """So does an assignment."""
+        self.add_permissions("nautobot_event_tracker.change_eventticket")
+        response = self.client.patch(self.detail_url, {"assigned_to": str(self.user.pk)}, format="json", **self.header)
+        self.assertHttpStatus(response, 200)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.assigned_to, self.user)
+        self.assertTrue(self.ticket.updates.filter(update_type=UpdateTypeChoices.ASSIGNMENT).exists())
 
     def test_create_applies_dedup(self):
         """The API create path inherits rule S5."""

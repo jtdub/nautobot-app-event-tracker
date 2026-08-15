@@ -3,13 +3,16 @@
 from collections import namedtuple
 from contextlib import contextmanager
 
+from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from nautobot.apps.api import NautobotModelViewSet, ReadOnlyModelViewSet
 from nautobot.core.api.authentication import TokenPermissions
 from rest_framework import status as http_status
 from rest_framework.decorators import action
-from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.response import Response
+from rest_framework.serializers import ListSerializer
 
 from nautobot_event_tracker import filters
 from nautobot_event_tracker.api import serializers
@@ -138,10 +141,34 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
         return super().get_permissions()
 
     def perform_create(self, serializer):
-        """Create through the service layer so the ticket gets its trail and dedup behaviour."""
-        data = dict(serializer.validated_data)
-        serializer.instance = ticket_service.create_ticket_for_user(
+        """Create through the service layer so the ticket gets its trail and dedup behaviour.
+
+        A list payload is a bulk create in Nautobot, so this handles one ticket or many. Object
+        permissions are enforced the way the base class does it, by checking the created rows
+        against the restricted queryset inside the transaction that made them.
+        """
+        try:
+            with transaction.atomic():
+                if isinstance(serializer, ListSerializer):
+                    instance = [self._create_ticket(serializer.child, data) for data in serializer.validated_data]
+                else:
+                    instance = self._create_ticket(serializer, serializer.validated_data)
+                serializer.instance = instance
+                self._validate_objects(instance)
+        except ObjectDoesNotExist as error:
+            raise PermissionDenied() from error
+
+    def _create_ticket(self, serializer, data):
+        """Create one ticket, then let the serializer apply the fields the service does not own.
+
+        The service owns the ticket's own fields, its trail and its dedup behaviour. Custom fields
+        and relationships belong to every Nautobot model and mean nothing to the service, so the
+        serializer applies those afterwards - except on a dedup join, where the ticket is somebody
+        else's and this payload has no business rewriting it.
+        """
+        ticket = ticket_service.create_ticket_for_user(
             user=self.request.user,
+            pk=data.get("id"),
             title=data.get("title"),
             event_type=data.get("event_type"),
             severity=data.get("severity"),
@@ -151,6 +178,47 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
             assignee=data.get("assigned_to"),
             tags=data.get("tags"),
         )
+        # Only what the service did not already write, and only where it differs: applying the rest
+        # would cost a second save and a spurious "updated" entry in the change log.
+        extra = {
+            key: value
+            for key, value in data.items()
+            if key not in serializers.SERVICE_CREATE_FIELDS and getattr(ticket, key, None) != value
+        }
+        if extra and ticket.was_created:
+            ticket = serializer.update(ticket, extra)
+        return ticket
+
+    def perform_update(self, serializer):
+        """Apply the fields that carry a trail through the service, and the rest as usual.
+
+        `severity` and `assigned_to` each have their own update type, so a PATCH that wrote them
+        directly would change the ticket without recording who changed it or from what. The bulk
+        PATCH route calls this once per object, so it is covered too.
+
+        The stored ticket is re-read rather than trusting `serializer.instance`: Nautobot's
+        `ValidatedModelSerializer.validate()` has already applied the incoming values to it, so the
+        service would be comparing the new value against itself and would record nothing.
+        """
+        stored = EventTicket.objects.get(pk=serializer.instance.pk)
+        data = serializer.validated_data
+        with transaction.atomic():
+            with _reporting_service_errors():
+                if "severity" in data:
+                    ticket_service.set_severity(
+                        ticket=stored,
+                        severity=data.pop("severity"),
+                        source=TicketSourceChoices.HUMAN,
+                        user=self.request.user,
+                    )
+                if "assigned_to" in data:
+                    ticket_service.assign(
+                        ticket=stored,
+                        assignee=data.pop("assigned_to"),
+                        source=TicketSourceChoices.HUMAN,
+                        user=self.request.user,
+                    )
+            super().perform_update(serializer)
 
     @action(detail=True, methods=["get", "post"], url_path="transition")
     def transition(self, request, pk=None):  # pylint: disable=unused-argument

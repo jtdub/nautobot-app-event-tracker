@@ -9,6 +9,21 @@ from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
 #: rather than silently dropped, so a client never gets a 200 for a change that did not happen.
 SERVICE_OWNED_FIELDS = ("status", "resolved_at", "closed_at", "resolution", "event_count")
 
+#: The create-payload fields `services.tickets.create_ticket_for_user()` consumes. Anything else a
+#: create payload carries - custom fields, relationships - belongs to the serializer, which applies
+#: it to the row the service wrote.
+SERVICE_CREATE_FIELDS = (
+    "id",
+    "title",
+    "event_type",
+    "severity",
+    "description",
+    "dedup_key",
+    "payload",
+    "assigned_to",
+    "tags",
+)
+
 #: Fields the service layer fills in at creation. Read-only so that the API does not demand them,
 #: but not in SERVICE_OWNED_FIELDS: offering them is a mistake, not an attempt to bypass anything,
 #: so they are quietly ignored rather than rejected.
