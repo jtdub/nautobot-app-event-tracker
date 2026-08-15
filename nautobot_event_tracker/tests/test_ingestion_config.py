@@ -238,6 +238,21 @@ class TestDatabaseValidation(TestCase):
         self.assertIn("No Such Type", problems[0])
         self.assertIn("topic 't'", problems[0])
 
+    @settings_with(
+        {
+            "topics": {
+                "first": {**TOPIC, "defaults": {"event_type": "No Such Type"}},
+                "second": {**TOPIC, "defaults": {"event_type": "No Such Type"}},
+            }
+        }
+    )
+    def test_two_topics_missing_the_same_type_are_two_problems(self):
+        """Reporting one would leave the operator fixing this twice."""
+        problems = config.database_problems(config.load())
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("first" in problem for problem in problems))
+        self.assertTrue(any("second" in problem for problem in problems))
+
     @settings_with({"topics": {"t": {**TOPIC, "defaults": {}}}})
     def test_no_default_event_type_needs_no_query(self):
         """A topic that never falls back has nothing to check."""

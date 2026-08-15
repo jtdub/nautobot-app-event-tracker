@@ -159,9 +159,12 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
         A list payload is a bulk create in Nautobot, so this handles one ticket or many. Object
         permissions are enforced the way the base class does it, by checking the created rows
         against the restricted queryset inside the transaction that made them.
+
+        Service refusals go through the same mapping as every other action: creating a ticket with
+        a disabled event type is a 400 with the service's own message, not a 500.
         """
         try:
-            with transaction.atomic():
+            with transaction.atomic(), _reporting_service_errors():
                 if isinstance(serializer, ListSerializer):
                     instance = [self._create_ticket(serializer.child, data) for data in serializer.validated_data]
                 else:

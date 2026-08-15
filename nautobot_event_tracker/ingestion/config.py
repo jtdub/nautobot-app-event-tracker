@@ -221,15 +221,21 @@ def database_problems(config):
     """Return the faults that only a query can find: event types the catalogue does not hold."""
     from nautobot_event_tracker.models import EventType  # pylint: disable=import-outside-toplevel
 
-    wanted = {
-        topic.defaults["event_type"]: name for name, topic in config.topics.items() if topic.defaults.get("event_type")
-    }
+    # A list of pairs rather than a map keyed on the type: two topics naming the same missing type
+    # are two faults, and this module's whole contract is that every fault is reported.
+    wanted = [
+        (name, topic.defaults["event_type"])
+        for name, topic in config.topics.items()
+        if topic.defaults.get("event_type")
+    ]
     if not wanted:
         return []
-    known = set(EventType.objects.filter(name__in=wanted).values_list("name", flat=True))
+    known = set(
+        EventType.objects.filter(name__in={event_type for _, event_type in wanted}).values_list("name", flat=True)
+    )
     return [
         f"topic '{topic}': default event type '{event_type}' does not exist"
-        for event_type, topic in sorted(wanted.items())
+        for topic, event_type in sorted(wanted)
         if event_type not in known
     ]
 

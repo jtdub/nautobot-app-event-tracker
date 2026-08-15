@@ -7,6 +7,7 @@ does can be attributed to a person.
 """
 
 import logging
+import time
 
 from django.db import transaction
 
@@ -18,9 +19,20 @@ from nautobot_event_tracker.services import tickets as ticket_service
 
 logger = logging.getLogger(__name__)
 
+#: How often to repeat the warning about a dedup key template that will not resolve. Once per topic
+#: per five minutes: often enough to notice, rarely enough that a misconfiguration cannot itself
+#: become the flood it is warning about.
+DEDUP_WARNING_INTERVAL_SECONDS = 300
+
+_dedup_warned_at = {}
+
 
 def handle_message(message, *, rules, recorder, config, write=True):
     """Decide what this message is, and write the ticket if it is one.
+
+    The caller counts the message as received before calling this - a retry after a database
+    failure re-enters here, and counting it twice would break the invariant that every received
+    message ends in exactly one outcome.
 
     Returns the `Decision` that was reached, which is what `--dry-run` prints and what the loop
     logs. `write=False` decides without applying, so an operator can tune filters against live
@@ -30,8 +42,6 @@ def handle_message(message, *, rules, recorder, config, write=True):
     Phase 3's LLM triage goes between `rules.decide()` below and the write, returning a `Decision`
     the same dispatch reads. Its extra `attach` action becomes one more branch in `_apply()`.
     """
-    recorder.record(message.topic, received=1, message_time=message.timestamp)
-
     topic_config = rules.topic(message.topic)
     if topic_config is None:
         # F1. Both brokers subscribe only to configured topics, so this is what a topic removed
@@ -57,6 +67,8 @@ def handle_message(message, *, rules, recorder, config, write=True):
         recorder.record(message.topic, errored=1)
         return Decision(ACTION_DROP, error.reason)
 
+    _warn_about_an_unresolvable_dedup_key(event, topic_config)
+
     result = rules.decide(event, topic_config)
     if result.decision.action == ACTION_DROP:
         return _dropped(message.topic, result.decision.reason, recorder)
@@ -64,6 +76,29 @@ def handle_message(message, *, rules, recorder, config, write=True):
     if write:
         _write_ticket(event, result, recorder, config)
     return result.decision
+
+
+def _warn_about_an_unresolvable_dedup_key(event, topic_config, clock=time.monotonic):
+    """Say when a configured dedup template resolved to nothing.
+
+    Without this the only symptom is a stream of near-identical tickets whose event count never
+    leaves 1, which is a slow thing to notice and a confusing thing to diagnose.
+    """
+    if event.dedup_key or not topic_config.dedup_key_template:
+        return
+
+    now = clock()
+    last = _dedup_warned_at.get(topic_config.name)
+    if last is not None and now - last < DEDUP_WARNING_INTERVAL_SECONDS:
+        return
+
+    _dedup_warned_at[topic_config.name] = now
+    logger.warning(
+        "The dedup key template for %s (%r) did not resolve against this payload, so events on "
+        "this topic are each opening their own ticket",
+        topic_config.name,
+        topic_config.dedup_key_template,
+    )
 
 
 def _write_ticket(event, result, recorder, config):

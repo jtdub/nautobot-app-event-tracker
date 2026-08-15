@@ -344,6 +344,10 @@ def create_ticket_for_user(  # pylint: disable=too-many-arguments
 
     Shared by the REST and UI create paths so that "a person opened a ticket" has one definition
     and the two transports cannot drift apart.
+
+    On a dedup join the assignee and tags are left alone: the ticket belongs to an earlier event,
+    and somebody may already be working it. Both transports guard every other field on
+    `was_created` for the same reason.
     """
     ticket = create_ticket(
         title=title,
@@ -356,10 +360,11 @@ def create_ticket_for_user(  # pylint: disable=too-many-arguments
         payload=payload,
         pk=pk,
     )
-    if assignee is not None:
-        assign(ticket=ticket, assignee=assignee, source=TicketSourceChoices.HUMAN, user=user)
-    if tags:
-        ticket.tags.set(tags)
+    if ticket.was_created:
+        if assignee is not None:
+            assign(ticket=ticket, assignee=assignee, source=TicketSourceChoices.HUMAN, user=user)
+        if tags:
+            ticket.tags.set(tags)
     return ticket
 
 

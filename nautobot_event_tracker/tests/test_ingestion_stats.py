@@ -158,6 +158,13 @@ class TestFlushTiming(StatsTestCase):
         self.recorder.flush()
         self.assertEqual(self.row().received, 1)
 
+    def test_a_failed_prune_does_not_take_the_consumer_down(self):
+        """`flush()` runs from the loop's `finally`, where an exception replaces the real one."""
+        self.recorder.record(TOPIC, received=1)
+        with mock.patch.object(StatsRecorder, "_prune", side_effect=DatabaseError("gone")):
+            self.recorder.flush()
+        self.assertEqual(self.row().received, 1)
+
     def test_a_failed_write_does_not_take_the_consumer_down(self):
         """A ticket written and a count lost beats the reverse."""
         self.recorder.record(TOPIC, received=1)

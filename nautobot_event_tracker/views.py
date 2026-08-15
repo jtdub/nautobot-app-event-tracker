@@ -505,13 +505,16 @@ class EventTicketDetachView(ObjectPermissionRequiredMixin, GenericView):
 
         with _reporting_service_errors(request):
             obj = ticket_service.resolve_object(form.cleaned_data["object_type"], form.cleaned_data["object_id"])
-            ticket_service.detach_object(
+            update = ticket_service.detach_object(
                 ticket=ticket,
                 obj=obj,
                 source=TicketSourceChoices.HUMAN,
                 user=request.user,
             )
-            messages.success(request, f"Detached {obj}.")
+            if update is None:
+                messages.info(request, f"{obj} is not attached to this ticket.")
+            else:
+                messages.success(request, f"Detached {obj}.")
 
         return redirect(ticket.get_absolute_url())
 

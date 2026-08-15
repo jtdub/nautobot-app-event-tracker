@@ -506,3 +506,43 @@ class UpdateTrailViewTest(TestCase):
         response = self.client.get(ticket.get_absolute_url())
         self.assertHttpStatus(response, 200)
         self.assertNotIn("a distinctive comment", response.content.decode())
+
+
+class TestDetachingSomethingNotAttached(TestCase):
+    """The detach view mirrors the attach view when nothing happened."""
+
+    def setUp(self):
+        """Create test data."""
+        super().setUp()
+        self.user = fixtures.create_user()
+        self.user.is_superuser = True
+        self.user.save()
+        self.client.force_login(self.user)
+        self.ticket = fixtures.create_ticket(user=self.user)
+        self.location = fixtures.create_location()
+
+    def test_a_no_op_detach_does_not_claim_to_have_detached(self):
+        """The service returns None, and the page must not report a success that did not happen."""
+        response = self.client.post(
+            reverse("plugins:nautobot_event_tracker:eventticket_detach", kwargs={"pk": self.ticket.pk}),
+            {
+                "object_type": ContentType.objects.get_for_model(self.location).pk,
+                "object_id": str(self.location.pk),
+            },
+            follow=True,
+        )
+        text = response.content.decode()
+        self.assertIn("is not attached to this ticket", text)
+        self.assertNotIn(f"Detached {self.location}", text)
+
+    def test_a_no_op_detach_writes_no_update(self):
+        """Append-only means nothing, if a no-op appends."""
+        before = self.ticket.updates.count()
+        self.client.post(
+            reverse("plugins:nautobot_event_tracker:eventticket_detach", kwargs={"pk": self.ticket.pk}),
+            {
+                "object_type": ContentType.objects.get_for_model(self.location).pk,
+                "object_id": str(self.location.pk),
+            },
+        )
+        self.assertEqual(self.ticket.updates.count(), before)

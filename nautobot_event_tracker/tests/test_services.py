@@ -590,3 +590,52 @@ class DedupTest(TestCase):
         disabled = EventType.objects.get(name="Test Disabled Type")
         with self.assertRaises(ValidationError):
             fixtures.create_ticket(user=self.user, event_type=disabled)
+
+
+class TestCreateTicketForUserOnADedupJoin(TestCase):
+    """A join hands back somebody else's ticket, and must not rewrite it."""
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        cls.user = fixtures.create_user()
+        cls.other = fixtures.create_user(username="second-caller")
+        cls.event_type = fixtures.create_event_types()[0]
+
+    def _create(self, **kwargs):
+        """Create through the human-facing helper both transports use."""
+        defaults = {
+            "user": self.user,
+            "title": "Interface down",
+            "event_type": self.event_type,
+            "dedup_key": "join-me",
+        }
+        return ticket_service.create_ticket_for_user(**{**defaults, **kwargs})
+
+    def test_a_join_keeps_the_original_assignee(self):
+        """The ticket belongs to an earlier event, and somebody may be working it."""
+        first = self._create(assignee=self.user)
+        joined = self._create(assignee=self.other)
+        self.assertEqual(first.pk, joined.pk)
+        joined.refresh_from_db()
+        self.assertEqual(joined.assigned_to, self.user)
+
+    def test_a_join_writes_no_assignment_update(self):
+        """An assignment that did not happen must not appear in the trail."""
+        ticket = self._create(assignee=self.user)
+        self._create(assignee=self.other)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.updates.filter(update_type=UpdateTypeChoices.ASSIGNMENT).count(), 1)
+
+    def test_a_join_keeps_the_original_tags(self):
+        """Same argument: the tags belong to whoever opened it."""
+        first = self._create(tags=["first-tag"])
+        self._create(tags=["second-tag"])
+        first.refresh_from_db()
+        self.assertEqual([tag.name for tag in first.tags.all()], ["first-tag"])
+
+    def test_a_new_ticket_still_gets_its_assignee_and_tags(self):
+        """The guard must not stop the ordinary case from working."""
+        ticket = self._create(assignee=self.other, tags=["a-tag"], dedup_key="")
+        self.assertEqual(ticket.assigned_to, self.other)
+        self.assertEqual([tag.name for tag in ticket.tags.all()], ["a-tag"])

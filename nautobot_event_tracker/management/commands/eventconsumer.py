@@ -29,6 +29,13 @@ EXIT_UNRECOVERABLE = 2
 #: Backoff between attempts at a message whose database write failed, in seconds.
 RETRY_BACKOFF_SECONDS = 1.0
 
+#: Backoff between attempts to reach a broker that has gone away: doubling from one second to a
+#: minute, then holding there. A broker outage means no messages are arriving and nothing is at
+#: stake in waiting, so this retries forever rather than exiting - unlike a database failure,
+#: where messages are arriving with nowhere to put them.
+RECONNECT_BACKOFF_SECONDS = 1.0
+RECONNECT_BACKOFF_MAX_SECONDS = 60.0
+
 
 class UnrecoverableError(Exception):
     """A failure the process cannot carry on through, and must not acknowledge past."""
@@ -102,7 +109,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         try:
             with self.consumer:
                 while not self.stopping:
-                    message = self.consumer.poll(poll_timeout)
+                    message = self._poll(poll_timeout)
                     if message is not None:
                         self._handle(message)
                         self.handled += 1
@@ -111,6 +118,27 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
                     self.recorder.maybe_flush()
         finally:
             self.recorder.flush()
+
+    def _poll(self, timeout):
+        """Ask the broker for a message, reconnecting for as long as it takes.
+
+        Every broker client has its own exception hierarchy, and `confluent_kafka` and `redis` do
+        not share one, so this catches broadly on purpose: whatever went wrong with the connection,
+        the answer is the same.
+        """
+        backoff = RECONNECT_BACKOFF_SECONDS
+        while not self.stopping:
+            try:
+                return self.consumer.poll(timeout)
+            except Exception as error:  # pylint: disable=broad-except
+                logger.warning("Lost the broker connection (%s); reconnecting in %ss", error, backoff)
+                self._sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_BACKOFF_MAX_SECONDS)
+                try:
+                    self.consumer.reconnect()
+                except Exception:  # pylint: disable=broad-except
+                    logger.warning("Could not reconnect to the broker; will try again", exc_info=True)
+        return None
 
     def _handle(self, message):
         """Handle one message, retrying a transient database failure before giving up.
@@ -123,6 +151,10 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         supervisor will restart us, where acknowledging a message whose ticket was never written
         would lose it quietly.
         """
+        # Counted once, out here: a retry re-enters `handle_message`, and a message counted twice
+        # would break the invariant that received equals the outcomes.
+        self.recorder.record(message.topic, received=1, message_time=message.timestamp)
+
         for attempt in range(1, self.settings.max_retries + 1):
             try:
                 decision = handle_message(

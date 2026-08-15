@@ -63,6 +63,9 @@ class PipelineTestCase(TestCase):
             if value is None
             else fixtures.BrokerMessage(topic=topic, value=value)
         )
+        # The runner counts a message as received before handing it over, so that a retry after a
+        # database failure is not counted twice. This helper stands in for the runner.
+        self.recorder.record(message.topic, received=1, message_time=message.timestamp)
         return pipeline.handle_message(message, rules=rules, recorder=self.recorder, config=loaded, **kwargs)
 
     payload = staticmethod(fixtures.event_payload)
@@ -267,3 +270,30 @@ class TestAtomicity(PipelineTestCase):
         ):
             with self.assertRaises(DatabaseError):
                 self.handle()
+
+
+class TestDedupWarning(PipelineTestCase):
+    """A dedup template that will not resolve says so, without becoming the flood."""
+
+    def setUp(self):
+        """Forget any warning this process has already issued."""
+        super().setUp()
+        pipeline._dedup_warned_at.clear()  # pylint: disable=protected-access
+
+    def test_an_unresolvable_template_warns(self):
+        """Otherwise the only symptom is tickets whose event count never leaves 1."""
+        with self.assertLogs("nautobot_event_tracker.ingestion.pipeline", level="WARNING") as logs:
+            self.handle(self.payload(host=None))
+        self.assertIn("did not resolve", logs.output[0])
+
+    def test_a_resolvable_template_says_nothing(self):
+        """The ordinary case must be silent."""
+        with self.assertNoLogs("nautobot_event_tracker.ingestion.pipeline", level="WARNING"):
+            self.handle()
+
+    def test_the_warning_is_not_repeated_per_message(self):
+        """A misconfigured template must not itself become the flood it warns about."""
+        with self.assertLogs("nautobot_event_tracker.ingestion.pipeline", level="WARNING") as logs:
+            for _ in range(5):
+                self.handle(self.payload(host=None))
+        self.assertEqual(len(logs.output), 1)

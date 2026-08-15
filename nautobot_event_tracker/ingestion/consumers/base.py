@@ -68,6 +68,19 @@ class EventConsumer(ABC):
     def close(self):
         """Release the connection."""
 
+    def reconnect(self):
+        """Drop the connection and open a new one.
+
+        The default is close-then-connect, which is right for both implementations. The loop owns
+        *when* to reconnect and how long to wait; how to do it belongs here, with the broker.
+        """
+        try:
+            self.close()
+        except Exception:  # pylint: disable=broad-except
+            # The connection is already broken; how it objects to being closed is not interesting.
+            logger.debug("Ignoring an error while closing a broken connection", exc_info=True)
+        self.connect()
+
     def __enter__(self):
         """Connect on the way in."""
         self.connect()

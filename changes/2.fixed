@@ -1,0 +1,3 @@
+Fixed `create_ticket_for_user()` writing the caller's assignee and tags over a ticket it joined through the dedup rule rather than opened.
+Fixed a REST create against a disabled event type returning 500 instead of 400 with the service's message.
+Fixed the UI reporting a successful detach when the object was not attached.

@@ -152,6 +152,27 @@ class TestDatabaseFailure(RunnerTestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(len(consumer.acknowledged), 1)
 
+    def test_a_retried_message_is_counted_as_received_once(self):
+        """Counting it twice would break the invariant that received equals the outcomes."""
+        runner, _ = self.build([fixtures.broker_message(payload())], max_messages=1)
+        attempts = []
+
+        def flaky(*args, **kwargs):
+            """Fail once, then work."""
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise DatabaseError("connection lost")
+            return mock.DEFAULT
+
+        with mock.patch(
+            "nautobot_event_tracker.management.commands.eventconsumer.handle_message",
+            side_effect=flaky,
+            return_value=mock.Mock(action="accept", reason=""),
+        ):
+            runner.run()
+
+        self.assertEqual(IngestionStats.objects.get().received, 1)
+
     def test_giving_up_does_not_acknowledge(self):
         """The message stays on the broker, which is the whole reason to exit rather than continue."""
         runner, consumer = self.build([fixtures.broker_message(payload())], max_messages=1)
@@ -173,6 +194,46 @@ class TestDatabaseFailure(RunnerTestCase):
             with self.assertRaises(UnrecoverableError) as caught:
                 runner.run()
         self.assertIn("redelivered", str(caught.exception))
+
+
+class TestBrokerLoss(RunnerTestCase):
+    """A broker that goes away is waited for, not exited over."""
+
+    def test_a_poll_failure_reconnects_and_carries_on(self):
+        """Unlike a database failure, nothing is at stake in waiting: no messages are arriving."""
+        runner, consumer = self.build([fixtures.broker_message(payload())], max_messages=1)
+        failures = []
+
+        original_poll = consumer.poll
+
+        def flaky_poll(timeout):
+            """Fail twice, then behave."""
+            if len(failures) < 2:
+                failures.append(1)
+                raise ConnectionError("broker went away")
+            return original_poll(timeout)
+
+        consumer.poll = flaky_poll
+        runner.run()
+
+        self.assertEqual(len(failures), 2)
+        self.assertEqual(runner.handled, 1)
+        self.assertTrue(EventTicket.objects.exists())
+
+    def test_reconnecting_reopens_the_connection(self):
+        """Closing and reopening is the consumer's business; when to do it is the loop's."""
+        runner, consumer = self.build([], max_messages=1)
+        reconnects = []
+        consumer.reconnect = lambda: reconnects.append(1)
+
+        def failing_poll(timeout):  # pylint: disable=unused-argument
+            """Fail once, then ask the loop to stop."""
+            runner.stop()
+            raise ConnectionError("broker went away")
+
+        consumer.poll = failing_poll
+        runner.run()
+        self.assertEqual(len(reconnects), 1)
 
 
 class TestDryRun(RunnerTestCase):

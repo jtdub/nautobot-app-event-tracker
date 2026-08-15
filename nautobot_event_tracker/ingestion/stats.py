@@ -114,7 +114,13 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
                 # count that was lost is a far better outcome than the reverse.
                 logger.exception("Could not write ingestion stats for %s at %s", topic, bucket_start)
 
-        self._prune()
+        try:
+            self._prune()
+        except Exception:  # pylint: disable=broad-except
+            # Same rule, and one more reason here: `flush()` runs from the loop's `finally`, where
+            # an exception would replace whatever was already on its way out - including the
+            # UnrecoverableError that carries exit code 2.
+            logger.exception("Could not prune ingestion stats")
 
     def _write(self, topic, bucket_start, counts):
         """Add one bucket's counts to its row, creating the row if this is its first flush."""
