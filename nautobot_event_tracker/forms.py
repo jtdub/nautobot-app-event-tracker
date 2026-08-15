@@ -104,18 +104,22 @@ class EventTicketForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
 class EventTicketBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
     """EventTicket bulk edit form.
 
-    Offers no `status` field for the same reason the create/edit form does not.
+    Offers no `status` field for the same reason the create/edit form does not, and no `severity`
+    or `assigned_to` either: Nautobot applies a bulk edit by assigning attributes and saving each
+    object itself, with no hook the service layer could run in, so a bulk change to either would be
+    a ticket mutation with nothing in the trail to record it. Both remain changeable one ticket at
+    a time in the UI, and in bulk through the REST API's bulk PATCH, which does route through the
+    service.
     """
 
     pk = forms.ModelMultipleChoiceField(queryset=EventTicket.objects.all(), widget=forms.MultipleHiddenInput)
-    severity = forms.ChoiceField(choices=SeverityChoices, required=False, widget=StaticSelect2)
     event_type = DynamicModelChoiceField(queryset=EventType.objects.all(), required=False)
     description = forms.CharField(required=False)
 
     class Meta:
         """Meta attributes."""
 
-        nullable_fields = ["description", "assigned_to"]
+        nullable_fields = ["description"]
 
 
 class EventTicketFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors

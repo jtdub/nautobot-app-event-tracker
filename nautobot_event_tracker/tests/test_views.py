@@ -74,10 +74,15 @@ class TicketFormFieldTest(TestCase):
         for field in SERVICE_OWNED_FIELDS:
             self.assertNotIn(field, form.fields, f"'{field}' must not be editable through the form")
 
-    def test_bulk_edit_form_omits_status(self):
-        """The bulk edit form is not a back door either."""
+    def test_bulk_edit_form_omits_service_owned_and_tracked_fields(self):
+        """The bulk edit form is not a back door either.
+
+        Nautobot's bulk edit assigns and saves each object itself, so a field there cannot be
+        routed through the service - which rules out severity and assignee as well as status.
+        """
         form = forms.EventTicketBulkEditForm(model=EventTicket)
-        self.assertNotIn("status", form.fields)
+        for field in ("status", "severity", "assigned_to"):
+            self.assertNotIn(field, form.fields)
 
 
 class TicketCreationRoutesThroughServiceTest(TestCase):

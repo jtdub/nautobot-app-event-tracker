@@ -375,6 +375,10 @@ This is a form view, not a hand-written page: Nautobot renders it through its ge
 
 `EventTypeUIViewSet` is a conventional viewset with a fields panel and a table of its tickets. Forms for `EventTicket` **omit** `status`, `resolved_at`, `closed_at` and `event_count` — the edit form cannot reach them, so the only path to a status change is a transition button.
 
+**The edit form routes through the service** for the two fields that carry their own update type: `form_save()` sends a changed `severity` to `set_severity()` and a changed `assigned_to` to `assign()`, then saves the rest as usual. Creation does the same in reverse — the service writes the row, then the form saves the custom fields and relationships it owns onto it, unless the create joined an existing ticket under S5.
+
+**The bulk edit form offers neither `severity` nor `assigned_to`.** Nautobot applies a bulk edit by assigning attributes to each object and saving it, with no hook the service could run in, so either field there would be a ticket mutation with no trail — the one thing criterion 3 forbids. Both remain editable one ticket at a time, and in bulk through the REST bulk `PATCH`, which does route through the service.
+
 ## 7. Filtersets
 
 `nautobot_event_tracker/filters.py`, all subclassing `NautobotFilterSet`.

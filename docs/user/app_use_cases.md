@@ -61,6 +61,8 @@ The same applies to Resolved At, Closed At, Resolution and Event Count. They are
 
 Severity and assignee work the other way round: you edit them on the ticket as you would any other field, and the app records the change in the trail for you. Whether the edit comes from the form or from a REST `PATCH`, the entry says who changed it and what it was before.
 
+Neither appears in the UI's bulk edit form. Nautobot applies a bulk edit by writing to each object directly, with nowhere for the app to record what changed, so a bulk severity change would be the one edit that left no trace. To change either across many tickets at once, use the REST API's bulk `PATCH`, which does record every one.
+
 ### Permissions
 
 Transitioning needs the **Can transition event ticket status** permission (`transition_eventticket`), which is separate from the ordinary change permission. That separation is useful: you can let a first-line team move tickets through the workflow without letting them rewrite ticket content.
