@@ -1,8 +1,6 @@
 """Test the Event Tracker filtersets."""
 
-from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
-from nautobot.dcim.models import Location
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.filters import EventTicketFilterSet, EventTypeFilterSet, TicketUpdateFilterSet
@@ -150,8 +148,7 @@ class EventTicketFilterTest(TestCase):
 
     def test_related_object_type_matches_attached(self):
         """A ticket with a location attached matches the location content type."""
-        content_type = ContentType.objects.get_for_model(Location)
-        results = self._filter({"related_object_type": [content_type.pk]})
+        results = self._filter({"related_object_type": ["dcim.location"]})
         self.assertEqual(results.count(), 1)
         self.assertEqual(results.first().pk, self.new_ticket.pk)
 
@@ -166,8 +163,7 @@ class EventTicketFilterTest(TestCase):
             source=TicketSourceChoices.HUMAN,
             user=self.user,
         )
-        content_type = ContentType.objects.get_for_model(Location)
-        self.assertEqual(self._filter({"related_object_type": [content_type.pk]}).count(), 0)
+        self.assertEqual(self._filter({"related_object_type": ["dcim.location"]}).count(), 0)
 
 
 class TicketUpdateFilterTest(TestCase):

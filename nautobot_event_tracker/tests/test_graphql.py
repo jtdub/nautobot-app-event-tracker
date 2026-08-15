@@ -56,10 +56,16 @@ class EventTrackerGraphQLTest(TestCase):
         messages = [update["message"] for update in data["ticket_updates"]]
         self.assertIn("a graphql comment", messages)
 
-    def test_ticket_updates_expose_related_object_type_as_a_label(self):
-        """The generic pointer surfaces as an app_label.model string, not a numeric ID."""
-        data = self._query("{ ticket_updates { update_type related_object_type } }")
-        labels = {update["related_object_type"] for update in data["ticket_updates"] if update["related_object_type"]}
+    def test_ticket_updates_expose_the_related_object_type(self):
+        """The generic pointer surfaces as a queryable ContentType relation."""
+        data = self._query(
+            "{ ticket_updates { update_type related_object_type { app_label model } related_object_id } }"
+        )
+        labels = {
+            f"{update['related_object_type']['app_label']}.{update['related_object_type']['model']}"
+            for update in data["ticket_updates"]
+            if update["related_object_type"]
+        }
         self.assertIn("dcim.location", labels)
 
     def test_nested_updates_on_a_ticket(self):

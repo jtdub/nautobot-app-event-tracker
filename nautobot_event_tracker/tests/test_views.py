@@ -1,5 +1,7 @@
 """Test the Event Tracker UI."""
 
+# pylint: disable=too-many-ancestors,duplicate-code
+
 from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 from nautobot.apps.testing import TestCase, ViewTestCases
@@ -67,7 +69,7 @@ class TicketFormFieldTest(TestCase):
 
     def test_bulk_edit_form_omits_status(self):
         """The bulk edit form is not a back door either."""
-        form = forms.EventTicketBulkEditForm()
+        form = forms.EventTicketBulkEditForm(model=EventTicket)
         self.assertNotIn("status", form.fields)
 
 
@@ -85,6 +87,8 @@ class TicketCreationRoutesThroughServiceTest(TestCase):
         self.add_permissions(
             "nautobot_event_tracker.add_eventticket",
             "nautobot_event_tracker.view_eventticket",
+            # The event type picker will not offer a type the user cannot see.
+            "nautobot_event_tracker.view_eventtype",
         )
         response = self.client.post(
             reverse("plugins:nautobot_event_tracker:eventticket_add"),
@@ -250,7 +254,10 @@ class UpdateTrailViewTest(TestCase):
 
     def test_trail_renders_and_offers_no_edit_controls(self):
         """Updates appear on the page, with no edit or delete affordance."""
-        self.add_permissions("nautobot_event_tracker.view_eventticket")
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_ticketupdate",
+        )
         fixtures.create_event_types()
         ticket = fixtures.create_ticket(user=self.user, title="Trail target")
         ticket_service.add_comment(
@@ -266,3 +273,18 @@ class UpdateTrailViewTest(TestCase):
         # There is no edit or delete route for an update, so no URL for one can appear.
         self.assertNotIn("ticketupdate_edit", content)
         self.assertNotIn("ticketupdate_delete", content)
+
+    def test_trail_is_hidden_without_permission_to_view_updates(self):
+        """A user who may see a ticket but not its updates gets the ticket without the trail."""
+        self.add_permissions("nautobot_event_tracker.view_eventticket")
+        fixtures.create_event_types()
+        ticket = fixtures.create_ticket(user=self.user, title="Hidden trail")
+        ticket_service.add_comment(
+            ticket=ticket,
+            message="a distinctive comment",
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+        )
+        response = self.client.get(ticket.get_absolute_url())
+        self.assertHttpStatus(response, 200)
+        self.assertNotIn("a distinctive comment", response.content.decode())

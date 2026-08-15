@@ -1,5 +1,7 @@
 """Test the Event Tracker REST API."""
 
+# pylint: disable=too-many-ancestors,duplicate-code
+
 from django.urls import reverse
 from nautobot.apps.testing import APITestCase, APIViewTestCases
 
@@ -13,6 +15,7 @@ class EventTypeAPITest(APIViewTestCases.APIViewTestCase):
 
     model = EventType
     bulk_update_data = {"description": "Bulk updated"}
+    choices_fields = ["default_severity"]
 
     create_data = [
         {"name": "API Type One", "default_severity": SeverityChoices.MAJOR},
@@ -228,7 +231,11 @@ class EventTicketAPITest(APITestCase):
 
     def test_create_routes_through_the_service(self):
         """An API-created ticket gets its created update and starts in new."""
-        self.add_permissions("nautobot_event_tracker.add_eventticket", "nautobot_event_tracker.view_eventticket")
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
         url = reverse("plugins-api:nautobot_event_tracker-api:eventticket-list")
         response = self.client.post(
             url,
@@ -247,7 +254,11 @@ class EventTicketAPITest(APITestCase):
 
     def test_create_applies_dedup(self):
         """The API create path inherits rule S5."""
-        self.add_permissions("nautobot_event_tracker.add_eventticket", "nautobot_event_tracker.view_eventticket")
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
         url = reverse("plugins-api:nautobot_event_tracker-api:eventticket-list")
         payload = {
             "title": "Deduped",
