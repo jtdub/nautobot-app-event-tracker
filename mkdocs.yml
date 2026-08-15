@@ -145,6 +145,7 @@ nav:
           - Specifications:
               - "Phase 1 — Ticketing": "specs/phase-1-tickets.md"
               - "Phase 2 — Ingestion": "specs/phase-2-ingestion.md"
+              - "Phase 2.5 — Lab Environment": "specs/phase-2-5-lab-environment.md"
       - Code Reference:
           - "dev/code_reference/index.md"
           - Package: "dev/code_reference/package.md"
