@@ -128,6 +128,20 @@ nav:
       - Development Environment: "dev/dev_environment.md"
       - Release Checklist: "dev/release_checklist.md"
       - Architecture Decision Records: "dev/arch_decision.md"
+      - Architecture:
+          - Overview: "architecture.md"
+          - Decision Records:
+              - "decisions/README.md"
+              - 0001 Ticket Service Layer: "decisions/0001-ticket-service-layer-as-sole-mutation-path.md"
+              - 0002 Status Workflow Graph: "decisions/0002-explicit-status-workflow-graph.md"
+              - 0003 PostgreSQL and pgvector: "decisions/0003-postgresql-with-pgvector-only.md"
+              - 0004 Event Broker Consumers: "decisions/0004-pluggable-event-broker-consumers.md"
+              - 0005 Standalone Consumer Process: "decisions/0005-standalone-consumer-process.md"
+              - 0006 litellm Service Layer: "decisions/0006-litellm-service-layer-and-credential-storage.md"
+              - 0007 MCP Tool Access: "decisions/0007-mcp-tools-streamable-http-and-default-deny.md"
+              - 0008 UI Component Framework: "decisions/0008-ui-component-framework-only.md"
+          - Specifications:
+              - "Phase 1 — Ticketing": "specs/phase-1-tickets.md"
       - Code Reference:
           - "dev/code_reference/index.md"
           - Package: "dev/code_reference/package.md"
