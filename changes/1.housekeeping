@@ -1,1 +1,2 @@
 Added the initial database migration and applied the template's ruff formatting and lint fixes to the generated scaffold.
+Added unit tests covering the full 36-pair status transition matrix, the service layer rules, the REST API, GraphQL, filtersets, forms and views.
