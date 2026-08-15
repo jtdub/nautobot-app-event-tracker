@@ -1,1 +1,27 @@
-true
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/jtdub/nautobot-app-event-tracker/develop/nautobot_event_tracker/app-config-schema.json",
+    "$comment": "TBD: Update $id, replace `develop` with the future release tag",
+    "type": "object",
+    "properties": {
+        "attachable_object_types": {
+            "type": "array",
+            "description": "Object types that may be attached to a ticket, as `app_label.model` strings. Attaching an object of any other type is refused, and the object picker offers only these types.",
+            "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"
+            },
+            "uniqueItems": true,
+            "default": [
+                "dcim.device",
+                "dcim.interface",
+                "dcim.cable",
+                "dcim.location",
+                "ipam.ipaddress",
+                "ipam.prefix",
+                "circuits.circuit"
+            ]
+        }
+    },
+    "additionalProperties": false
+}
