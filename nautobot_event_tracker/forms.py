@@ -20,7 +20,9 @@ class EventTrackerExampleModelForm(NautobotModelForm):  # pylint: disable=too-ma
 class EventTrackerExampleModelBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
     """EventTrackerExampleModel bulk edit form."""
 
-    pk = forms.ModelMultipleChoiceField(queryset=models.EventTrackerExampleModel.objects.all(), widget=forms.MultipleHiddenInput)
+    pk = forms.ModelMultipleChoiceField(
+        queryset=models.EventTrackerExampleModel.objects.all(), widget=forms.MultipleHiddenInput
+    )
     description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
 
     class Meta:

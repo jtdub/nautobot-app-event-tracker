@@ -1,8 +1,7 @@
 """Views for nautobot_event_tracker."""
 
+from nautobot.apps.ui import ObjectDetailContent, ObjectFieldsPanel, SectionChoices
 from nautobot.apps.views import NautobotUIViewSet
-from nautobot.apps.ui import ObjectDetailContent, ObjectFieldsPanel, ObjectsTablePanel, SectionChoices
-from nautobot.core.templatetags import helpers
 
 from nautobot_event_tracker import filters, forms, models, tables
 from nautobot_event_tracker.api import serializers
@@ -42,11 +41,11 @@ class EventTrackerExampleModelUIViewSet(NautobotUIViewSet):
             # If there is a ForeignKey or M2M with this model we can use ObjectsTablePanel
             # to display them in a table format.
             # ObjectsTablePanel(
-                # weight=200,
-                # section=SectionChoices.RIGHT_HALF,
-                # table_class=tables.EventTrackerExampleModelTable,
-                # You will want to filter the table using the related_name
-                # filter="eventtrackerexamplemodels",
+            # weight=200,
+            # section=SectionChoices.RIGHT_HALF,
+            # table_class=tables.EventTrackerExampleModelTable,
+            # You will want to filter the table using the related_name
+            # filter="eventtrackerexamplemodels",
             # ),
         ],
     )

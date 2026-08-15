@@ -27,6 +27,8 @@ class TestEventTrackerExampleModel(ModelTestCases.BaseModelTestCase):
 
     def test_create_eventtrackerexamplemodel_all_fields_success(self):
         """Create EventTrackerExampleModel with all fields."""
-        eventtrackerexamplemodel = models.EventTrackerExampleModel.objects.create(name="Development", description="Development Test")
+        eventtrackerexamplemodel = models.EventTrackerExampleModel.objects.create(
+            name="Development", description="Development Test"
+        )
         self.assertEqual(eventtrackerexamplemodel.name, "Development")
         self.assertEqual(eventtrackerexamplemodel.description, "Development Test")
