@@ -13,13 +13,7 @@ from nautobot.apps.filters import (
     SearchFilter,
 )
 
-from nautobot_event_tracker.choices import (
-    TERMINAL_STATUSES,
-    SeverityChoices,
-    TicketSourceChoices,
-    TicketStatusChoices,
-    UpdateTypeChoices,
-)
+from nautobot_event_tracker.choices import TERMINAL_STATUSES, UpdateTypeChoices
 from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
 
 ATTACHMENT_UPDATE_TYPES = (UpdateTypeChoices.OBJECT_ATTACHED, UpdateTypeChoices.OBJECT_DETACHED)
@@ -43,8 +37,10 @@ class EventTypeFilterSet(NautobotFilterSet):
     class Meta:
         """Meta attributes for filter."""
 
+        # Explicit rather than "__all__": the filter surface is specified deliberately, and
+        # "__all__" would expose fields the spec does not.
         model = EventType
-        fields = ["name", "description", "default_severity", "enabled"]
+        fields = ["name", "description", "default_severity", "enabled"]  # pylint: disable=nb-use-fields-all
 
 
 class EventTicketFilterSet(NautobotFilterSet):
@@ -94,7 +90,17 @@ class EventTicketFilterSet(NautobotFilterSet):
         """Meta attributes for filter."""
 
         model = EventTicket
-        fields = ["title", "status", "severity", "source", "dedup_key", "event_count", "tags"]
+        # Explicit rather than "__all__": "__all__" would auto-filter the raw JSON payload and the
+        # service-owned timestamps, which the spec does not expose.
+        fields = [  # pylint: disable=nb-use-fields-all
+            "title",
+            "status",
+            "severity",
+            "source",
+            "dedup_key",
+            "event_count",
+            "tags",
+        ]
 
     def filter_is_open(self, queryset, name, value):  # pylint: disable=unused-argument
         """Open means the status is not one of the terminal statuses.
@@ -167,7 +173,7 @@ class TicketUpdateFilterSet(NautobotFilterSet):
         """Meta attributes for filter."""
 
         model = TicketUpdate
-        fields = ["ticket", "update_type", "source", "message"]
+        fields = ["ticket", "update_type", "source", "message"]  # pylint: disable=nb-use-fields-all
 
     def filter_related_object_type(self, queryset, name, value):  # pylint: disable=unused-argument
         """Filter by `app_label.model`, matching the convention core filtersets use."""
@@ -177,9 +183,3 @@ class TicketUpdateFilterSet(NautobotFilterSet):
         if not content_type_ids:
             return queryset.none()
         return queryset.filter(related_object_type__in=content_type_ids)
-
-
-# Referenced by the filter forms so that the choice sets stay in one place.
-STATUS_CHOICES = TicketStatusChoices
-SEVERITY_CHOICES = SeverityChoices
-SOURCE_CHOICES = TicketSourceChoices
