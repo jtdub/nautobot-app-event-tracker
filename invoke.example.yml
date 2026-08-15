@@ -1,0 +1,16 @@
+---
+nautobot_event_tracker:
+  nautobot_ver: "3.1.0"
+  python_ver: "3.12"
+  # local: false
+  # ephemeral_ports: false
+  # compose_dir: "/full/path/to/nautobot-app-event-tracker/development"
+
+# The following is an example of using MySQL as the database backend
+# ---
+# nautobot_event_tracker:
+#   compose_files:
+#     - "docker-compose.base.yml"
+#     - "docker-compose.redis.yml"
+#     - "docker-compose.mysql.yml"
+#     - "docker-compose.dev.yml"
