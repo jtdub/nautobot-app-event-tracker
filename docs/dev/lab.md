@@ -81,7 +81,19 @@ containerlab assigned this time. It creates a Location, a Nokia SR Linux device 
 node under the name that device uses in its own log messages, the interfaces its links describe, and
 their management addresses.
 
-**5. Run the consumer**, in the foreground where you can watch it:
+**5. Optionally, fill the ticket list**, so there is something to look at before you have broken
+anything:
+
+```shell
+invoke generate-test-data
+```
+
+Fifty tickets across every status, each with a trail. It creates its own demo devices too, but
+having populated Nautobot from the topology in step 4 it will use those instead where the names
+match — so `leaf-01` in a ticket is the `leaf-01` you can shut an interface on. `invoke
+generate-test-data --flush` removes everything it made, leaving anything you made alone.
+
+**6. Run the consumer**, in the foreground where you can watch it:
 
 ```shell
 invoke exec --command "nautobot-server eventconsumer"

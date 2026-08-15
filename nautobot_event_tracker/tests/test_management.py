@@ -10,9 +10,14 @@ from io import StringIO
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from nautobot.dcim.models import Device, Interface
 
 from nautobot_event_tracker.choices import TicketStatusChoices, UpdateTypeChoices
-from nautobot_event_tracker.management.commands.generate_nautobot_event_tracker_test_data import TEST_DATA_TAG
+from nautobot_event_tracker.management.commands.generate_nautobot_event_tracker_test_data import (
+    HOSTS,
+    INTERFACES,
+    TEST_DATA_TAG,
+)
 from nautobot_event_tracker.models import EventTicket, IngestionStats
 from nautobot_event_tracker.tests import fixtures
 
@@ -118,6 +123,19 @@ class TestFlush(TestCase):
         call_command("generate_nautobot_event_tracker_test_data", flush=True, count=8, stdout=StringIO())
         self.assertEqual(EventTicket.objects.count(), 8)
 
+    def test_it_deletes_the_demo_devices(self):
+        """The estate goes with the tickets, or a flushed database is still full of demo devices."""
+        generate(count=8)
+        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=4, stdout=StringIO())
+        self.assertEqual(Device.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
+
+    def test_it_leaves_a_device_somebody_else_made(self):
+        """An untagged device of the same name is the lab's, and is not ours to delete."""
+        existing = fixtures.create_device(name=HOSTS[2])
+        generate(count=8)
+        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=4, stdout=StringIO())
+        self.assertTrue(Device.objects.filter(pk=existing.pk).exists())
+
     def test_it_leaves_a_persons_own_tickets_alone(self):
         """This is the whole reason the tag exists."""
         mine = fixtures.create_ticket(title="Opened by a person")
@@ -136,19 +154,55 @@ class TestFlush(TestCase):
         self.assertIn("Deleted 8", out.getvalue())
 
 
+class TestInventory(TestCase):
+    """The demo estate the tickets are about."""
+
+    def test_it_creates_a_device_for_every_host(self):
+        """`generate_test_data` populates a database; a ticket list about nothing is not that."""
+        generate(count=12)
+        self.assertEqual(sorted(Device.objects.values_list("name", flat=True)), sorted(HOSTS))
+
+    def test_the_devices_have_interfaces(self):
+        """A ticket about an interface should be able to point at one."""
+        generate(count=12)
+        self.assertEqual(Interface.objects.filter(device__name=HOSTS[0]).count(), len(INTERFACES))
+
+    def test_it_tags_what_it_created(self):
+        """The tag is what makes the estate explicable, and removable."""
+        generate(count=12)
+        self.assertEqual(Device.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
+
+    def test_running_twice_creates_no_second_estate(self):
+        """`get_or_create` throughout, so a second run is a no-op for the inventory."""
+        generate(count=12)
+        generate(count=12)
+        self.assertEqual(Device.objects.count(), len(HOSTS))
+
+    def test_it_keeps_a_device_somebody_else_made(self):
+        """After the lab is populated, `leaf-01` is the real thing and should stay that way."""
+        existing = fixtures.create_device(name=HOSTS[2])
+        generate(count=12)
+        self.assertEqual(Device.objects.filter(name=HOSTS[2]).count(), 1)
+        self.assertEqual(Device.objects.get(name=HOSTS[2]).pk, existing.pk)
+
+    def test_it_does_not_tag_a_device_somebody_else_made(self):
+        """Otherwise `--flush` would delete the lab's devices along with its own."""
+        fixtures.create_device(name=HOSTS[2])
+        generate(count=12)
+        self.assertNotIn(TEST_DATA_TAG, [tag.name for tag in Device.objects.get(name=HOSTS[2]).tags.all()])
+
+
 class TestAttachments(TestCase):
     """What the tickets point at."""
 
-    def test_it_creates_no_network_objects_of_its_own(self):
-        """A ticketing app inventing devices is how a demo database becomes inexplicable."""
-        from nautobot.dcim.models import Device  # pylint: disable=import-outside-toplevel
-
-        before = Device.objects.count()
-        generate(count=12)
-        self.assertEqual(Device.objects.count(), before)
+    def test_tickets_attach_to_the_demo_devices(self):
+        """Which is the whole reason for creating them."""
+        generate()
+        attached = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).distinct()
+        self.assertTrue(attached.exists())
 
     def test_it_attaches_objects_that_already_exist(self):
-        """Where the database holds something attachable, the tickets point at it."""
+        """Anything else attachable in the database is fair game too."""
         fixtures.create_location()
         generate()
         attached = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).distinct()

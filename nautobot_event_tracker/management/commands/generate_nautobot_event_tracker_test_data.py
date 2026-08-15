@@ -8,14 +8,22 @@ it would sit in the app package where somebody could reasonably read it as an ex
 Deterministic: the same `--seed` produces the same tickets, so two people comparing screenshots are
 looking at the same data. Randomness comes from a seeded `random.Random`, never the module-level
 functions, which any other code in the process could have reseeded.
+
+It also creates the handful of devices and interfaces the tickets point at. An earlier draft
+refused to, on the grounds that a ticketing app inventing DCIM objects leaves a demo database full
+of devices nobody can explain - but that is what `generate_test_data` is *for*, and Nautobot's own
+populates a whole demo estate. The objection is answered by tagging: everything this command makes
+carries `event-tracker-test-data`, so it is explicable at a glance and `--flush` removes it.
 """
 
 import random
 
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DEFAULT_DB_ALIAS
-from nautobot.extras.models import Tag
+from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
+from nautobot.extras.models import Role, Status, Tag
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.models import EventTicket, EventType
@@ -34,12 +42,20 @@ DEFAULT_COUNT = 50
 #: it for a real account.
 DEMO_USERNAME = "event-tracker-demo"
 
-#: Hostnames the generated titles refer to. Deliberately not created as Devices: inventing DCIM
-#: objects from a ticketing app's test data command is how a demo database ends up with devices
-#: nobody can explain. Where real objects exist, the tickets attach to those instead.
+#: The demo estate: the devices the generated tickets are about, and are attached to. Created by
+#: this command, tagged, and removed by `--flush`. Where a database already holds a device of the
+#: same name - the containerlab lab's `leaf-01`, for instance - that one is used rather than a
+#: second one made.
 HOSTS = ("edge-rtr-01", "edge-rtr-02", "leaf-01", "leaf-02", "spine-01", "core-sw-01")
 
 INTERFACES = ("ethernet-1/1", "ethernet-1/2", "ethernet-1/3", "Gi0/0/1", "Te0/0/0/3")
+
+#: What the demo estate is filed under. Named so that nobody wonders where it came from.
+DEMO_LOCATION_TYPE = "Demo Site"
+DEMO_LOCATION = "Event Tracker Demo"
+DEMO_MANUFACTURER = "Event Tracker Demo"
+DEMO_DEVICE_TYPE = "Demo Switch"
+DEMO_ROLE = "Demo Switch"
 
 #: One title template per seeded event type, so a generated list reads like a real one.
 TITLES = {
@@ -134,12 +150,22 @@ class Command(BaseCommand):
 
     def _flush(self):
         """Delete exactly what this command created, identified by its tag."""
-        doomed = EventTicket.objects.filter(tags__name=TEST_DATA_TAG)
-        count = doomed.count()
+        tickets = EventTicket.objects.filter(tags__name=TEST_DATA_TAG)
+        ticket_count = tickets.count()
         # A queryset delete, which cascades to the trail. `TicketUpdate.delete()` refuses one at a
         # time, and it is right to: an update is append-only for as long as its ticket exists.
-        doomed.delete()
-        self.stdout.write(f"Deleted {count} tagged Event Tracker tickets.")
+        tickets.delete()
+
+        # Tickets first: an attachment is a content type and a UUID rather than a foreign key, so
+        # nothing stops a device being deleted out from under one - the ticket page just stops
+        # listing it. Deleting the tickets first means that never happens even briefly.
+        devices = Device.objects.filter(tags__name=TEST_DATA_TAG)
+        device_count = devices.count()
+        devices.delete()
+
+        # The location, device type, manufacturer and role are left behind: they are empty
+        # scaffolding, and somebody may have filed their own objects under them by now.
+        self.stdout.write(f"Deleted {ticket_count} tagged Event Tracker tickets and {device_count} demo devices.")
 
     def _generate(self, rng, count):
         """Create `count` tickets and give each of them a history."""
@@ -152,6 +178,9 @@ class Command(BaseCommand):
                 "catalogue is in place, then try again."
             )
 
+        self._inventory(tag)
+        # Read after the estate exists, so the tickets attach to the devices this command just made
+        # as well as to anything the database already held.
         attachable = self._attachable_objects()
         created = 0
         for status, ticket_count in self._status_plan(count):
@@ -225,6 +254,67 @@ class Command(BaseCommand):
             resolution=rng.choice(RESOLUTIONS),
         )
 
+    def _inventory(self, tag):
+        """Create the devices and interfaces the tickets are about, and tag them.
+
+        `get_or_create` throughout, so a database that already holds a device of one of these names
+        keeps it - which is what happens after the containerlab lab has been populated, and is the
+        behaviour you want: the tickets then point at the real thing.
+        """
+        location = self._demo_location()
+        device_type = self._demo_device_type()
+        role = self._demo_role()
+        return [self._demo_device(name, tag, location, device_type, role) for name in HOSTS]
+
+    @staticmethod
+    def _demo_location():
+        """Somewhere to put the demo estate, under a name nobody will wonder about."""
+        location_type, _ = LocationType.objects.get_or_create(name=DEMO_LOCATION_TYPE)
+        location_type.content_types.add(ContentType.objects.get_for_model(Device))
+        location, _ = Location.objects.get_or_create(
+            name=DEMO_LOCATION,
+            defaults={"location_type": location_type, "status": _status(Location)},
+        )
+        return location
+
+    @staticmethod
+    def _demo_device_type():
+        """One type for the whole estate; nothing here depends on the model."""
+        manufacturer, _ = Manufacturer.objects.get_or_create(name=DEMO_MANUFACTURER)
+        device_type, _ = DeviceType.objects.get_or_create(manufacturer=manufacturer, model=DEMO_DEVICE_TYPE)
+        return device_type
+
+    @staticmethod
+    def _demo_role():
+        """A role the demo devices can hold."""
+        role, _ = Role.objects.get_or_create(name=DEMO_ROLE)
+        role.content_types.add(ContentType.objects.get_for_model(Device))
+        return role
+
+    @staticmethod
+    def _demo_device(name, tag, location, device_type, role):
+        """One demo device and its interfaces, tagged only if this command made it."""
+        device, made = Device.objects.get_or_create(
+            name=name,
+            defaults={
+                "device_type": device_type,
+                "role": role,
+                "location": location,
+                "status": _status(Device),
+            },
+        )
+        if made:
+            # Only what this command created is tagged, so `--flush` cannot delete a device
+            # somebody else made and happened to name the same.
+            device.tags.add(tag)
+        for interface_name in INTERFACES:
+            Interface.objects.get_or_create(
+                device=device,
+                name=interface_name,
+                defaults={"type": "1000base-t", "status": _status(Interface)},
+            )
+        return device
+
     @staticmethod
     def _tag():
         """The tag every generated ticket carries, created if this is the first run."""
@@ -232,7 +322,7 @@ class Command(BaseCommand):
             name=TEST_DATA_TAG,
             defaults={"description": "Created by generate_nautobot_event_tracker_test_data."},
         )
-        tag.content_types.add(_ticket_content_type())
+        tag.content_types.add(*_taggable_content_types())
         return tag
 
     @staticmethod
@@ -260,8 +350,12 @@ class Command(BaseCommand):
         return objects
 
 
-def _ticket_content_type():
-    """The ticket's content type, which the tag has to be allowed on."""
-    from django.contrib.contenttypes.models import ContentType  # pylint: disable=import-outside-toplevel
+def _taggable_content_types():
+    """What the tag has to be allowed on: the tickets, and the demo devices."""
+    return [ContentType.objects.get_for_model(model) for model in (EventTicket, Device)]
 
-    return ContentType.objects.get_for_model(EventTicket)
+
+def _status(model):
+    """The `Active` status for this model, or whatever it has if there is no such thing."""
+    statuses = Status.objects.get_for_model(model)
+    return statuses.filter(name="Active").first() or statuses.first()

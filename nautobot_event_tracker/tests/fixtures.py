@@ -14,8 +14,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
 from django.utils import timezone
-from nautobot.dcim.models import Location, LocationType
-from nautobot.extras.models import Status
+from nautobot.dcim.models import Device, DeviceType, Location, LocationType, Manufacturer
+from nautobot.extras.models import Role, Status
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices
 from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
@@ -57,6 +57,31 @@ def create_location(name="Test Location"):
         defaults={"location_type": location_type, "status": location_status},
     )
     return location
+
+
+def create_device(name="somebody-elses-device"):
+    """A device this app did not create, for the tests that must not touch one."""
+    location_type, _ = LocationType.objects.get_or_create(name="Test Site")
+    location_type.content_types.add(ContentType.objects.get_for_model(Device))
+    location, _ = Location.objects.get_or_create(
+        name="Test Device Location",
+        defaults={"location_type": location_type, "status": Status.objects.get_for_model(Location).first()},
+    )
+    manufacturer, _ = Manufacturer.objects.get_or_create(name="Test Manufacturer")
+    device_type, _ = DeviceType.objects.get_or_create(manufacturer=manufacturer, model="Test Model")
+    role, _ = Role.objects.get_or_create(name="Test Device Role")
+    role.content_types.add(ContentType.objects.get_for_model(Device))
+
+    device, _ = Device.objects.get_or_create(
+        name=name,
+        defaults={
+            "device_type": device_type,
+            "role": role,
+            "location": location,
+            "status": Status.objects.get_for_model(Device).first(),
+        },
+    )
+    return device
 
 
 def create_ticket(user=None, event_type=None, **kwargs):

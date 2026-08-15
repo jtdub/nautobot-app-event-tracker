@@ -970,14 +970,25 @@ def check_migrations(context):
     run_command(context, command)
 
 
-@task
-def generate_test_data(context, flush=False, database=None):
+@task(
+    help={
+        "flush": "delete the previously generated tickets and demo devices before generating new ones.",
+        "database": "the database to generate the data in.",
+        "seed": "seed for the generated data; the same seed produces the same tickets.",
+        "count": "how many tickets to create.",
+    }
+)
+def generate_test_data(context, flush=False, database=None, seed=None, count=None):
     """Generate test data in Nautobot for Event Tracker."""
     command = "nautobot-server generate_nautobot_event_tracker_test_data"
     if database:
         command += f" --database {database}"
     if flush:
         command += " --flush"
+    if seed is not None:
+        command += f" --seed {seed}"
+    if count is not None:
+        command += f" --count {count}"
     run_command(context, command)
 
 
