@@ -1,7 +1,10 @@
 # Architecture Decision Records
 
-The intention is to document deviations from a standard Model View Controller (MVC) design.
+The design of this app is recorded in two places:
 
-!!! warning "Developer Note - Remove Me!"
-    Optional page, remove if not applicable.
-    For examples see [Golden Config](https://github.com/nautobot/nautobot-app-golden-config/blob/develop/docs/dev/arch_decision.md).
+- [Architecture overview](../architecture.md) — the shape of the whole system, its components, and how the phases divide it up.
+- [Decision records](../decisions/README.md) — one record per cross-cutting decision, with the pressure that forced it and what it costs.
+
+Records are immutable once accepted. To change a decision, add a new record that supersedes the old one rather than editing history.
+
+Per-phase execution specs live under [`docs/specs/`](../specs/phase-1-tickets.md).
