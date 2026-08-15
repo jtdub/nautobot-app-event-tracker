@@ -38,6 +38,7 @@ __all__ = [
     "assign",
     "attach_object",
     "create_ticket",
+    "create_ticket_for_user",
     "detach_object",
     "get_allowed_transitions",
     "get_attachable_object_types",
@@ -186,6 +187,40 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
         return ticket
 
 
+def create_ticket_for_user(  # pylint: disable=too-many-arguments
+    *,
+    user,
+    title,
+    event_type,
+    severity=None,
+    description="",
+    dedup_key="",
+    payload=None,
+    assignee=None,
+    tags=None,
+):
+    """Create a human-sourced ticket, applying optional assignment and tags.
+
+    Shared by the REST and UI create paths so that "a person opened a ticket" has one definition
+    and the two transports cannot drift apart.
+    """
+    ticket = create_ticket(
+        title=title,
+        event_type=event_type,
+        source=TicketSourceChoices.HUMAN,
+        user=user,
+        severity=severity,
+        description=description,
+        dedup_key=dedup_key,
+        payload=payload,
+    )
+    if assignee is not None:
+        assign(ticket=ticket, assignee=assignee, source=TicketSourceChoices.HUMAN, user=user)
+    if tags:
+        ticket.tags.set(tags)
+    return ticket
+
+
 def add_comment(*, ticket, message, source, user=None):
     """Append a comment to the ticket."""
     _check_mutable(ticket, source)
@@ -204,7 +239,7 @@ def add_comment(*, ticket, message, source, user=None):
         )
 
 
-def transition(*, ticket, to_status, source, user=None, message="", resolution=""):
+def transition(*, ticket, to_status, source, user=None, message="", resolution=""):  # pylint: disable=too-many-arguments
     """Move the ticket along the workflow graph and record the change (S2)."""
     _check_mutable(ticket, source)
     _validate_actor(source, user)
