@@ -3,6 +3,10 @@
 The command ships in the app package, so somebody will read it as an example of how to make a
 ticket. These tests hold it to the same rule the rest of the app follows: every ticket goes through
 the service layer, and a ticket in a terminal state got there by walking the graph.
+
+Generating is the expensive part - fifty tickets is fifty service-layer transactions - so the
+classes that only read what one run produced generate once in `setUpTestData` and share it, and
+generate twelve rather than fifty wherever the number does not matter.
 """
 
 from io import StringIO
@@ -29,37 +33,62 @@ def generate(**options):
     return out.getvalue()
 
 
-class TestGeneratedTickets(TestCase):
-    """What one run produces."""
+class TestOneSmallRun(TestCase):
+    """What a single `--count 12` run produces: the tickets, and the estate they are about."""
+
+    @classmethod
+    def setUpTestData(cls):
+        """One run, read by every test here."""
+        generate(count=12)
 
     def test_it_creates_the_requested_number(self):
         """`--count` is exact, not approximate: the status mix rounds into it."""
-        generate(count=12)
         self.assertEqual(EventTicket.objects.count(), 12)
 
     def test_every_ticket_carries_the_tag(self):
         """The tag is what makes `--flush` able to delete exactly what this made."""
-        generate(count=12)
         self.assertEqual(EventTicket.objects.filter(tags__name=TEST_DATA_TAG).count(), 12)
 
     def test_every_ticket_has_a_created_update(self):
         """Which only the service layer writes - a direct ORM create would have none."""
-        generate(count=12)
         for ticket in EventTicket.objects.all():
             self.assertTrue(
                 ticket.updates.filter(update_type=UpdateTypeChoices.CREATED).exists(),
                 f"{ticket} has no created update, so it did not come from the service layer",
             )
 
+    def test_no_ingestion_counters_are_invented(self):
+        """Counters are a record of a consumer having run; fabricating them would be a lie."""
+        self.assertFalse(IngestionStats.objects.exists())
+
+    def test_it_creates_a_device_for_every_host(self):
+        """`generate_test_data` populates a database; a ticket list about nothing is not that."""
+        self.assertEqual(sorted(Device.objects.values_list("name", flat=True)), sorted(HOSTS))
+
+    def test_the_devices_have_interfaces(self):
+        """A ticket about an interface should be able to point at one."""
+        self.assertEqual(Interface.objects.filter(device__name=HOSTS[0]).count(), len(INTERFACES))
+
+    def test_it_tags_what_it_created(self):
+        """The tag is what makes the estate explicable, and removable."""
+        self.assertEqual(Device.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
+
+
+class TestTheDefaultRun(TestCase):
+    """The full fifty, which is the run a demo actually shows and the only one that covers the mix."""
+
+    @classmethod
+    def setUpTestData(cls):
+        """One default run, read by every test here."""
+        generate()
+
     def test_the_default_run_covers_every_status(self):
         """A demo list where a state is missing is a demo of the wrong thing."""
-        generate()
         present = set(EventTicket.objects.values_list("status", flat=True))
         self.assertEqual(present, set(TicketStatusChoices.values()))
 
     def test_a_terminal_ticket_walked_the_graph_to_get_there(self):
         """Its trail has to show every step, not a status that appeared from nowhere."""
-        generate()
         for ticket in EventTicket.objects.filter(status=TicketStatusChoices.CLOSED):
             steps = list(
                 ticket.updates.filter(update_type=UpdateTypeChoices.STATUS_CHANGE).values_list(
@@ -74,20 +103,18 @@ class TestGeneratedTickets(TestCase):
 
     def test_resolved_tickets_carry_a_resolution(self):
         """The service requires one; this asserts the command supplies something readable."""
-        generate()
         for ticket in EventTicket.objects.filter(status=TicketStatusChoices.RESOLVED):
             self.assertTrue(ticket.resolution)
 
     def test_tickets_have_histories_worth_looking_at(self):
         """A demo whose tickets have a single line of trail demonstrates nothing."""
-        generate()
         comments = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.COMMENT).distinct().count()
         self.assertGreater(comments, 0)
 
-    def test_no_ingestion_counters_are_invented(self):
-        """Counters are a record of a consumer having run; fabricating them would be a lie."""
-        generate(count=12)
-        self.assertFalse(IngestionStats.objects.exists())
+    def test_tickets_attach_to_the_demo_devices(self):
+        """Which is the whole reason for creating them."""
+        attached = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).distinct()
+        self.assertTrue(attached.exists())
 
 
 class TestDeterminism(TestCase):
@@ -98,7 +125,7 @@ class TestDeterminism(TestCase):
         generate(count=8, seed=99)
         first = list(EventTicket.objects.order_by("title").values_list("title", flat=True))
 
-        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=8, seed=99, stdout=StringIO())
+        generate(flush=True, count=8, seed=99)
         second = list(EventTicket.objects.order_by("title").values_list("title", flat=True))
 
         self.assertEqual(first, second)
@@ -108,7 +135,7 @@ class TestDeterminism(TestCase):
         generate(count=8, seed=1)
         first = list(EventTicket.objects.order_by("id").values_list("title", flat=True))
 
-        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=8, seed=2, stdout=StringIO())
+        generate(flush=True, count=8, seed=2)
         second = list(EventTicket.objects.order_by("id").values_list("title", flat=True))
 
         self.assertNotEqual(first, second)
@@ -120,20 +147,20 @@ class TestFlush(TestCase):
     def test_it_deletes_the_generated_tickets(self):
         """Running twice should not leave a hundred tickets behind."""
         generate(count=8)
-        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=8, stdout=StringIO())
+        generate(flush=True, count=8)
         self.assertEqual(EventTicket.objects.count(), 8)
 
     def test_it_deletes_the_demo_devices(self):
         """The estate goes with the tickets, or a flushed database is still full of demo devices."""
         generate(count=8)
-        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=4, stdout=StringIO())
+        generate(flush=True, count=4)
         self.assertEqual(Device.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
 
     def test_it_leaves_a_device_somebody_else_made(self):
         """An untagged device of the same name is the lab's, and is not ours to delete."""
         existing = fixtures.create_device(name=HOSTS[2])
         generate(count=8)
-        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=4, stdout=StringIO())
+        generate(flush=True, count=4)
         self.assertTrue(Device.objects.filter(pk=existing.pk).exists())
 
     def test_it_leaves_a_persons_own_tickets_alone(self):
@@ -141,7 +168,7 @@ class TestFlush(TestCase):
         mine = fixtures.create_ticket(title="Opened by a person")
         generate(count=8)
 
-        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=4, stdout=StringIO())
+        generate(flush=True, count=4)
 
         self.assertTrue(EventTicket.objects.filter(pk=mine.pk).exists())
         self.assertEqual(EventTicket.objects.count(), 5)
@@ -149,62 +176,50 @@ class TestFlush(TestCase):
     def test_it_reports_what_it_deleted(self):
         """An operator running this against a populated database wants the number."""
         generate(count=8)
-        out = StringIO()
-        call_command("generate_nautobot_event_tracker_test_data", flush=True, count=4, stdout=out)
-        self.assertIn("Deleted 8", out.getvalue())
+        self.assertIn("Deleted 8", generate(flush=True, count=4))
 
 
-class TestInventory(TestCase):
-    """The demo estate the tickets are about."""
+class TestADeviceSomebodyElseMade(TestCase):
+    """After the lab has been populated, `leaf-01` is the real thing and stays that way."""
 
-    def test_it_creates_a_device_for_every_host(self):
-        """`generate_test_data` populates a database; a ticket list about nothing is not that."""
+    @classmethod
+    def setUpTestData(cls):
+        """A device of one of the command's own names, made by somebody else first."""
+        cls.existing = fixtures.create_device(name=HOSTS[2])
         generate(count=12)
-        self.assertEqual(sorted(Device.objects.values_list("name", flat=True)), sorted(HOSTS))
 
-    def test_the_devices_have_interfaces(self):
-        """A ticket about an interface should be able to point at one."""
-        generate(count=12)
-        self.assertEqual(Interface.objects.filter(device__name=HOSTS[0]).count(), len(INTERFACES))
+    def test_it_keeps_the_device(self):
+        """`get_or_create`, so the ticket points at the device you can go and break."""
+        self.assertEqual(Device.objects.filter(name=HOSTS[2]).count(), 1)
+        self.assertEqual(Device.objects.get(name=HOSTS[2]).pk, self.existing.pk)
 
-    def test_it_tags_what_it_created(self):
-        """The tag is what makes the estate explicable, and removable."""
-        generate(count=12)
-        self.assertEqual(Device.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
+    def test_it_does_not_tag_the_device(self):
+        """Otherwise `--flush` would delete the lab's devices along with its own."""
+        self.assertNotIn(TEST_DATA_TAG, [tag.name for tag in Device.objects.get(name=HOSTS[2]).tags.all()])
 
-    def test_running_twice_creates_no_second_estate(self):
-        """`get_or_create` throughout, so a second run is a no-op for the inventory."""
+    def test_it_creates_no_interfaces_on_it(self):
+        """Its interfaces are the lab's business; this command's names would be fiction on it."""
+        self.assertFalse(Interface.objects.filter(device=self.existing, name__in=INTERFACES).exists())
+
+
+class TestRunningTwice(TestCase):
+    """A second run adds tickets and no second estate."""
+
+    def test_it_creates_no_second_estate(self):
+        """`get_or_create` throughout, so the inventory is a no-op the second time."""
         generate(count=12)
         generate(count=12)
         self.assertEqual(Device.objects.count(), len(HOSTS))
-
-    def test_it_keeps_a_device_somebody_else_made(self):
-        """After the lab is populated, `leaf-01` is the real thing and should stay that way."""
-        existing = fixtures.create_device(name=HOSTS[2])
-        generate(count=12)
-        self.assertEqual(Device.objects.filter(name=HOSTS[2]).count(), 1)
-        self.assertEqual(Device.objects.get(name=HOSTS[2]).pk, existing.pk)
-
-    def test_it_does_not_tag_a_device_somebody_else_made(self):
-        """Otherwise `--flush` would delete the lab's devices along with its own."""
-        fixtures.create_device(name=HOSTS[2])
-        generate(count=12)
-        self.assertNotIn(TEST_DATA_TAG, [tag.name for tag in Device.objects.get(name=HOSTS[2]).tags.all()])
+        self.assertEqual(EventTicket.objects.count(), 24)
 
 
 class TestAttachments(TestCase):
     """What the tickets point at."""
 
-    def test_tickets_attach_to_the_demo_devices(self):
-        """Which is the whole reason for creating them."""
-        generate()
-        attached = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).distinct()
-        self.assertTrue(attached.exists())
-
     def test_it_attaches_objects_that_already_exist(self):
         """Anything else attachable in the database is fair game too."""
         fixtures.create_location()
-        generate()
+        generate(count=12)
         attached = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).distinct()
         self.assertTrue(attached.exists())
 

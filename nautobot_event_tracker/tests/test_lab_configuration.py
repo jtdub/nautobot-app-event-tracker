@@ -8,9 +8,15 @@ What this proves: the field map resolves against a payload of the shape the brid
 produce, and the whole configuration passes the consumer's own startup validation. What it does not
 prove: that SR Linux emits what the bridge expects. Only the lab itself can show that - which is
 the point of running it, and of Phase 2.5.
+
+`development/` is not shipped in the wheel, so these tests skip when the app is installed rather
+than checked out. The skip is on the directory, not on the file: a source tree missing the file
+itself is a failure worth seeing.
 """
 
 import importlib.util
+import unittest
+from functools import lru_cache
 from pathlib import Path
 
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -18,9 +24,13 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from nautobot_event_tracker.choices import SeverityChoices
 from nautobot_event_tracker.ingestion import config
 from nautobot_event_tracker.ingestion.normalize import normalize, resolve_path
+from nautobot_event_tracker.models import EventType
 from nautobot_event_tracker.tests import fixtures
 
-LAB_CONFIG_PATH = Path(__file__).resolve().parents[2] / "development" / "containerlab" / "nautobot_config_lab.py"
+DEVELOPMENT = Path(__file__).resolve().parents[2] / "development"
+LAB_CONFIG_PATH = DEVELOPMENT / "containerlab" / "nautobot_config_lab.py"
+
+in_a_source_checkout = unittest.skipUnless(DEVELOPMENT.is_dir(), "development/ is not part of the installed package")
 
 #: What the bridge produces, per the shape documented at the top of `fluent-bit.conf`: the syslog
 #: input supplies `host` and `message`, and `classify.lua` adds `event` and `interface`.
@@ -33,6 +43,7 @@ BRIDGE_PAYLOAD = {
 }
 
 
+@lru_cache(maxsize=1)
 def lab_ingestion():
     """Load the lab's ingestion block from `development/`, which is not an importable package."""
     spec = importlib.util.spec_from_file_location("nautobot_config_lab", LAB_CONFIG_PATH)
@@ -41,6 +52,13 @@ def lab_ingestion():
     return module.LAB_INGESTION
 
 
+def lab_config():
+    """The lab's configuration as the consumer parses it at startup."""
+    with override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": lab_ingestion()}}):
+        return config.load(require_topics=True)
+
+
+@in_a_source_checkout
 class TestTheLabConfigurationIsUsable(TestCase):
     """The consumer would start with it."""
 
@@ -55,29 +73,24 @@ class TestTheLabConfigurationIsUsable(TestCase):
 
     def test_it_passes_startup_validation(self):
         """The same check `nautobot-server eventconsumer` runs before opening a socket."""
-        with override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": lab_ingestion()}}):
-            loaded = config.load(require_topics=True)
+        loaded = lab_config()
         self.assertEqual(loaded.consumer, "kafka")
         self.assertEqual(loaded.topic_names, ("network.events",))
 
     def test_its_default_event_type_exists_in_the_catalogue(self):
         """`Unclassified` has to be a real type, or every unmatched message is dropped."""
-        with override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": lab_ingestion()}}):
-            loaded = config.load(require_topics=True)
-        from nautobot_event_tracker.models import EventType  # pylint: disable=import-outside-toplevel
-
         EventType.objects.get_or_create(name="Unclassified")
-        self.assertEqual(config.database_problems(loaded), [])
+        self.assertEqual(config.database_problems(lab_config()), [])
 
 
+@in_a_source_checkout
 class TestTheFieldMapMatchesTheBridge(SimpleTestCase):
     """Every mapped path resolves against a message of the shape the bridge produces."""
 
     def setUp(self):
         """Parse the lab's topic configuration."""
         super().setUp()
-        with override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": lab_ingestion()}}):
-            self.topic = config.load(require_topics=True).topics["network.events"]
+        self.topic = lab_config().topics["network.events"]
 
     def test_every_mapped_path_resolves(self):
         """A path that resolves to nothing is a ticket field silently falling back or empty."""
@@ -105,7 +118,7 @@ class TestTheFieldMapMatchesTheBridge(SimpleTestCase):
 
     def test_the_boot_chatter_rule_matches_what_it_is_written_for(self):
         """It exists so the lab's first ticket list is not all start-up noise."""
-        rule = self.topic.rules[0]
+        rule = next(rule for rule in self.topic.rules if rule.name == "srlinux-boot-chatter")
         path, pattern = rule.when[0]
         self.assertEqual(path, "message")
         self.assertTrue(pattern.search("Application sr_linux_mgr is now running"))

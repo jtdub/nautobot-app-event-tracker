@@ -27,22 +27,26 @@ topology:
     nokia_srlinux:
       # Publicly pullable and needs no licence, which is most of why this lab exists at all.
       image: ghcr.io/nokia/srlinux:24.10.1
-      # Every node exports syslog to the Fluent Bit bridge, which is what puts a real message on
-      # the broker. The address is the bridge's on the management network.
-      startup-config: srlinux-startup.cli
     linux:
       image: alpine:3.20
 
   nodes:
+    # One startup config per node rather than one shared by all three: they export syslog to the
+    # same bridge, but the fabric addressing, the AS number, the router-id and the neighbours are
+    # each node's own. A shared config gave every node the same router-id and no neighbours at all,
+    # which meant no session ever came up and no session could ever go down.
     leaf-01:
       kind: nokia_srlinux
       mgmt-ipv4: 172.30.30.11
+      startup-config: leaf-01.cli
     leaf-02:
       kind: nokia_srlinux
       mgmt-ipv4: 172.30.30.12
+      startup-config: leaf-02.cli
     spine-01:
       kind: nokia_srlinux
       mgmt-ipv4: 172.30.30.13
+      startup-config: spine-01.cli
     client-01:
       kind: linux
       mgmt-ipv4: 172.30.30.21

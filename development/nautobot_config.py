@@ -115,8 +115,8 @@ PLUGINS_CONFIG = {
 }
 
 # The containerlab lab points the consumer at its own broker and describes the payloads its syslog
-# bridge produces. Opt in with EVENT_TRACKER_LAB=true, which `invoke lab-up` sets; the ordinary
-# development stack has no broker and is unaffected.
+# bridge produces. Opt in with `EVENT_TRACKER_LAB=true invoke start`; the ordinary development
+# stack has no broker and is unaffected.
 if is_truthy(os.getenv("EVENT_TRACKER_LAB", "false")):
     sys.path.append(os.path.join(os.path.dirname(__file__), "containerlab"))
     from nautobot_config_lab import LAB_INGESTION  # noqa: E402  pylint: disable=wrong-import-position

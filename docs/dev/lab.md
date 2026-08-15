@@ -67,7 +67,7 @@ EVENT_TRACKER_LAB=true invoke start
 on:
 
 ```shell
-invoke nbshell --command "exec(open('development/containerlab/populate_nautobot.py').read())"
+invoke exec --command "python /source/development/containerlab/populate_nautobot.py"
 ```
 
 or, outside the container:
@@ -76,10 +76,9 @@ or, outside the container:
 NAUTOBOT_CONFIG=development/nautobot_config.py python development/containerlab/populate_nautobot.py
 ```
 
-It is idempotent — run it again after redeploying the lab and it picks up whatever addresses
-containerlab assigned this time. It creates a Location, a Nokia SR Linux device type, one device per
-node under the name that device uses in its own log messages, the interfaces its links describe, and
-their management addresses.
+It is idempotent — run it again after redeploying the lab and nothing changes. It creates a
+Location, a Nokia SR Linux device type, one device per node under the name that device uses in its
+own log messages, the interfaces its links describe, and the management addresses the topology pins.
 
 **5. Optionally, fill the ticket list**, so there is something to look at before you have broken
 anything:
@@ -112,6 +111,15 @@ docker exec -it clab-event-tracker-leaf-01 sr_cli \
 
 Within a second or two the consumer logs a message and a ticket appears under **Apps → Event Tracker
 → Tickets**, titled with what the device actually said. Bring it back with `admin-state enable`.
+
+The BGP events need the fabric sessions to be up, which takes a minute or so after the nodes boot.
+Each node has its own startup configuration (`leaf-01.cli` and its siblings) carrying its AS number,
+its router-id and its neighbours; check they came up before blaming the pipeline:
+
+```shell
+docker exec -it clab-event-tracker-leaf-01 sr_cli \
+  "show network-instance default protocols bgp neighbor"
+```
 
 Other events worth causing, all of which the seeded event catalogue has a type for:
 

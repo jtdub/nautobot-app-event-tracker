@@ -44,6 +44,10 @@ LAB_INGESTION = {
             # start-up chatter. Raise it to major to see only the breaks you cause on purpose.
             "minimum_severity": "warning",
             "rules": [
+                # Overlaps the severity floor above, deliberately. The floor is the coarse tool and
+                # the first thing anybody lowers - drop it to `info` to watch every message arrive
+                # and the boot chatter comes back with it, except for this. SR Linux also logs some
+                # application restarts at warning rather than notice, which the floor lets through.
                 {
                     "name": "srlinux-boot-chatter",
                     "action": "drop",

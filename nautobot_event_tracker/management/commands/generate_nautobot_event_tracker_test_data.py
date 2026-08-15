@@ -22,10 +22,18 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DEFAULT_DB_ALIAS
-from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
-from nautobot.extras.models import Role, Status, Tag
+from nautobot.dcim.models import Device, Interface
+from nautobot.extras.models import Tag
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.dcim_fixtures import (
+    default_status,
+    ensure_device,
+    ensure_device_type,
+    ensure_interface,
+    ensure_location,
+    ensure_role,
+)
 from nautobot_event_tracker.models import EventTicket, EventType
 from nautobot_event_tracker.services import tickets as ticket_service
 
@@ -261,59 +269,26 @@ class Command(BaseCommand):
         keeps it - which is what happens after the containerlab lab has been populated, and is the
         behaviour you want: the tickets then point at the real thing.
         """
-        location = self._demo_location()
-        device_type = self._demo_device_type()
-        role = self._demo_role()
-        return [self._demo_device(name, tag, location, device_type, role) for name in HOSTS]
+        location = ensure_location(location_type_name=DEMO_LOCATION_TYPE, location_name=DEMO_LOCATION)
+        device_type = ensure_device_type(manufacturer_name=DEMO_MANUFACTURER, model_name=DEMO_DEVICE_TYPE)
+        role = ensure_role(role_name=DEMO_ROLE)
 
-    @staticmethod
-    def _demo_location():
-        """Somewhere to put the demo estate, under a name nobody will wonder about."""
-        location_type, _ = LocationType.objects.get_or_create(name=DEMO_LOCATION_TYPE)
-        location_type.content_types.add(ContentType.objects.get_for_model(Device))
-        location, _ = Location.objects.get_or_create(
-            name=DEMO_LOCATION,
-            defaults={"location_type": location_type, "status": _status(Location)},
-        )
-        return location
+        # Resolved once rather than per device and per interface: `get_for_model()` returns a lazy
+        # queryset, so each call was its own SELECT - thirty-odd per run, for two distinct answers.
+        device_status = default_status(Device)
+        interface_status = default_status(Interface)
 
-    @staticmethod
-    def _demo_device_type():
-        """One type for the whole estate; nothing here depends on the model."""
-        manufacturer, _ = Manufacturer.objects.get_or_create(name=DEMO_MANUFACTURER)
-        device_type, _ = DeviceType.objects.get_or_create(manufacturer=manufacturer, model=DEMO_DEVICE_TYPE)
-        return device_type
-
-    @staticmethod
-    def _demo_role():
-        """A role the demo devices can hold."""
-        role, _ = Role.objects.get_or_create(name=DEMO_ROLE)
-        role.content_types.add(ContentType.objects.get_for_model(Device))
-        return role
-
-    @staticmethod
-    def _demo_device(name, tag, location, device_type, role):
-        """One demo device and its interfaces, tagged only if this command made it."""
-        device, made = Device.objects.get_or_create(
-            name=name,
-            defaults={
-                "device_type": device_type,
-                "role": role,
-                "location": location,
-                "status": _status(Device),
-            },
-        )
-        if made:
-            # Only what this command created is tagged, so `--flush` cannot delete a device
-            # somebody else made and happened to name the same.
-            device.tags.add(tag)
-        for interface_name in INTERFACES:
-            Interface.objects.get_or_create(
-                device=device,
-                name=interface_name,
-                defaults={"type": "1000base-t", "status": _status(Interface)},
+        for name in HOSTS:
+            device, created = ensure_device(
+                name, location=location, device_type=device_type, role=role, status=device_status
             )
-        return device
+            if not created:
+                # Somebody else's device - the lab's `leaf-01`, say. Not ours to tag, and therefore
+                # not ours to delete; and not ours to hang Cisco-shaped interface names off either.
+                continue
+            device.tags.add(tag)
+            for interface_name in INTERFACES:
+                ensure_interface(device=device, name=interface_name, status=interface_status)
 
     @staticmethod
     def _tag():
@@ -322,7 +297,7 @@ class Command(BaseCommand):
             name=TEST_DATA_TAG,
             defaults={"description": "Created by generate_nautobot_event_tracker_test_data."},
         )
-        tag.content_types.add(*_taggable_content_types())
+        tag.content_types.add(*[ContentType.objects.get_for_model(model) for model in (EventTicket, Device)])
         return tag
 
     @staticmethod
@@ -335,11 +310,11 @@ class Command(BaseCommand):
 
     @staticmethod
     def _attachable_objects():
-        """Real objects to attach, from whatever this database already holds.
+        """Real objects to attach: the demo estate this command just made, and anything else here.
 
-        This command creates none of its own: a ticketing app inventing devices is how a demo
-        database ends up with DCIM objects nobody can explain. Populate the lab (or run Nautobot's
-        own `generate_test_data`) first and the tickets will point at those.
+        Read after `_inventory` has run, so the tickets point at the devices they are about - and
+        at whatever else the database already holds, which after the lab has been populated
+        includes the devices you can go and break.
         """
         objects = []
         for content_type in ticket_service.get_attachable_content_types():
@@ -348,14 +323,3 @@ class Command(BaseCommand):
                 continue
             objects.extend(model.objects.all()[:5])
         return objects
-
-
-def _taggable_content_types():
-    """What the tag has to be allowed on: the tickets, and the demo devices."""
-    return [ContentType.objects.get_for_model(model) for model in (EventTicket, Device)]
-
-
-def _status(model):
-    """The `Active` status for this model, or whatever it has if there is no such thing."""
-    statuses = Status.objects.get_for_model(model)
-    return statuses.filter(name="Active").first() or statuses.first()

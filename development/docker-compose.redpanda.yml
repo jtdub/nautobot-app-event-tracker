@@ -1,7 +1,7 @@
 ---
 # The lab's broker and syslog bridge, layered on the ordinary development stack the way the redis
-# overlay is. Nothing here starts unless you ask for it: `invoke lab-up` adds this file, and
-# `invoke start` does not.
+# overlay is. Nothing here starts unless you ask for it: add this file to `compose_files` in your
+# `invoke.yml`, as docs/dev/lab.md describes, and leave it out to get the ordinary stack back.
 #
 # Redpanda rather than Kafka and ZooKeeper: one container, a few hundred megabytes, no controller to
 # configure, and it speaks the Kafka protocol - `confluent-kafka` cannot tell the difference, which

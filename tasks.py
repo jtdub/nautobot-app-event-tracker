@@ -973,16 +973,15 @@ def check_migrations(context):
 @task(
     help={
         "flush": "delete the previously generated tickets and demo devices before generating new ones.",
-        "database": "the database to generate the data in.",
         "seed": "seed for the generated data; the same seed produces the same tickets.",
         "count": "how many tickets to create.",
     }
 )
-def generate_test_data(context, flush=False, database=None, seed=None, count=None):
+def generate_test_data(context, flush=False, seed=None, count=None):
     """Generate test data in Nautobot for Event Tracker."""
+    # No `--database`: the command refuses anything but the default, because the service layer it
+    # writes through takes no database argument. Exposing the flag here would only offer an error.
     command = "nautobot-server generate_nautobot_event_tracker_test_data"
-    if database:
-        command += f" --database {database}"
     if flush:
         command += " --flush"
     if seed is not None:

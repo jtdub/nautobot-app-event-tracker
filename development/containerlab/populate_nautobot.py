@@ -6,22 +6,24 @@ Run it after `containerlab deploy`:
     NAUTOBOT_CONFIG=development/nautobot_config.py python development/containerlab/populate_nautobot.py
 
 Idempotent: everything is `get_or_create`, so running it twice changes nothing. Run it again after
-redeploying the lab and it will pick up whatever addresses containerlab assigned this time.
+redeploying the lab and it will pick up whatever addresses the topology pins.
 
 **This is a development script, not a management command.** A command in the app package ships in
-the wheel, and a ticketing app that installs something creating Devices is not what an operator
-signed up for. The cost is that it is invoked by path rather than by name, which for a script only
-developers run is a fair trade. See the Phase 2.5 spec, open question 10.3.
+the wheel, and a script whose only subject is one particular containerlab topology is not something
+an operator installed a ticketing app to get. What is general - "a Device and everything a Device
+requires" - lives in `nautobot_event_tracker.dcim_fixtures`, which this imports; the lab's own
+knowledge, the topology and its interface naming, stays here. See the Phase 2.5 spec, question 10.3.
 
 Why bother at all: the device names here match the hostnames the devices put in their syslog
 messages. That is what makes Phase 4's enrichment resolver a real problem rather than a
 hypothetical one, and until then it is what lets a person reading a ticket search for the device by
 name and find it.
+
+Django models are imported inside the functions that use them: this file is run as a script, and
+until `nautobot.setup()` at the bottom has run there is no configured Django to import them from.
 """
 
-import json
 import os
-import subprocess  # noqa: S404
 import sys
 from pathlib import Path
 
@@ -36,33 +38,39 @@ MANUFACTURER = "Nokia"
 DEVICE_TYPE = "SR Linux"
 DEVICE_ROLE = "Lab Switch"
 MANAGEMENT_PREFIX = "172.30.30.0/24"
+MANAGEMENT_INTERFACE = "mgmt0"
 
-#: containerlab prefixes every container with the topology name; Nautobot should hold the short
-#: name, because that is what the device puts in its syslog messages.
-CLAB_PREFIX = "clab-event-tracker-"
+#: Only these become Devices. The client is a plain Alpine container; it is not network equipment,
+#: and inventing a Device for it would be inventing inventory.
+DEVICE_KIND = "nokia_srlinux"
 
 
 def main():
     """Create everything the topology describes, then say what was made."""
-    topology = yaml.safe_load(TOPOLOGY_FILE.read_text(encoding="utf-8"))
-    nodes = topology["topology"]["nodes"]
-    links = topology["topology"].get("links", [])
+    from nautobot.dcim.models import Device  # pylint: disable=import-outside-toplevel
 
-    location = _location()
-    device_type = _device_type()
-    role = _role()
-    addresses = _management_addresses(nodes)
+    from nautobot_event_tracker.dcim_fixtures import (  # pylint: disable=import-outside-toplevel
+        default_status,
+        ensure_device,
+        ensure_device_type,
+        ensure_location,
+        ensure_role,
+    )
 
-    devices = {}
-    for name, node in sorted(nodes.items()):
-        if node.get("kind") != "nokia_srlinux":
-            # The client is a plain Alpine container. It is not network equipment and does not
-            # belong in DCIM; inventing a Device for it would be inventing inventory.
-            continue
-        devices[name] = _device(name, location, device_type, role)
+    topology = yaml.safe_load(TOPOLOGY_FILE.read_text(encoding="utf-8"))["topology"]
+    nodes = topology["nodes"]
 
-    interfaces = _interfaces(devices, links)
-    assigned = _assign_management_addresses(devices, addresses)
+    location = ensure_location(location_type_name=LOCATION_TYPE, location_name=LOCATION)
+    common = {
+        "location": location,
+        "device_type": ensure_device_type(manufacturer_name=MANUFACTURER, model_name=DEVICE_TYPE),
+        "role": ensure_role(role_name=DEVICE_ROLE),
+        "status": default_status(Device),
+    }
+    devices = {name: ensure_device(name, **common)[0] for name, node in sorted(nodes.items()) if _is_a_device(node)}
+
+    interfaces = _interfaces(devices, topology.get("links", []))
+    assigned = _assign_management_addresses(devices, nodes)
 
     print(f"Location:   {location}")
     print(f"Devices:    {len(devices)} ({', '.join(sorted(devices))})")
@@ -70,151 +78,69 @@ def main():
     print(f"Management: {assigned} addresses assigned")
 
 
-def _location():
-    """The lab's location, and a location type that admits devices."""
-    from django.contrib.contenttypes.models import ContentType
-    from nautobot.dcim.models import Device, Location, LocationType
-
-    location_type, _ = LocationType.objects.get_or_create(name=LOCATION_TYPE)
-    location_type.content_types.add(ContentType.objects.get_for_model(Device))
-
-    location, _ = Location.objects.get_or_create(
-        name=LOCATION,
-        defaults={"location_type": location_type, "status": _status(Location)},
-    )
-    return location
-
-
-def _device_type():
-    """One device type for the whole lab: every node runs the same image."""
-    from nautobot.dcim.models import DeviceType, Manufacturer
-
-    manufacturer, _ = Manufacturer.objects.get_or_create(name=MANUFACTURER)
-    device_type, _ = DeviceType.objects.get_or_create(manufacturer=manufacturer, model=DEVICE_TYPE)
-    return device_type
-
-
-def _role():
-    """A role the devices can hold."""
-    from django.contrib.contenttypes.models import ContentType
-    from nautobot.dcim.models import Device
-    from nautobot.extras.models import Role
-
-    role, _ = Role.objects.get_or_create(name=DEVICE_ROLE)
-    role.content_types.add(ContentType.objects.get_for_model(Device))
-    return role
-
-
-def _device(name, location, device_type, role):
-    """One device, under the name it uses in its own log messages."""
-    from nautobot.dcim.models import Device
-
-    device, _ = Device.objects.get_or_create(
-        name=name,
-        defaults={
-            "device_type": device_type,
-            "role": role,
-            "location": location,
-            "status": _status(Device),
-        },
-    )
-    return device
+def _is_a_device(node):
+    """Whether this topology node belongs in DCIM."""
+    return node.get("kind") == DEVICE_KIND
 
 
 def _interfaces(devices, links):
     """The interfaces the topology's links describe, on both of their ends."""
-    from nautobot.dcim.models import Interface
+    from nautobot.dcim.models import Interface  # pylint: disable=import-outside-toplevel
 
-    created = 0
-    for link in links:
-        for endpoint in link["endpoints"]:
-            node, _, port = endpoint.partition(":")
-            if node not in devices:
-                continue
-            _, made = Interface.objects.get_or_create(
-                device=devices[node],
-                name=_interface_name(port),
-                defaults={"type": "1000base-t", "status": _status(Interface)},
-            )
-            created += int(made)
-    return created
+    from nautobot_event_tracker.dcim_fixtures import default_status, ensure_interface  # pylint: disable=C0415
+
+    endpoints = {
+        (node, _interface_name(port))
+        for link in links
+        for node, _, port in (endpoint.partition(":") for endpoint in link["endpoints"])
+        if node in devices
+    }
+
+    status = default_status(Interface)
+    for node, name in sorted(endpoints):
+        ensure_interface(device=devices[node], name=name, status=status)
+    return len(endpoints)
 
 
 def _interface_name(port):
     """Turn containerlab's `e1-1` into SR Linux's own `ethernet-1/1`.
 
     The device logs the second form, and a ticket that names an interface Nautobot does not hold is
-    a ticket nobody can follow.
+    a ticket nobody can follow. Anything not shaped like `e<card>-<index>` is left alone: it is
+    already the name its owner uses.
     """
-    if port.startswith("e") and "-" in port:
-        card, _, index = port[1:].partition("-")
+    card, dash, index = port.removeprefix("e").partition("-")
+    if dash and card.isdigit() and index.isdigit():
         return f"ethernet-{card}/{index}"
     return port
 
 
-def _management_addresses(nodes):
-    """The management address of each node, from the topology or from a running lab.
+def _assign_management_addresses(devices, nodes):
+    """Give each device the management address the topology pins for it.
 
-    The topology file is the source when it pins addresses, which this one does. `containerlab
-    inspect` is the fallback for a topology that lets containerlab choose.
+    The topology pins every address rather than letting containerlab choose, so what Nautobot holds
+    is what the lab will use on the next deploy as well as on this one.
     """
-    addresses = {name: node["mgmt-ipv4"] for name, node in nodes.items() if node.get("mgmt-ipv4")}
-    if addresses:
-        return addresses
-    return _inspect_addresses()
+    from nautobot.dcim.models import Interface  # pylint: disable=import-outside-toplevel
+    from nautobot.ipam.models import IPAddress  # pylint: disable=import-outside-toplevel
 
+    from nautobot_event_tracker.dcim_fixtures import default_status, ensure_interface  # pylint: disable=C0415
 
-def _inspect_addresses():
-    """Ask a running lab what it assigned. Returns an empty map when the lab is not up."""
-    try:
-        output = subprocess.run(  # noqa: S603
-            ["containerlab", "inspect", "--topo", str(TOPOLOGY_FILE), "--format", "json"],  # noqa: S607
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=30,
-        ).stdout
-    except (OSError, subprocess.SubprocessError) as error:
-        print(f"Could not ask containerlab for addresses ({error}); skipping management IPs.")
-        return {}
-
-    containers = json.loads(output)
-    if isinstance(containers, dict):
-        containers = containers.get("containers", [])
-    return {
-        container["name"].removeprefix(CLAB_PREFIX): container["ipv4_address"].split("/")[0]
-        for container in containers
-        if container.get("ipv4_address")
-    }
-
-
-def _assign_management_addresses(devices, addresses):
-    """Give each device its management address, on a management interface."""
-    from nautobot.dcim.models import Interface
-    from nautobot.ipam.models import IPAddress, Namespace, Prefix
-
-    namespace = Namespace.objects.get_or_create(name="Global")[0]
-    prefix, _ = Prefix.objects.get_or_create(
-        prefix=MANAGEMENT_PREFIX,
-        namespace=namespace,
-        defaults={"status": _status(Prefix), "type": "network"},
-    )
+    prefix = _management_prefix()
+    interface_status = default_status(Interface)
+    address_status = default_status(IPAddress)
 
     assigned = 0
     for name, device in devices.items():
-        address = addresses.get(name)
+        address = nodes[name].get("mgmt-ipv4")
         if not address:
             continue
 
-        interface, _ = Interface.objects.get_or_create(
-            device=device,
-            name="mgmt0",
-            defaults={"type": "1000base-t", "status": _status(Interface), "mgmt_only": True},
-        )
+        interface = ensure_interface(device=device, name=MANAGEMENT_INTERFACE, status=interface_status, mgmt_only=True)
         ip_address, _ = IPAddress.objects.get_or_create(
             address=f"{address}/24",
             parent=prefix,
-            defaults={"status": _status(IPAddress)},
+            defaults={"status": address_status},
         )
         interface.ip_addresses.add(ip_address)
 
@@ -225,19 +151,31 @@ def _assign_management_addresses(devices, addresses):
     return assigned
 
 
-def _status(model):
-    """The `Active` status for this model, or whatever it has if there is no such thing."""
-    from nautobot.extras.models import Status
+def _management_prefix():
+    """The management network the topology's addresses live in."""
+    from nautobot.apps.choices import PrefixTypeChoices  # pylint: disable=import-outside-toplevel
+    from nautobot.ipam.models import Namespace, Prefix  # pylint: disable=import-outside-toplevel
 
-    statuses = Status.objects.get_for_model(model)
-    return statuses.filter(name="Active").first() or statuses.first()
+    from nautobot_event_tracker.dcim_fixtures import default_status  # pylint: disable=import-outside-toplevel
+
+    namespace, _ = Namespace.objects.get_or_create(name="Global")
+    prefix, _ = Prefix.objects.get_or_create(
+        prefix=MANAGEMENT_PREFIX,
+        namespace=namespace,
+        defaults={"status": default_status(Prefix), "type": PrefixTypeChoices.TYPE_NETWORK},
+    )
+    return prefix
 
 
 if __name__ == "__main__":
-    if not os.getenv("NAUTOBOT_CONFIG"):
-        sys.exit("Set NAUTOBOT_CONFIG to your Nautobot configuration file first.")
-
     import nautobot
+    from nautobot.core.cli import get_config_path
+
+    # Whatever `nautobot-server` itself would use: NAUTOBOT_CONFIG, or the configuration under
+    # NAUTOBOT_ROOT - which is what makes this runnable inside the development container, where
+    # nothing sets NAUTOBOT_CONFIG and the file is at /opt/nautobot/nautobot_config.py.
+    if not os.path.exists(get_config_path()):
+        sys.exit(f"No Nautobot configuration at {get_config_path()}. Set NAUTOBOT_CONFIG and try again.")
 
     nautobot.setup()
     main()

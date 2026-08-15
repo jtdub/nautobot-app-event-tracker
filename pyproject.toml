@@ -95,10 +95,10 @@ disable = """,
 """
 
 [tool.pylint.similarities]
-# Pylint's default of four lines flags two call sites passing the same keyword arguments to the
-# same shared function - which is what calling a shared function looks like. Ten still catches real
-# copy-paste, which is what the check is for.
-min-similarity-lines = 10
+# Pylint's default of four flags the two calls to `walk_to_status`, which pass the same five
+# keyword arguments to the same shared function - which is what calling a shared function looks
+# like. Six is the smallest number that stops saying so, and still catches real copy-paste.
+min-similarity-lines = 6
 
 [tool.pylint.miscellaneous]
 # Don't flag TODO as a failure, let us commit with things that still need to be done in the code
