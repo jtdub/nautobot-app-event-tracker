@@ -6,12 +6,15 @@ This is slower than setting `status` directly, and it is deliberate: a fixture t
 would be the first violation of the rule the whole app exists to enforce.
 """
 
+import json
+
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from nautobot.dcim.models import Location, LocationType
 from nautobot.extras.models import Status
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
 from nautobot_event_tracker.models import EventType
 from nautobot_event_tracker.services import tickets as ticket_service
 
@@ -103,3 +106,44 @@ def create_eventticket():
         create_ticket(user=user, event_type=event_type, title=title)
         for title in ("Ticket One", "Ticket Two", "Ticket Three")
     ]
+
+
+class FakeEventConsumer(EventConsumer):
+    """An in-memory broker, so no test in CI needs a real one.
+
+    Records what was acknowledged, which is how the at-least-once tests check that a message whose
+    ticket failed was left on the queue.
+    """
+
+    supports_replay = False
+
+    def __init__(self, *, settings=None, topics=(), messages=()):
+        """Queue these messages for delivery."""
+        super().__init__(settings=settings or {}, topics=topics)
+        self.messages = list(messages)
+        self.acknowledged = []
+        self.connected = False
+        self.closed = False
+
+    def connect(self):
+        """Nothing to connect to, but the loop expects to be able to say so."""
+        self.connected = True
+
+    def poll(self, timeout):
+        """Hand over the next queued message, or None once they run out."""
+        if not self.messages:
+            return None
+        return self.messages.pop(0)
+
+    def acknowledge(self, message):
+        """Record the acknowledgement rather than sending one."""
+        self.acknowledged.append(message)
+
+    def close(self):
+        """Note that the loop closed us, which the shutdown tests assert."""
+        self.closed = True
+
+
+def broker_message(payload, *, topic="network.events", **kwargs):
+    """Build a BrokerMessage carrying this payload as JSON."""
+    return BrokerMessage(topic=topic, value=json.dumps(payload).encode("utf-8"), **kwargs)
