@@ -25,7 +25,7 @@ class EventTypeForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
         """Meta attributes."""
 
         model = EventType
-        fields = ["name", "description", "default_severity", "enabled"]
+        fields = ["name", "description", "default_severity", "enabled"]  # pylint: disable=nb-use-fields-all
 
 
 class EventTypeBulkEditForm(NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
@@ -85,7 +85,8 @@ class EventTicketForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
         """Meta attributes."""
 
         model = EventTicket
-        fields = [
+        # Deliberately not "__all__": omitting the service-owned fields is the point of this form.
+        fields = [  # pylint: disable=nb-use-fields-all
             "title",
             "event_type",
             "severity",

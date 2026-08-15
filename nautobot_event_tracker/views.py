@@ -174,44 +174,23 @@ class EventTicketUIViewSet(NautobotUIViewSet):
             return super().form_save(form, **kwargs)
 
         data = form.cleaned_data
-        ticket = ticket_service.create_ticket(
+        return ticket_service.create_ticket_for_user(
+            user=self.request.user,
             title=data["title"],
             event_type=data["event_type"],
-            source=TicketSourceChoices.HUMAN,
-            user=self.request.user,
             severity=data.get("severity"),
             description=data.get("description", ""),
             dedup_key=data.get("dedup_key", ""),
+            assignee=data.get("assigned_to"),
+            tags=data.get("tags"),
         )
-        if data.get("assigned_to"):
-            ticket_service.assign(
-                ticket=ticket,
-                assignee=data["assigned_to"],
-                source=TicketSourceChoices.HUMAN,
-                user=self.request.user,
-            )
-        if data.get("tags"):
-            ticket.tags.set(data["tags"])
-        return ticket
 
     object_detail_content = ObjectDetailContent(
         panels=[
             ObjectFieldsPanel(
                 weight=100,
                 section=SectionChoices.LEFT_HALF,
-                fields=[
-                    "title",
-                    "event_type",
-                    "status",
-                    "severity",
-                    "source",
-                    "assigned_to",
-                    "event_count",
-                    "first_seen",
-                    "last_seen",
-                    "resolved_at",
-                    "closed_at",
-                ],
+                fields=list(tables.TICKET_CORE_FIELDS),
             ),
             ObjectTextPanel(
                 weight=200,
@@ -236,9 +215,12 @@ class EventTicketUIViewSet(NautobotUIViewSet):
                 section=SectionChoices.FULL_WIDTH,
                 table_class=tables.TicketUpdateTable,
                 table_filter="ticket",
-                related_field_name="ticket",
                 label="Update Trail",
                 enable_bulk_actions=False,
+                # TicketUpdate deliberately has no list or add view, so the panel must not try to
+                # link to one. Append-only means there is nothing to add from here either.
+                add_button_route=None,
+                enable_related_link=False,
                 include_columns=["created", "update_type", "source", "user", "message", "related_object"],
             ),
         ],

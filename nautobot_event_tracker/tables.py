@@ -5,6 +5,22 @@ from nautobot.apps.tables import BaseTable, ButtonsColumn, ToggleColumn
 
 from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
 
+#: The ticket's core fields, in the order they read best. Shared by the list table and the detail
+#: panel so the two cannot drift into showing different things.
+TICKET_CORE_FIELDS = (
+    "title",
+    "event_type",
+    "status",
+    "severity",
+    "source",
+    "assigned_to",
+    "event_count",
+    "first_seen",
+    "last_seen",
+    "resolved_at",
+    "closed_at",
+)
+
 
 class EventTypeTable(BaseTable):
     # pylint: disable=R0903
@@ -38,21 +54,7 @@ class EventTicketTable(BaseTable):
         """Meta attributes."""
 
         model = EventTicket
-        fields = (
-            "pk",
-            "title",
-            "event_type",
-            "status",
-            "severity",
-            "source",
-            "assigned_to",
-            "event_count",
-            "first_seen",
-            "last_seen",
-            "resolved_at",
-            "closed_at",
-            "actions",
-        )
+        fields = ("pk", *TICKET_CORE_FIELDS, "actions")
         default_columns = (
             "pk",
             "title",
