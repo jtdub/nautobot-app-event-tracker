@@ -30,6 +30,6 @@ items = (
 menu_items = (
     NavMenuTab(
         name="Apps",
-        groups=(NavMenuGroup(name="Event Tracker", items=tuple(items)),),
+        groups=(NavMenuGroup(name="Event Tracker", items=items),),
     ),
 )

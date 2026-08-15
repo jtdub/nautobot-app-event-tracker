@@ -1,6 +1,6 @@
 """API serializers for nautobot_event_tracker."""
 
-from nautobot.apps.api import BaseModelSerializer, NautobotModelSerializer, TaggedModelSerializerMixin
+from nautobot.apps.api import BaseModelSerializer, ContentTypeField, NautobotModelSerializer, TaggedModelSerializerMixin
 from rest_framework import serializers
 
 from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
@@ -31,7 +31,7 @@ class TicketUpdateSerializer(BaseModelSerializer):
     Read-only in every field: updates are append-only and are written by the service layer alone.
     """
 
-    related_object_type = serializers.SerializerMethodField()
+    related_object_type = ContentTypeField(read_only=True)
 
     class Meta:
         """Meta attributes."""
@@ -52,12 +52,6 @@ class TicketUpdateSerializer(BaseModelSerializer):
             "created",
         ]
         read_only_fields = fields
-
-    def get_related_object_type(self, obj):
-        """Return the related object type as an `app_label.model` string."""
-        if obj.related_object_type is None:
-            return None
-        return f"{obj.related_object_type.app_label}.{obj.related_object_type.model}"
 
 
 class EventTicketSerializer(NautobotModelSerializer, TaggedModelSerializerMixin):  # pylint: disable=too-many-ancestors

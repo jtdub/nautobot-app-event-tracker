@@ -1,7 +1,7 @@
 """Tables for nautobot_event_tracker."""
 
 import django_tables2 as tables
-from nautobot.apps.tables import BaseTable, ButtonsColumn, ToggleColumn
+from nautobot.apps.tables import BaseTable, ButtonsColumn, LinkedCountColumn, ToggleColumn
 
 from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
 
@@ -28,7 +28,12 @@ class EventTypeTable(BaseTable):
 
     pk = ToggleColumn()
     name = tables.Column(linkify=True)
-    ticket_count = tables.Column(accessor="tickets__count", verbose_name="Tickets", default=0)
+    # Counts the annotation the view applies, and links through to the filtered ticket list.
+    ticket_count = LinkedCountColumn(
+        viewname="plugins:nautobot_event_tracker:eventticket_list",
+        url_params={"event_type": "pk"},
+        verbose_name="Tickets",
+    )
     actions = ButtonsColumn(EventType, pk_field="pk")
 
     class Meta(BaseTable.Meta):

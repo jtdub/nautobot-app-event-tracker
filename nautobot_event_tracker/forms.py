@@ -15,7 +15,11 @@ from nautobot.apps.forms import (
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.models import EventTicket, EventType
-from nautobot_event_tracker.services.tickets import get_attachable_object_types
+from nautobot_event_tracker.services import tickets as ticket_service
+
+#: Nautobot has BOOLEAN_WITH_BLANK_CHOICES, but only under nautobot.core.forms.constants, which is
+#: outside the public nautobot.apps surface this app otherwise stays within.
+YES_NO_CHOICES = (("", "---------"), ("True", "Yes"), ("False", "No"))
 
 
 class EventTypeForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
@@ -141,12 +145,6 @@ class EventTicketFilterForm(NautobotFilterForm):  # pylint: disable=too-many-anc
     )
 
 
-class TicketCommentForm(forms.Form):
-    """Add a comment to a ticket. Routed through the service layer."""
-
-    message = forms.CharField(widget=forms.Textarea(attrs={"rows": 4}), label="Comment")
-
-
 class TicketTransitionForm(forms.Form):
     """Confirm a status transition. Routed through the service layer."""
 
@@ -185,15 +183,4 @@ class AttachObjectForm(forms.Form):
     def __init__(self, *args, **kwargs):
         """Limit the type choices to the configured allowlist."""
         super().__init__(*args, **kwargs)
-        self.fields["object_type"].queryset = attachable_content_types()
-
-
-def attachable_content_types():
-    """Return a ContentType queryset covering the configured allowlist."""
-    pks = []
-    for label in get_attachable_object_types():
-        app_label, _, model = label.partition(".")
-        content_type = ContentType.objects.filter(app_label=app_label, model=model).first()
-        if content_type is not None:
-            pks.append(content_type.pk)
-    return ContentType.objects.filter(pk__in=pks).order_by("app_label", "model")
+        self.fields["object_type"].queryset = ticket_service.get_attachable_content_types()

@@ -4,13 +4,13 @@
 `extras_features`. `TicketUpdate` needs an explicit type because it is not a PrimaryModel.
 """
 
-from graphene_django import DjangoObjectType
+from nautobot.apps.graphql import OptimizedNautobotObjectType
 
 from nautobot_event_tracker.filters import TicketUpdateFilterSet
 from nautobot_event_tracker.models import TicketUpdate
 
 
-class TicketUpdateType(DjangoObjectType):
+class TicketUpdateType(OptimizedNautobotObjectType):
     """GraphQL type for TicketUpdate.
 
     Query-only, like the rest of Nautobot's GraphQL surface, which suits a model the service layer

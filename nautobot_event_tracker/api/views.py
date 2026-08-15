@@ -1,13 +1,14 @@
 """API views for nautobot_event_tracker."""
 
-from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import ObjectDoesNotExist
+from collections import namedtuple
+from contextlib import contextmanager
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from nautobot.apps.api import NautobotModelViewSet, ReadOnlyModelViewSet
 from nautobot.core.api.authentication import TokenPermissions
 from rest_framework import status as http_status
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 
 from nautobot_event_tracker import filters
@@ -21,7 +22,26 @@ from nautobot_event_tracker.services.exceptions import (
     TicketImmutableError,
 )
 
-TRANSITION_PERMISSION = "nautobot_event_tracker.transition_eventticket"
+
+class Conflict(APIException):
+    """A well-formed request that the ticket's current state does not permit."""
+
+    status_code = http_status.HTTP_409_CONFLICT
+
+
+@contextmanager
+def _reporting_service_errors():
+    """Map the service layer's refusals onto their HTTP meanings.
+
+    Every action goes through this, so the same refusal reads the same way whichever endpoint
+    provoked it: a state conflict is a 409, anything else the service rejects is a 400.
+    """
+    try:
+        yield
+    except (InvalidTransitionError, TicketImmutableError) as error:
+        raise Conflict(str(error)) from error
+    except (InvalidActorError, DjangoValidationError) as error:
+        raise ValidationError(getattr(error, "messages", [str(error)])) from error
 
 
 class TicketChangeActionPermissions(TokenPermissions):
@@ -41,15 +61,28 @@ class TicketChangeActionPermissions(TokenPermissions):
 class TicketTransitionPermissions(TokenPermissions):
     """Permissions for the transition action.
 
-    Requires only `view` at the DRF layer; the action itself then requires
-    `transition_eventticket`. Transitioning deliberately does not imply `change`, so that an
-    operator can move tickets through the workflow without being able to rewrite their content.
+    Transitioning deliberately does not imply `change`, so that an operator can move tickets
+    through the workflow without being able to rewrite their content. GET keeps the inherited
+    `view` requirement: reading the legal next states is reading the ticket.
     """
 
     perms_map = {
         **TokenPermissions.perms_map,
-        "POST": ["%(app_label)s.view_%(model_name)s"],
+        "POST": ["%(app_label)s.transition_%(model_name)s"],
     }
+
+
+#: What each custom ticket action requires: the object-level permission the queryset is restricted
+#: by, and the model-level permission class DRF checks first. Keeping both halves on one line means
+#: neither can be updated without the other coming into view.
+ActionPolicy = namedtuple("ActionPolicy", ["object_action", "permission_class"])
+
+ACTION_POLICIES = {
+    "transition": ActionPolicy("view", TicketTransitionPermissions),
+    "comment": ActionPolicy("change", TicketChangeActionPermissions),
+    "attach": ActionPolicy("change", TicketChangeActionPermissions),
+    "detach": ActionPolicy("change", TicketChangeActionPermissions),
+}
 
 
 class EventTypeViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
@@ -91,23 +124,17 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
         the queryset to objects the user may *add* - which matches nothing, and the action 404s on
         a ticket that plainly exists. Same pattern as Nautobot's own Job `/cancel/` endpoint.
         """
-        action_to_method = {
-            "transition": "view",
-            "comment": "change",
-            "attach": "change",
-            "detach": "change",
-        }
-        if request.user.is_authenticated and self.action in action_to_method:
-            self.queryset = self.queryset.restrict(request.user, action_to_method[self.action])
+        policy = ACTION_POLICIES.get(self.action)
+        if policy is not None and request.user.is_authenticated:
+            self.queryset = self.queryset.restrict(request.user, policy.object_action)
         else:
             super().restrict_queryset(request, *args, **kwargs)
 
     def get_permissions(self):
         """Custom actions post to an existing ticket, so the stock add/change map does not fit."""
-        if self.action == "transition":
-            return [TicketTransitionPermissions()]
-        if self.action in ("comment", "attach", "detach"):
-            return [TicketChangeActionPermissions()]
+        policy = ACTION_POLICIES.get(self.action)
+        if policy is not None:
+            return [policy.permission_class()]
         return super().get_permissions()
 
     def perform_create(self, serializer):
@@ -124,10 +151,6 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
             assignee=data.get("assigned_to"),
             tags=data.get("tags"),
         )
-
-    def _require_transition_permission(self):
-        if not self.request.user.has_perm(TRANSITION_PERMISSION):
-            raise PermissionDenied("You do not have permission to transition event tickets.")
 
     @action(detail=True, methods=["get", "post"], url_path="transition")
     def transition(self, request, pk=None):  # pylint: disable=unused-argument
@@ -146,11 +169,10 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
                 }
             )
 
-        self._require_transition_permission()
         payload = serializers.TicketTransitionSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
 
-        try:
+        with _reporting_service_errors():
             ticket_service.transition(
                 ticket=ticket,
                 to_status=payload.validated_data["to_status"],
@@ -159,10 +181,6 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
                 message=payload.validated_data.get("message", ""),
                 resolution=payload.validated_data.get("resolution", ""),
             )
-        except (InvalidTransitionError, TicketImmutableError) as error:
-            return Response({"detail": str(error)}, status=http_status.HTTP_409_CONFLICT)
-        except (InvalidActorError, DjangoValidationError) as error:
-            raise ValidationError(getattr(error, "messages", [str(error)])) from error
 
         ticket.refresh_from_db()
         return Response(self.get_serializer(ticket).data)
@@ -174,22 +192,15 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
         payload = serializers.TicketCommentSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
 
-        try:
+        with _reporting_service_errors():
             update = ticket_service.add_comment(
                 ticket=ticket,
                 message=payload.validated_data["message"],
                 source=TicketSourceChoices.HUMAN,
                 user=request.user,
             )
-        except TicketImmutableError as error:
-            return Response({"detail": str(error)}, status=http_status.HTTP_409_CONFLICT)
-        except (InvalidActorError, DjangoValidationError) as error:
-            raise ValidationError(getattr(error, "messages", [str(error)])) from error
 
-        return Response(
-            serializers.TicketUpdateSerializer(update, context=self.get_serializer_context()).data,
-            status=http_status.HTTP_201_CREATED,
-        )
+        return self._update_response(update)
 
     @action(detail=True, methods=["post"], url_path="attach")
     def attach(self, request, pk=None):  # pylint: disable=unused-argument
@@ -206,44 +217,24 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
         payload = serializers.TicketObjectSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
 
-        obj = self._resolve_object(
-            payload.validated_data["object_type"],
-            payload.validated_data["object_id"],
-        )
-
-        try:
+        with _reporting_service_errors():
             update = service_function(
                 ticket=ticket,
-                obj=obj,
+                obj=ticket_service.resolve_object(
+                    payload.validated_data["object_type"],
+                    payload.validated_data["object_id"],
+                ),
                 source=TicketSourceChoices.HUMAN,
                 user=request.user,
             )
-        except TicketImmutableError as error:
-            return Response({"detail": str(error)}, status=http_status.HTTP_409_CONFLICT)
-        except (InvalidActorError, DjangoValidationError) as error:
-            raise ValidationError(getattr(error, "messages", [str(error)])) from error
 
+        return self._update_response(update)
+
+    def _update_response(self, update):
+        """Render the update an action wrote, or report that it was a no-op."""
         if update is None:
             return Response(status=http_status.HTTP_204_NO_CONTENT)
         return Response(
             serializers.TicketUpdateSerializer(update, context=self.get_serializer_context()).data,
             status=http_status.HTTP_201_CREATED,
         )
-
-    @staticmethod
-    def _resolve_object(object_type, object_id):
-        """Turn an 'app_label.model' string and a UUID into a model instance."""
-        app_label, _, model = str(object_type).partition(".")
-        try:
-            content_type = ContentType.objects.get(app_label=app_label, model=model)
-        except ContentType.DoesNotExist as error:
-            raise ValidationError({"object_type": f"Unknown object type '{object_type}'."}) from error
-
-        model_class = content_type.model_class()
-        if model_class is None:
-            raise ValidationError({"object_type": f"Object type '{object_type}' has no model."})
-
-        try:
-            return model_class.objects.get(pk=object_id)
-        except (ObjectDoesNotExist, ValueError, TypeError) as error:
-            raise ValidationError({"object_id": f"No {object_type} with ID {object_id}."}) from error
