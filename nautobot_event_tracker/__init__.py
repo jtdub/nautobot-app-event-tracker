@@ -15,7 +15,7 @@ class EventTrackerConfig(NautobotAppConfig):
     verbose_name = "Event Tracker"
     version = __version__
     author = "James Williams"
-    description = "Network event ticketing and AI-assisted network operations for Nautobot.."
+    description = "Network event ticketing and AI-assisted network operations for Nautobot."
     base_url = "event-tracker"
     required_settings = []
     default_settings = {}
