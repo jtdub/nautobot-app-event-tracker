@@ -18,7 +18,7 @@ from nautobot_event_tracker.ingestion.constants import (
     REASON_UNKNOWN_EVENT_TYPE,
     UNKNOWN_EVENT_TYPE_DROP,
 )
-from nautobot_event_tracker.ingestion.normalize import effective_severity
+from nautobot_event_tracker.ingestion.normalize import effective_severity, resolve_path
 
 
 @dataclass(frozen=True)
@@ -152,16 +152,21 @@ class PreFilter:
 
         return FilterResult(ACCEPT, event_type)
 
-    @staticmethod
-    def _first_matching_rule(topic_config, payload):
+    @classmethod
+    def _first_matching_rule(cls, topic_config, payload):
         """The first rule all of whose clauses match, or None."""
-        from nautobot_event_tracker.ingestion.normalize import resolve_path  # pylint: disable=import-outside-toplevel
-
         for rule in topic_config.rules:
-            if all(
-                pattern.search(str(value))
-                for path, pattern in rule.when
-                if (value := resolve_path(payload, path)) is not None
-            ) and all(resolve_path(payload, path) is not None for path, _ in rule.when):
+            if all(cls._clause_matches(payload, path, pattern) for path, pattern in rule.when):
                 return rule
         return None
+
+    @staticmethod
+    def _clause_matches(payload, path, pattern):
+        """One clause: the path has to resolve, and its value has to match.
+
+        A path that resolves to nothing does not match, rather than matching an empty string - a
+        rule about a field the payload does not carry should not fire on every payload that omits
+        it.
+        """
+        value = resolve_path(payload, path)
+        return value is not None and pattern.search(str(value)) is not None
