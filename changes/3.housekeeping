@@ -1,0 +1,3 @@
+Added a containerlab SR Linux topology, a Fluent Bit syslog bridge and a Redpanda broker overlay for development, opt-in through the `EVENT_TRACKER_LAB` environment variable.
+Added a development script that mirrors the containerlab topology into Nautobot as devices, interfaces and management addresses.
+Filled in the `generate_nautobot_event_tracker_test_data` command, which builds deterministic ticket data through the service layer.
