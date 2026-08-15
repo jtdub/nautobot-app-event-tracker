@@ -18,6 +18,7 @@ class RedisEventConsumer(EventConsumer):
     """Redis pub/sub, where channels are topics and nothing is acknowledged."""
 
     supports_replay = False
+    settings_key = "redis"
 
     def __init__(self, *, settings, topics):
         """Hold the settings; the client is built in `connect()`."""

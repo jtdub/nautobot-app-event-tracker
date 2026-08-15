@@ -36,6 +36,9 @@ class EventConsumer(ABC):
     #: Whether a consumer that dies can resume where it stopped. Read it; do not assume it.
     supports_replay = False
 
+    #: Which block of the ingestion configuration holds this implementation's connection settings.
+    settings_key = ""
+
     def __init__(self, *, settings, topics):
         """Hold the settings and the topics, without connecting to anything yet."""
         self.settings = settings

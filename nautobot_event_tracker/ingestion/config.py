@@ -35,6 +35,7 @@ DEFAULTS = {
     "max_payload_bytes": 65536,
     "event_type_cache_seconds": 60,
     "max_retries": 5,
+    "poll_timeout_seconds": 1.0,
     "stats_bucket_seconds": 300,
     "stats_flush_seconds": 10,
     "stats_retention_days": 30,
@@ -42,7 +43,6 @@ DEFAULTS = {
         "bootstrap_servers": [],
         "group_id": "nautobot-event-tracker",
         "external_integration": "",
-        "poll_timeout_seconds": 1.0,
     },
     "redis": {
         "url": "",
@@ -109,6 +109,7 @@ class IngestionConfig:
     max_payload_bytes: int
     event_type_cache_seconds: int
     max_retries: int
+    poll_timeout_seconds: float
     stats_bucket_seconds: int
     stats_flush_seconds: int
     stats_retention_days: int
@@ -170,7 +171,7 @@ def load(*, topics=None):
             problems.append(f"'{key}' must be a positive integer, got {raw.get(key)!r}")
 
     if problems:
-        raise ImproperlyConfigured(_render(problems))
+        raise ImproperlyConfigured(render_problems(problems))
 
     return IngestionConfig(
         consumer=str(raw["consumer"]),
@@ -178,6 +179,7 @@ def load(*, topics=None):
         max_payload_bytes=raw["max_payload_bytes"],
         event_type_cache_seconds=raw["event_type_cache_seconds"],
         max_retries=raw["max_retries"],
+        poll_timeout_seconds=float(raw["poll_timeout_seconds"]),
         stats_bucket_seconds=raw["stats_bucket_seconds"],
         stats_flush_seconds=raw["stats_flush_seconds"],
         stats_retention_days=raw["stats_retention_days"],
@@ -313,7 +315,7 @@ def _parse_rate_limit(topic_name, rate_settings):
     return RateLimit(per_minute=per_minute, burst=burst), []
 
 
-def _render(problems):
+def render_problems(problems):
     """One message listing everything wrong, so a restart fixes all of it rather than the first."""
     lines = "\n".join(f"  - {problem}" for problem in problems)
     return f"Event Tracker ingestion configuration is invalid:\n{lines}"

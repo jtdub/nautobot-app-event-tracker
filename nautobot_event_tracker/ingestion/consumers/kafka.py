@@ -24,6 +24,7 @@ class KafkaEventConsumer(EventConsumer):
     """Kafka, with offsets committed only after a message has been fully handled."""
 
     supports_replay = True
+    settings_key = "kafka"
 
     def __init__(self, *, settings, topics):
         """Hold the settings; the client is built in `connect()`."""
