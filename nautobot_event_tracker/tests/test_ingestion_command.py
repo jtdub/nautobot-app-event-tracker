@@ -10,7 +10,7 @@ from unittest import mock
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import DatabaseError
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from nautobot_event_tracker.ingestion import config
 from nautobot_event_tracker.management.commands.eventconsumer import (
@@ -25,9 +25,8 @@ TOPIC = fixtures.INGESTION_TOPIC
 
 
 def ingestion(**overrides):
-    """Build a PLUGINS_CONFIG override for these tests."""
-    settings = {"consumer": "redis", "topics": {"network.events": TOPIC}, **overrides}
-    return override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": settings}})
+    """A PLUGINS_CONFIG override for these tests, defaulting to the Redis consumer."""
+    return fixtures.ingestion_settings(**{"consumer": "redis", **overrides})
 
 
 payload = fixtures.event_payload

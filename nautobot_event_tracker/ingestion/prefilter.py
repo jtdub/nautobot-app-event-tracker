@@ -18,7 +18,8 @@ from nautobot_event_tracker.ingestion.constants import (
     REASON_UNKNOWN_EVENT_TYPE,
     UNKNOWN_EVENT_TYPE_DROP,
 )
-from nautobot_event_tracker.ingestion.normalize import effective_severity, resolve_path
+from nautobot_event_tracker.ingestion.normalize import resolve_path
+from nautobot_event_tracker.services.tickets import effective_severity
 
 
 @dataclass(frozen=True)
@@ -124,9 +125,8 @@ class PreFilter:
         # F2 - an event type we do not know about, per the topic's policy.
         if event_type is None:
             fallback = topic_config.defaults.get("event_type")
-            if topic_config.unknown_event_type == UNKNOWN_EVENT_TYPE_DROP or not fallback:
-                return FilterResult(Decision(ACTION_DROP, REASON_UNKNOWN_EVENT_TYPE))
-            event_type = self.event_types.get(fallback)
+            if topic_config.unknown_event_type != UNKNOWN_EVENT_TYPE_DROP and fallback:
+                event_type = self.event_types.get(fallback)
             if event_type is None:
                 return FilterResult(Decision(ACTION_DROP, REASON_UNKNOWN_EVENT_TYPE))
 
@@ -136,7 +136,7 @@ class PreFilter:
 
         # F4 - the severity floor, weighed on the app's own scale rather than alphabetically.
         if topic_config.minimum_severity:
-            severity = effective_severity(event, event_type)
+            severity = effective_severity(event.severity, event_type)
             if SEVERITY_WEIGHTS[severity] < SEVERITY_WEIGHTS[topic_config.minimum_severity]:
                 return FilterResult(Decision(ACTION_DROP, REASON_BELOW_SEVERITY_FLOOR), event_type)
 

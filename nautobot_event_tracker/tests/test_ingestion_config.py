@@ -13,10 +13,9 @@ from nautobot_event_tracker.ingestion.constants import UNKNOWN_EVENT_TYPE_DROP
 from nautobot_event_tracker.tests import fixtures
 
 TOPIC = {
-    "field_map": {"event_type": "event.type", "title": "message", "severity": "event.severity"},
-    "defaults": {"event_type": "Test Interface Down", "severity": SeverityChoices.MINOR},
+    **fixtures.INGESTION_TOPIC,
+    "defaults": {**fixtures.INGESTION_TOPIC["defaults"], "severity": SeverityChoices.MINOR},
     "severity_map": {"3": SeverityChoices.MAJOR},
-    "dedup_key_template": "{event.type}:{host}",
     "minimum_severity": SeverityChoices.INFO,
     "rate_limit": {"per_minute": 60, "burst": 120},
     "rules": [{"name": "lab", "action": "drop", "when": {"host": "^lab-"}}],

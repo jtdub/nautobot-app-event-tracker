@@ -105,7 +105,7 @@ def render_template(template, payload):
     return "".join(out)
 
 
-def normalize(payload, *, topic_config, broker_timestamp=None, max_payload_bytes):
+def normalize(payload, *, topic_config, broker_timestamp=None):
     """Build a `NormalizedEvent` from a decoded payload and its topic's configuration."""
     field_map = topic_config.field_map
     defaults = topic_config.defaults
@@ -126,17 +126,8 @@ def normalize(payload, *, topic_config, broker_timestamp=None, max_payload_bytes
         description=_as_text(mapped("description")),
         dedup_key=render_template(topic_config.dedup_key_template, payload),
         occurred_at=_occurred_at(mapped("occurred_at"), broker_timestamp),
-        payload=_capped(payload, max_payload_bytes),
+        payload=payload,
     )
-
-
-def effective_severity(event, event_type):
-    """The severity this event will end up with, before anything is written.
-
-    The pre-filter has to compare against the floor while the ticket is still hypothetical, and the
-    service applies the same fallback when it writes. One expression, used in both places.
-    """
-    return event.severity or event_type.default_severity
 
 
 def _severity(raw, topic_config):
@@ -183,18 +174,24 @@ def _parse_timestamp(raw):
     return parsed if timezone.is_aware(parsed) else timezone.make_aware(parsed, datetime_timezone.utc)
 
 
-def _capped(payload, max_payload_bytes):
+def capped(payload, max_payload_bytes):
     """Keep the payload, unless it is large enough to be a problem of its own.
 
     An uncapped JSONField fed by streaming telemetry is a table that grows in a way nobody planned
     for. Over the cap, the ticket keeps the size and a readable prefix instead of the whole frame.
+
+    Applied on the write path rather than during normalization: serializing a payload to measure it
+    is the most expensive thing in the per-message path, and most messages in a filtered stream
+    never become a ticket. It also means a match rule sees the event the device sent rather than a
+    truncation marker.
     """
     encoded = json.dumps(payload)
-    if len(encoded.encode("utf-8")) <= max_payload_bytes:
+    size = len(encoded.encode("utf-8"))
+    if size <= max_payload_bytes:
         return payload
     return {
         PAYLOAD_TRUNCATED_KEY: True,
-        "_size_bytes": len(encoded.encode("utf-8")),
+        "_size_bytes": size,
         "_preview": encoded[:PREVIEW_CHARACTERS],
     }
 

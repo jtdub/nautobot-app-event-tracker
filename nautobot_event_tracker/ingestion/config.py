@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from nautobot.apps.utils import deepmerge
 
 from nautobot_event_tracker.choices import SeverityChoices
 from nautobot_event_tracker.ingestion.constants import (
@@ -43,6 +44,10 @@ DEFAULTS = {
         "bootstrap_servers": [],
         "group_id": "nautobot-event-tracker",
         "external_integration": "",
+        # Only consulted when the external integration supplies a username and password. A broker
+        # reached over the public internet wants SASL_SSL; SASL_PLAINTEXT suits a private network.
+        "security_protocol": "SASL_PLAINTEXT",
+        "sasl_mechanism": "PLAIN",
     },
     "redis": {
         "url": "",
@@ -124,13 +129,14 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
 
 
 def get_settings():
-    """Return the raw `ingestion` block from `PLUGINS_CONFIG`, with defaults filled in."""
+    """Return the raw `ingestion` block from `PLUGINS_CONFIG`, with defaults filled in.
+
+    Merged with Nautobot's own `deepmerge`, so a deployment that sets one key of the Kafka block
+    keeps the defaults for the rest. Naming the nested blocks here instead would mean a third
+    broker block silently losing its defaults the day someone forgot to add it to the list.
+    """
     app_config = settings.PLUGINS_CONFIG.get("nautobot_event_tracker", {})
-    configured = app_config.get("ingestion") or {}
-    merged = {**DEFAULTS, **configured}
-    for nested in ("kafka", "redis"):
-        merged[nested] = {**DEFAULTS[nested], **(configured.get(nested) or {})}
-    return merged
+    return deepmerge(DEFAULTS, app_config.get("ingestion") or {})
 
 
 def default_consumer_name():
@@ -138,13 +144,21 @@ def default_consumer_name():
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
-def load(*, topics=None):
+def load(*, topics=None, consumer=None, require_topics=False):
     """Parse and validate the configuration, or raise `ImproperlyConfigured` listing every fault.
 
-    `topics` restricts the result to a subset, for `--topics`. Naming a topic that is not
+    `topics` and `consumer` are the command line's overrides, checked here with everything else so
+    that one restart answers every fault rather than the first of them. Naming a topic that is not
     configured is itself a fault: quietly consuming nothing is the worst way to answer a typo.
+
+    `require_topics` is what the consumer process passes: an app installed and left unconfigured is
+    a perfectly good state to describe, and a poor one to start a consumer in.
     """
+    from nautobot_event_tracker.ingestion.consumers import CONSUMERS  # pylint: disable=import-outside-toplevel
+
     raw = get_settings()
+    if consumer is not None:
+        raw = {**raw, "consumer": consumer}
     problems = []
     parsed_topics = {}
 
@@ -159,6 +173,17 @@ def load(*, topics=None):
         problems.extend(f"topic '{name}' is not configured" for name in unknown)
         parsed_topics = {name: topic for name, topic in parsed_topics.items() if name in topics}
 
+    if raw["consumer"] not in CONSUMERS:
+        problems.append(f"consumer '{raw['consumer']}' is unknown. Available: {', '.join(sorted(CONSUMERS))}")
+
+    if require_topics and not parsed_topics and not problems:
+        # Not stacked with the others: when a topic failed to parse, "no topics" is a consequence
+        # of that fault rather than a fault of its own, and reporting both would mislead.
+        problems.append(
+            "no topics are configured, so there is nothing to consume. "
+            "Set PLUGINS_CONFIG['nautobot_event_tracker']['ingestion']['topics']."
+        )
+
     for key in (
         "max_payload_bytes",
         "event_type_cache_seconds",
@@ -169,6 +194,9 @@ def load(*, topics=None):
     ):
         if not isinstance(raw.get(key), int) or isinstance(raw.get(key), bool) or raw[key] < 1:
             problems.append(f"'{key}' must be a positive integer, got {raw.get(key)!r}")
+
+    if not isinstance(raw.get("poll_timeout_seconds"), (int, float)) or raw["poll_timeout_seconds"] <= 0:
+        problems.append(f"'poll_timeout_seconds' must be a positive number, got {raw.get('poll_timeout_seconds')!r}")
 
     if problems:
         raise ImproperlyConfigured(render_problems(problems))

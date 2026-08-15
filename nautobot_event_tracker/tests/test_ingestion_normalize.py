@@ -143,7 +143,6 @@ class TestNormalize(SimpleTestCase):
         return normalize.normalize(
             data if data is not None else payload(),
             topic_config=topic_config or topic(),
-            max_payload_bytes=MAX_PAYLOAD_BYTES,
             **kwargs,
         )
 
@@ -231,16 +230,27 @@ class TestNormalize(SimpleTestCase):
         """The raw event is the evidence; Phase 4's resolver reads it."""
         self.assertEqual(self.normalized().payload, payload())
 
-    def test_an_oversize_payload_is_replaced_by_its_size_and_a_preview(self):
-        """A 4 MB telemetry frame must not become a 4 MB row."""
+    def test_normalization_does_not_cap_the_payload(self):
+        """The cap belongs to the write path: a message that is filtered never pays for it."""
         data = payload(bulk="x" * 200)
-        event = normalize.normalize(data, topic_config=topic(), max_payload_bytes=100)
-        self.assertTrue(event.payload[PAYLOAD_TRUNCATED_KEY])
-        self.assertGreater(event.payload["_size_bytes"], 100)
-        self.assertIn("Interface Down", event.payload["_preview"])
+        self.assertEqual(self.normalized(data).payload, data)
+
+
+class TestCapping(SimpleTestCase):
+    """The payload cap, applied when a ticket is about to store the payload."""
+
+    def test_a_payload_under_the_cap_is_kept(self):
+        """The ordinary case."""
+        self.assertEqual(normalize.capped(payload(), MAX_PAYLOAD_BYTES), payload())
 
     def test_a_payload_at_the_cap_is_kept(self):
         """The cap is a limit, not a target to stay under."""
         data = {"a": "b"}
-        event = normalize.normalize(data, topic_config=topic(), max_payload_bytes=len(json.dumps(data)))
-        self.assertEqual(event.payload, data)
+        self.assertEqual(normalize.capped(data, len(json.dumps(data))), data)
+
+    def test_an_oversize_payload_is_replaced_by_its_size_and_a_preview(self):
+        """A 4 MB telemetry frame must not become a 4 MB row."""
+        stored = normalize.capped(payload(bulk="x" * 200), 100)
+        self.assertTrue(stored[PAYLOAD_TRUNCATED_KEY])
+        self.assertGreater(stored["_size_bytes"], 100)
+        self.assertIn("Interface Down", stored["_preview"])

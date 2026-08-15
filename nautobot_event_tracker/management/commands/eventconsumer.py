@@ -18,7 +18,7 @@ from nautobot_event_tracker.ingestion import config as ingestion_config
 from nautobot_event_tracker.ingestion.consumers import get_consumer_class
 from nautobot_event_tracker.ingestion.pipeline import handle_message
 from nautobot_event_tracker.ingestion.prefilter import PreFilter
-from nautobot_event_tracker.ingestion.stats import StatsRecorder
+from nautobot_event_tracker.ingestion.stats import NullStatsRecorder, StatsRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -68,22 +68,25 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         self.consumer = consumer
         self.settings = settings
         self.rules = rules if rules is not None else PreFilter(settings)
-        self.recorder = (
-            recorder
-            if recorder is not None
-            else StatsRecorder(
-                consumer_name=settings.consumer_name,
-                bucket_seconds=settings.stats_bucket_seconds,
-                flush_seconds=settings.stats_flush_seconds,
-                retention_days=settings.stats_retention_days,
-            )
-        )
         self.dry_run = dry_run
+        self.recorder = recorder if recorder is not None else self._build_recorder(settings, dry_run)
         self.max_messages = max_messages
         self._sleep = sleep
         self._stdout = stdout
         self.handled = 0
         self.stopping = False
+
+    @staticmethod
+    def _build_recorder(settings, dry_run):
+        """The recorder this run needs: a real one, or one that counts nothing."""
+        if dry_run:
+            return NullStatsRecorder()
+        return StatsRecorder(
+            consumer_name=settings.consumer_name,
+            bucket_seconds=settings.stats_bucket_seconds,
+            flush_seconds=settings.stats_flush_seconds,
+            retention_days=settings.stats_retention_days,
+        )
 
     def stop(self):
         """Ask the loop to finish the message in flight and come back."""
@@ -105,11 +108,9 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
                         self.handled += 1
                         if self.max_messages is not None and self.handled >= self.max_messages:
                             break
-                    if not self.dry_run:
-                        self.recorder.maybe_flush()
+                    self.recorder.maybe_flush()
         finally:
-            if not self.dry_run:
-                self.recorder.flush()
+            self.recorder.flush()
 
     def _handle(self, message):
         """Handle one message, retrying a transient database failure before giving up.
@@ -173,7 +174,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         """Validate the configuration, then run the loop until it is asked to stop."""
         settings = self._load(options)
-        consumer_class = self._consumer_class(options.get("consumer") or settings.consumer)
+        consumer_class = get_consumer_class(settings.consumer)
 
         consumer = consumer_class(
             settings=getattr(settings, consumer_class.settings_key),
@@ -201,32 +202,28 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"Stopped after handling {runner.handled} messages."))
 
-    def _load(self, options):
-        """Parse and validate the configuration, refusing to start on any fault."""
+    @staticmethod
+    def _load(options):
+        """Parse and validate the configuration, refusing to start on any fault.
+
+        Everything answerable from the settings is checked in one pass, so a deployment with three
+        faults sees three lines and needs one restart. The database check runs afterwards because
+        it needs a query; its faults are rendered the same way.
+        """
         topics = [topic.strip() for topic in options["topics"].split(",")] if options.get("topics") else None
         try:
-            settings = ingestion_config.load(topics=topics)
+            settings = ingestion_config.load(
+                topics=topics,
+                consumer=options.get("consumer"),
+                require_topics=True,
+            )
         except ImproperlyConfigured as error:
             raise CommandError(str(error)) from error
 
         problems = ingestion_config.database_problems(settings)
         if problems:
             raise CommandError(ingestion_config.render_problems(problems))
-
-        if not settings.topics:
-            raise CommandError(
-                "No topics are configured, so there is nothing to consume. "
-                "Set PLUGINS_CONFIG['nautobot_event_tracker']['ingestion']['topics']."
-            )
         return settings
-
-    @staticmethod
-    def _consumer_class(name):
-        """Resolve the implementation, or explain which names exist."""
-        try:
-            return get_consumer_class(name)
-        except ImproperlyConfigured as error:
-            raise CommandError(str(error)) from error
 
     def _banner(self, settings, consumer):
         """One line naming everything an operator would otherwise have to ask for."""

@@ -8,7 +8,7 @@ to leave neither a ticket nor an update.
 from unittest import mock
 
 from django.db import DatabaseError
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from nautobot_event_tracker.choices import (
     SeverityChoices,
@@ -26,10 +26,9 @@ from nautobot_event_tracker.ingestion.constants import (
     REASON_UNDECODABLE,
     REASON_UNKNOWN_TOPIC,
 )
-from nautobot_event_tracker.ingestion.stats import StatsRecorder
+from nautobot_event_tracker.ingestion.stats import NullStatsRecorder, StatsRecorder
 from nautobot_event_tracker.models import EventTicket, IngestionStats, TicketUpdate
 from nautobot_event_tracker.tests import fixtures
-from nautobot_event_tracker.tests.test_ingestion_prefilter import FakeClock
 
 TOPIC = fixtures.INGESTION_TOPIC
 
@@ -45,7 +44,7 @@ class PipelineTestCase(TestCase):
     def setUp(self):
         """Build the pieces the pipeline needs."""
         super().setUp()
-        self.clock = FakeClock()
+        self.clock = fixtures.FakeClock()
         self.recorder = StatsRecorder(
             consumer_name="test-consumer",
             bucket_seconds=300,
@@ -56,13 +55,7 @@ class PipelineTestCase(TestCase):
 
     def handle(self, payload=None, *, topic_settings=None, topic="network.events", value=None, **kwargs):
         """Push one message through the pipeline and return the decision."""
-        with override_settings(
-            PLUGINS_CONFIG={
-                "nautobot_event_tracker": {
-                    "ingestion": {"topics": {"network.events": {**TOPIC, **(topic_settings or {})}}}
-                }
-            }
-        ):
+        with fixtures.ingestion_settings(topics={"network.events": {**TOPIC, **(topic_settings or {})}}):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
         message = (
@@ -244,10 +237,10 @@ class TestDryRun(PipelineTestCase):
         self.handle(write=False)
         self.assertFalse(EventTicket.objects.exists())
 
-    def test_a_dry_run_writes_no_counters(self):
-        """Counters are a record of what the consumer did, and it did nothing."""
+    def test_a_dry_run_counts_nothing_when_given_a_null_recorder(self):
+        """The runner hands a dry run a recorder that counts nothing, rather than a flag."""
+        self.recorder = NullStatsRecorder()
         self.handle(write=False)
-        self.recorder.flush()
         self.assertFalse(IngestionStats.objects.exists())
 
 

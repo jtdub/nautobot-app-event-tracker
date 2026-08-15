@@ -104,6 +104,25 @@
                             "type": "string",
                             "description": "Name of a Nautobot ExternalIntegration holding the broker URL and its SecretsGroup. Preferred over settings for anything credentialed.",
                             "default": ""
+                        },
+                        "security_protocol": {
+                            "type": "string",
+                            "description": "Security protocol used when the external integration supplies credentials. Ignored otherwise.",
+                            "enum": [
+                                "SASL_PLAINTEXT",
+                                "SASL_SSL"
+                            ],
+                            "default": "SASL_PLAINTEXT"
+                        },
+                        "sasl_mechanism": {
+                            "type": "string",
+                            "description": "SASL mechanism used when the external integration supplies credentials.",
+                            "enum": [
+                                "PLAIN",
+                                "SCRAM-SHA-256",
+                                "SCRAM-SHA-512"
+                            ],
+                            "default": "PLAIN"
                         }
                     },
                     "additionalProperties": false

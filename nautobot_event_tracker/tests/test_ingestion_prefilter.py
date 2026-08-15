@@ -4,7 +4,7 @@ Time is injected rather than slept on. A test suite that sleeps to prove a token
 a test suite that fails on a busy CI runner for reasons that have nothing to do with the code.
 """
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from nautobot_event_tracker.choices import SeverityChoices
 from nautobot_event_tracker.ingestion import config, prefilter
@@ -25,25 +25,12 @@ from nautobot_event_tracker.tests import fixtures
 TOPIC = fixtures.INGESTION_TOPIC
 
 
-class FakeClock:
-    """A clock a test moves by hand."""
-
-    def __init__(self):
-        """Start at zero."""
-        self.now = 0.0
-
-    def __call__(self):
-        """Read the clock, as `time.monotonic` would."""
-        return self.now
-
-    def advance(self, seconds):
-        """Move time forward."""
-        self.now += seconds
+FakeClock = fixtures.FakeClock
 
 
 def settings_with(topics):
-    """Build a PLUGINS_CONFIG override carrying these topics."""
-    return override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": {"topics": topics}}})
+    """A PLUGINS_CONFIG override carrying these topics."""
+    return fixtures.ingestion_settings(topics=topics)
 
 
 class PreFilterTestCase(TestCase):
@@ -57,7 +44,7 @@ class PreFilterTestCase(TestCase):
     def setUp(self):
         """Give each test its own clock."""
         super().setUp()
-        self.clock = FakeClock()
+        self.clock = fixtures.FakeClock()
 
     def decide(self, payload, topic_settings=None, topic_name="network.events"):
         """Run the pre-filter over one payload, returning its result."""
@@ -65,7 +52,7 @@ class PreFilterTestCase(TestCase):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
         topic_config = rules.topic(topic_name)
-        event = normalize(payload, topic_config=topic_config, max_payload_bytes=65536)
+        event = normalize(payload, topic_config=topic_config)
         return rules.decide(event, topic_config)
 
     payload = staticmethod(fixtures.event_payload)
@@ -212,7 +199,7 @@ class TestRateLimit(PreFilterTestCase):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
         topic_config = rules.topic("t")
-        event = normalize(self.payload(), topic_config=topic_config, max_payload_bytes=65536)
+        event = normalize(self.payload(), topic_config=topic_config)
 
         self.assertEqual(rules.decide(event, topic_config).decision.action, ACTION_ACCEPT)
         self.assertEqual(rules.decide(event, topic_config).decision.action, ACTION_ACCEPT)
@@ -226,7 +213,7 @@ class TestRateLimit(PreFilterTestCase):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
         topic_config = rules.topic("t")
-        event = normalize(self.payload(), topic_config=topic_config, max_payload_bytes=65536)
+        event = normalize(self.payload(), topic_config=topic_config)
 
         self.assertEqual(rules.decide(event, topic_config).decision.action, ACTION_ACCEPT)
         self.assertEqual(rules.decide(event, topic_config).decision.action, ACTION_DROP)
@@ -281,8 +268,8 @@ class TestRuleOrder(PreFilterTestCase):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
         topic_config = rules.topic("t")
-        dropped = normalize(self.payload(host="lab-sw-01"), topic_config=topic_config, max_payload_bytes=65536)
-        kept = normalize(self.payload(), topic_config=topic_config, max_payload_bytes=65536)
+        dropped = normalize(self.payload(host="lab-sw-01"), topic_config=topic_config)
+        kept = normalize(self.payload(), topic_config=topic_config)
 
         for _ in range(5):
             self.assertEqual(rules.decide(dropped, topic_config).decision.reason, "lab-estate")
@@ -298,7 +285,7 @@ class TestEventTypeCache(PreFilterTestCase):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
         topic_config = rules.topic("t")
-        event = normalize(self.payload(), topic_config=topic_config, max_payload_bytes=65536)
+        event = normalize(self.payload(), topic_config=topic_config)
 
         rules.decide(event, topic_config)
         with self.assertNumQueries(0):
@@ -311,7 +298,7 @@ class TestEventTypeCache(PreFilterTestCase):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
         topic_config = rules.topic("t")
-        event = normalize(self.payload(), topic_config=topic_config, max_payload_bytes=65536)
+        event = normalize(self.payload(), topic_config=topic_config)
         self.assertEqual(rules.decide(event, topic_config).decision.action, ACTION_ACCEPT)
 
         EventType.objects.filter(name="Test Interface Down").update(enabled=False)

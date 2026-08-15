@@ -13,25 +13,9 @@ from django.test import TestCase
 
 from nautobot_event_tracker.ingestion.stats import StatsRecorder
 from nautobot_event_tracker.models import IngestionStats
-from nautobot_event_tracker.tests.test_ingestion_prefilter import FakeClock
+from nautobot_event_tracker.tests import fixtures
 
 TOPIC = "network.events"
-
-
-class FakeWallClock:
-    """Wall time a test moves by hand, for the bucket a count lands in."""
-
-    def __init__(self, start=datetime(2026, 8, 15, 3, 14, tzinfo=datetime_timezone.utc)):
-        """Start at a fixed moment, so buckets are predictable."""
-        self.now = start
-
-    def __call__(self):
-        """Read the clock, as `timezone.now` would."""
-        return self.now
-
-    def advance(self, **kwargs):
-        """Move wall time forward."""
-        self.now += timedelta(**kwargs)
 
 
 class StatsTestCase(TestCase):
@@ -40,8 +24,8 @@ class StatsTestCase(TestCase):
     def setUp(self):
         """Build the recorder."""
         super().setUp()
-        self.clock = FakeClock()
-        self.wall = FakeWallClock()
+        self.clock = fixtures.FakeClock()
+        self.wall = fixtures.FakeWallClock()
         self.recorder = self.build()
 
     def build(self, **overrides):

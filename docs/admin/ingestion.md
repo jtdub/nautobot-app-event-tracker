@@ -132,6 +132,11 @@ its address from that object's remote URL, and its username and password from th
 group. Credentials then live where the rest of the deployment's credentials live, and are rotated
 the same way. The plain `bootstrap_servers` and `url` settings are for a lab.
 
+For Kafka, `security_protocol` (`SASL_PLAINTEXT` or `SASL_SSL`) and `sasl_mechanism` (`PLAIN`,
+`SCRAM-SHA-256` or `SCRAM-SHA-512`) select how those credentials are presented. Both are consulted
+only when the integration supplies a username and password, and a broker reached over anything but
+a private network wants `SASL_SSL`.
+
 ### Describing a topic's payload
 
 A `field_map` says where each field lives, as a dotted path: `event.type` means

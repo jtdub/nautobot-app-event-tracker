@@ -7,15 +7,19 @@ would be the first violation of the rule the whole app exists to enforce.
 """
 
 import json
+from datetime import datetime, timedelta
+from datetime import timezone as datetime_timezone
 
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.test import override_settings
+from django.utils import timezone
 from nautobot.dcim.models import Location, LocationType
 from nautobot.extras.models import Status
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
-from nautobot_event_tracker.models import EventType
+from nautobot_event_tracker.models import EventType, IngestionStats
 from nautobot_event_tracker.services import tickets as ticket_service
 
 
@@ -167,6 +171,58 @@ def event_payload(**overrides):
     }
     base.update(overrides)
     return base
+
+
+class FakeClock:
+    """A monotonic clock a test moves by hand, for flush intervals and token buckets."""
+
+    def __init__(self, start=0.0):
+        """Start here."""
+        self.now = start
+
+    def __call__(self):
+        """Read the clock, as `time.monotonic` would."""
+        return self.now
+
+    def advance(self, seconds):
+        """Move time forward."""
+        self.now += seconds
+
+
+class FakeWallClock:
+    """Wall time a test moves by hand, for the bucket a count lands in."""
+
+    def __init__(self, start=datetime(2026, 8, 15, 3, 14, tzinfo=datetime_timezone.utc)):
+        """Start at a fixed moment, so buckets are predictable."""
+        self.now = start
+
+    def __call__(self):
+        """Read the clock, as `timezone.now` would."""
+        return self.now
+
+    def advance(self, **kwargs):
+        """Move wall time forward."""
+        self.now += timedelta(**kwargs)
+
+
+def ingestion_settings(**overrides):
+    """A PLUGINS_CONFIG override carrying this ingestion block.
+
+    One spelling of the app label and the `ingestion` key, so a test that moves between modules
+    cannot find two same-named helpers meaning different things.
+    """
+    block = {"topics": {"network.events": INGESTION_TOPIC}, **overrides}
+    return override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": block}})
+
+
+def create_ingestionstats(**overrides):
+    """One ingestion counter row."""
+    defaults = {
+        "consumer_name": "consumer-1",
+        "topic": "network.events",
+        "bucket_start": timezone.now().replace(second=0, microsecond=0),
+    }
+    return IngestionStats.objects.create(**{**defaults, **overrides})
 
 
 class RefusalAssertions:  # pylint: disable=too-few-public-methods

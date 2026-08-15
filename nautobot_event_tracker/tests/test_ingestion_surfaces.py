@@ -12,15 +12,14 @@ from django.utils import timezone
 from nautobot.apps.testing import APIViewTestCases, ViewTestCases
 
 from nautobot_event_tracker.models import IngestionStats
+from nautobot_event_tracker.tests import fixtures
 
 
 def create_stats():
     """Three counter rows, in three windows."""
     now = timezone.now().replace(second=0, microsecond=0)
     return [
-        IngestionStats.objects.create(
-            consumer_name="consumer-1",
-            topic="network.events",
+        fixtures.create_ingestionstats(
             bucket_start=now - timedelta(minutes=5 * index),
             received=10 * index,
             tickets_opened=index,
@@ -107,6 +106,12 @@ class IngestionStatsViewTest(  # pylint: disable=too-many-ancestors
                 kwargs={"pk": IngestionStats.objects.first().pk},
             )
 
+    def test_the_list_is_refused_without_the_permission(self):
+        """The nav entry hides it, and the view refuses it: both, not either."""
+        self.client.force_login(get_user_model().objects.create(username="nobody"))
+        response = self.client.get(reverse("plugins:nautobot_event_tracker:ingestionstats_list"))
+        self.assertEqual(response.status_code, 403)
+
     def test_the_detail_page_shows_the_drop_breakdown(self):
         """'Which rule is eating my events' is what this page is for."""
         self.user.is_superuser = True
@@ -114,20 +119,3 @@ class IngestionStatsViewTest(  # pylint: disable=too-many-ancestors
         stats = IngestionStats.objects.exclude(drops_by_reason={}).first()
         response = self.client.get(stats.get_absolute_url())
         self.assertContains(response, "lab-estate")
-
-
-class IngestionStatsNavigationTest(ViewTestCases.ListObjectsViewTestCase):  # pylint: disable=too-many-ancestors
-    """The list is reachable, and gated on the permission the nav entry names."""
-
-    model = IngestionStats
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        create_stats()
-
-    def test_the_list_is_refused_without_the_permission(self):
-        """The nav entry hides it, and the view refuses it: both, not either."""
-        self.client.force_login(get_user_model().objects.create(username="nobody"))
-        response = self.client.get(reverse("plugins:nautobot_event_tracker:ingestionstats_list"))
-        self.assertEqual(response.status_code, 403)

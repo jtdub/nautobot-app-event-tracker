@@ -12,7 +12,7 @@ from django.db import transaction
 
 from nautobot_event_tracker.choices import TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.ingestion.constants import ACTION_DROP, ACTION_SUPPRESS, REASON_UNKNOWN_TOPIC
-from nautobot_event_tracker.ingestion.normalize import NormalizationError, decode, normalize
+from nautobot_event_tracker.ingestion.normalize import NormalizationError, capped, decode, normalize
 from nautobot_event_tracker.ingestion.prefilter import Decision
 from nautobot_event_tracker.services import tickets as ticket_service
 
@@ -23,27 +23,26 @@ def handle_message(message, *, rules, recorder, config, write=True):
     """Decide what this message is, and write the ticket if it is one.
 
     Returns the `Decision` that was reached, which is what `--dry-run` prints and what the loop
-    logs. `write=False` runs every step except the ticket and the counters, so an operator can tune
-    filters against live traffic without consequences.
+    logs. `write=False` decides without applying, so an operator can tune filters against live
+    traffic without consequences; a dry run also passes a recorder that counts nothing, so this
+    function does not check the flag for anything but the ticket itself.
 
-    Phase 3's LLM triage goes between the pre-filter and the ticket, returning this same `Decision`
-    type. Nothing else here changes when it arrives.
+    Phase 3's LLM triage goes between `rules.decide()` below and the write, returning a `Decision`
+    the same dispatch reads. Its extra `attach` action becomes one more branch in `_apply()`.
     """
-    if write:
-        recorder.record(message.topic, received=1, message_time=message.timestamp)
+    recorder.record(message.topic, received=1, message_time=message.timestamp)
 
     topic_config = rules.topic(message.topic)
     if topic_config is None:
         # F1. Both brokers subscribe only to configured topics, so this is what a topic removed
         # from the configuration mid-run looks like rather than an everyday occurrence.
-        return _dropped(message.topic, REASON_UNKNOWN_TOPIC, recorder, write)
+        return _dropped(message.topic, REASON_UNKNOWN_TOPIC, recorder)
 
     try:
         event = normalize(
             decode(message.value),
             topic_config=topic_config,
             broker_timestamp=message.timestamp,
-            max_payload_bytes=config.max_payload_bytes,
         )
     except NormalizationError as error:
         # I4 - a poison message is counted, logged with enough to find it again, and dropped. It is
@@ -55,20 +54,19 @@ def handle_message(message, *, rules, recorder, config, write=True):
             message.offset,
             error.reason,
         )
-        if write:
-            recorder.record(message.topic, errored=1)
+        recorder.record(message.topic, errored=1)
         return Decision(ACTION_DROP, error.reason)
 
     result = rules.decide(event, topic_config)
     if result.decision.action == ACTION_DROP:
-        return _dropped(message.topic, result.decision.reason, recorder, write)
+        return _dropped(message.topic, result.decision.reason, recorder)
 
     if write:
-        _write_ticket(event, result, recorder)
+        _write_ticket(event, result, recorder, config)
     return result.decision
 
 
-def _write_ticket(event, result, recorder):
+def _write_ticket(event, result, recorder, config):
     """Open or join the ticket this event belongs to, and suppress it if a rule said so.
 
     I2 - everything one message causes commits together: the ticket, its `created` update, and a
@@ -85,7 +83,7 @@ def _write_ticket(event, result, recorder):
             severity=event.severity or None,
             description=event.description,
             dedup_key=event.dedup_key,
-            payload=event.payload,
+            payload=capped(event.payload, config.max_payload_bytes),
             occurred_at=event.occurred_at,
         )
 
@@ -108,8 +106,7 @@ def _write_ticket(event, result, recorder):
     )
 
 
-def _dropped(topic, reason, recorder, write):
+def _dropped(topic, reason, recorder):
     """Count a drop and report it."""
-    if write:
-        recorder.record(topic, drop_reason=reason)
+    recorder.record(topic, drop_reason=reason)
     return Decision(ACTION_DROP, reason)

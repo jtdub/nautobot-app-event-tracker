@@ -27,6 +27,28 @@ def _python_files_outside_services():
         yield path
 
 
+def _manager_call_offenders(paths, models, methods):
+    """Yield `path:line` for every `<Model>.objects.<method>()` call in these files.
+
+    The AST rather than a string search: a docstring mentioning the call is not the call. Shared by
+    both write guards so a fix to the matcher cannot land in one copy only.
+    """
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            value = node.func.value
+            if (
+                node.func.attr in methods
+                and isinstance(value, ast.Attribute)
+                and value.attr == "objects"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in models
+            ):
+                yield f"{path.relative_to(APP_ROOT)}:{node.lineno}"
+
+
 class StatusAssignmentGuardTest(SimpleTestCase):
     """No module outside services/ may assign to a ticket's status."""
 
@@ -60,29 +82,16 @@ class StatusAssignmentGuardTest(SimpleTestCase):
         The model test suite is exempt: it has to exercise the append-only guard directly, which
         means constructing rows without going through a service function.
         """
-        offenders = []
         allowed = {"tests/test_models.py"}
-        for path in _python_files_outside_services():
-            relative = str(path.relative_to(APP_ROOT))
-            if relative in allowed:
-                continue
+        paths = [path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in allowed]
+        offenders = list(_manager_call_offenders(paths, {"TicketUpdate"}, {"create"}))
+
+        # Direct construction, which the manager matcher cannot see.
+        for path in paths:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                # Matches TicketUpdate(...) and TicketUpdate.objects.create(...)
-                if isinstance(func, ast.Name) and func.id == "TicketUpdate":
-                    offenders.append(f"{relative}:{node.lineno}")
-                elif isinstance(func, ast.Attribute) and func.attr == "create":
-                    value = func.value
-                    if (
-                        isinstance(value, ast.Attribute)
-                        and value.attr == "objects"
-                        and isinstance(value.value, ast.Name)
-                        and value.value.id == "TicketUpdate"
-                    ):
-                        offenders.append(f"{relative}:{node.lineno}")
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "TicketUpdate":
+                    offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno}")
 
         self.assertEqual(
             offenders,
@@ -192,21 +201,13 @@ class IngestionGuardTest(SimpleTestCase):
 
     def test_no_direct_ticket_writes_in_the_ingestion_package(self):
         """`EventTicket.objects.create()` there would bypass the trail and the dedup rule."""
-        offenders = []
-        for path in self._ingestion_modules():
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                    continue
-                value = node.func.value
-                if (
-                    node.func.attr in ("create", "get_or_create", "update_or_create", "bulk_create")
-                    and isinstance(value, ast.Attribute)
-                    and value.attr == "objects"
-                    and isinstance(value.value, ast.Name)
-                    and value.value.id in ("EventTicket", "TicketUpdate")
-                ):
-                    offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno}")
+        offenders = list(
+            _manager_call_offenders(
+                self._ingestion_modules(),
+                {"EventTicket", "TicketUpdate"},
+                {"create", "get_or_create", "update_or_create", "bulk_create"},
+            )
+        )
 
         self.assertEqual(
             offenders,

@@ -8,7 +8,7 @@ inside the message's own transaction and these are not.
 
 import logging
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from datetime import timezone as datetime_timezone
@@ -33,18 +33,17 @@ class Counts:  # pylint: disable=too-many-instance-attributes
     tickets_opened: int = 0
     tickets_joined: int = 0
     suppressed: int = 0
-    drops_by_reason: dict = field(default_factory=dict)
+    drops_by_reason: Counter = field(default_factory=Counter)
     last_message_at: object = None
 
     def add_drop(self, reason):
         """Record a drop under the rule or filter that refused it."""
         self.dropped += 1
-        self.drops_by_reason[reason] = self.drops_by_reason.get(reason, 0) + 1
+        self.drops_by_reason[reason] += 1
 
     def saw_message_at(self, when):
         """Advance the newest-message time, which never goes backwards."""
-        if when is not None and (self.last_message_at is None or when > self.last_message_at):
-            self.last_message_at = when
+        self.last_message_at = _newest(self.last_message_at, when)
 
 
 class StatsRecorder:  # pylint: disable=too-many-instance-attributes
@@ -127,9 +126,7 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
                 topic=topic,
                 bucket_start=bucket_start,
             )
-            merged = dict(row.drops_by_reason or {})
-            for reason, count in counts.drops_by_reason.items():
-                merged[reason] = merged.get(reason, 0) + count
+            merged = Counter(row.drops_by_reason or {}) + counts.drops_by_reason
 
             IngestionStats.objects.filter(pk=row.pk).update(
                 received=F("received") + counts.received,
@@ -138,7 +135,7 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
                 tickets_opened=F("tickets_opened") + counts.tickets_opened,
                 tickets_joined=F("tickets_joined") + counts.tickets_joined,
                 suppressed=F("suppressed") + counts.suppressed,
-                drops_by_reason=merged,
+                drops_by_reason=dict(merged),
                 last_message_at=_newest(row.last_message_at, counts.last_message_at),
             )
 
@@ -162,7 +159,29 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
             logger.info("Pruned %s ingestion stats rows older than %s", deleted, cutoff)
 
 
-def _newest(*times):
-    """The latest of these times, ignoring the ones that are not set."""
-    known = [when for when in times if when is not None]
-    return max(known) if known else None
+def _newest(first, second):
+    """The later of two times, either of which may be unset."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return max(first, second)
+
+
+class NullStatsRecorder:
+    """A recorder that counts nothing, for a dry run.
+
+    A dry run writes no ticket and no counter. Making "no counter" a property of the collaborator
+    rather than a flag the pipeline re-checks at every call site keeps one shape for both runs -
+    the recorder is already injected, which is the generalisation that makes the special case
+    unnecessary.
+    """
+
+    def record(self, topic, **counts):
+        """Count nothing."""
+
+    def maybe_flush(self):
+        """Write nothing."""
+
+    def flush(self):
+        """Write nothing."""

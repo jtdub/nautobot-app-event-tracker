@@ -125,11 +125,6 @@ class ConsumerConformanceTests:  # pylint: disable=no-member
         """Return a connected consumer and whatever the test needs to drive it."""
         raise NotImplementedError
 
-    def test_it_declares_whether_it_can_replay(self):
-        """A caller reads this rather than assuming; ADR 0004 requires it be declared."""
-        consumer, _ = self.build()
-        self.assertIn(consumer.supports_replay, (True, False))
-
     def test_poll_returns_none_when_nothing_arrives(self):
         """Returning on a timeout is what lets the loop notice a shutdown signal."""
         consumer, _ = self.build()
@@ -160,6 +155,10 @@ class ConsumerConformanceTests:  # pylint: disable=no-member
 class TestFakeConsumer(ConsumerConformanceTests, SimpleTestCase):
     """The in-memory consumer the rest of the suite runs on."""
 
+    def test_it_does_not_claim_to_replay(self):
+        """It holds a list; there is nothing to resume from."""
+        self.assertFalse(fixtures.FakeEventConsumer.supports_replay)
+
     def build(self):
         """A fake with a way to push messages into it."""
         consumer = fixtures.FakeEventConsumer(topics=("network.events",))
@@ -186,6 +185,10 @@ class TestKafkaConsumer(ConsumerConformanceTests, SimpleTestCase):
         with mock.patch.object(kafka_module, "_import_consumer", return_value=consumer_class):
             consumer.connect()
         return consumer, lambda value: stub_holder["stub"].messages.append(StubKafkaMessage(value=value))
+
+    def test_it_declares_that_it_can_replay(self):
+        """Kafka commits offsets, so a consumer that dies resumes where it stopped (ADR 0004)."""
+        self.assertTrue(KafkaEventConsumer.supports_replay)
 
     def test_auto_commit_is_off(self):
         """Auto-commit would move offsets on a timer, turning a crash into a loss."""
