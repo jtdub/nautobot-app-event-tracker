@@ -639,3 +639,76 @@ class TestCreateTicketForUserOnADedupJoin(TestCase):
         ticket = self._create(assignee=self.other, tags=["a-tag"], dedup_key="")
         self.assertEqual(ticket.assigned_to, self.other)
         self.assertEqual([tag.name for tag in ticket.tags.all()], ["a-tag"])
+
+
+class TestWalkToStatus(TestCase):
+    """Getting a ticket into a state by the shortest legal route."""
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        cls.user = fixtures.create_user()
+
+    def test_it_reaches_the_requested_status(self):
+        """The whole point."""
+        ticket = fixtures.create_ticket(user=self.user)
+        ticket_service.walk_to_status(
+            ticket=ticket,
+            to_status=TicketStatusChoices.CLOSED,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+            resolution="Done.",
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatusChoices.CLOSED)
+
+    def test_every_step_is_in_the_trail(self):
+        """A ticket that arrived somewhere without a trail is the thing this app forbids."""
+        ticket = fixtures.create_ticket(user=self.user)
+        updates = ticket_service.walk_to_status(
+            ticket=ticket,
+            to_status=TicketStatusChoices.RESOLVED,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+            resolution="Done.",
+        )
+        self.assertEqual(len(updates), 2)
+        self.assertEqual(
+            [update.to_status for update in updates],
+            [TicketStatusChoices.TRIAGED, TicketStatusChoices.RESOLVED],
+        )
+
+    def test_the_resolution_lands_on_the_resolving_step(self):
+        """And not on the steps before it, which C2 would refuse."""
+        ticket = fixtures.create_ticket(user=self.user)
+        ticket_service.walk_to_status(
+            ticket=ticket,
+            to_status=TicketStatusChoices.RESOLVED,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+            resolution="Optics replaced.",
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.resolution, "Optics replaced.")
+
+    def test_a_ticket_already_there_does_nothing(self):
+        """No route, no updates, no error."""
+        ticket = fixtures.create_ticket(user=self.user)
+        updates = ticket_service.walk_to_status(
+            ticket=ticket,
+            to_status=TicketStatusChoices.NEW,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+        )
+        self.assertEqual(updates, [])
+
+    def test_there_is_no_route_out_of_closed(self):
+        """Terminal means terminal, and the refusal names the same error a single move would."""
+        ticket = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, user=self.user)
+        with self.assertRaises(InvalidTransitionError):
+            ticket_service.walk_to_status(
+                ticket=ticket,
+                to_status=TicketStatusChoices.TRIAGED,
+                source=TicketSourceChoices.HUMAN,
+                user=self.user,
+            )

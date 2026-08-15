@@ -15,6 +15,7 @@ from nautobot_event_tracker.choices import (
     TicketSourceChoices,
     TicketStatusChoices,
     UpdateTypeChoices,
+    shortest_transition_path,
 )
 
 #: The number of legal edges in the graph, written out here so that accidentally adding or removing
@@ -110,3 +111,39 @@ class ChoiceSetTest(SimpleTestCase):
                 "recurrence",
             },
         )
+
+
+class ShortestTransitionPathTest(SimpleTestCase):
+    """The route finder the fixtures and the test data command both walk."""
+
+    def test_new_needs_no_transitions(self):
+        """A ticket is already there."""
+        self.assertEqual(shortest_transition_path(TicketStatusChoices.NEW), ())
+
+    def test_every_status_is_reachable_from_new(self):
+        """Otherwise a fixture could not build a ticket in it without assigning status."""
+        for status in TicketStatusChoices.values():
+            self.assertIsNotNone(
+                shortest_transition_path(status),
+                f"no legal route from new to {status}",
+            )
+
+    def test_every_step_is_a_legal_edge(self):
+        """The whole point of deriving the route rather than writing it out."""
+        for status in TicketStatusChoices.values():
+            current = TicketStatusChoices.NEW
+            for step in shortest_transition_path(status):
+                self.assertIn(step, TICKET_STATUS_TRANSITIONS[current], f"{current} -> {step} is not an edge")
+                current = step
+            self.assertEqual(current, status)
+
+    def test_it_takes_the_shortest_route(self):
+        """Resolved is two moves away, not three."""
+        self.assertEqual(
+            shortest_transition_path(TicketStatusChoices.RESOLVED),
+            (TicketStatusChoices.TRIAGED, TicketStatusChoices.RESOLVED),
+        )
+
+    def test_nothing_leaves_closed(self):
+        """Terminal means terminal, and the route finder says so rather than looping."""
+        self.assertIsNone(shortest_transition_path(TicketStatusChoices.TRIAGED, from_status=TicketStatusChoices.CLOSED))

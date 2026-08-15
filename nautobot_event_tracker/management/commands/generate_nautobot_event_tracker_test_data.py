@@ -216,15 +216,14 @@ class Command(BaseCommand):
 
     def _walk_to(self, rng, ticket, user, status):
         """Move the ticket to `status` one legal transition at a time."""
-        for step in _PATHS[status]:
-            ticket_service.transition(
-                ticket=ticket,
-                to_status=step,
-                source=TicketSourceChoices.HUMAN,
-                user=user,
-                message=rng.choice(COMMENTS) if rng.random() < 0.4 else "",
-                resolution=rng.choice(RESOLUTIONS) if step == TicketStatusChoices.RESOLVED else "",
-            )
+        ticket_service.walk_to_status(
+            ticket=ticket,
+            to_status=status,
+            source=TicketSourceChoices.HUMAN,
+            user=user,
+            message=rng.choice(COMMENTS) if rng.random() < 0.4 else "",
+            resolution=rng.choice(RESOLUTIONS),
+        )
 
     @staticmethod
     def _tag():
@@ -266,14 +265,3 @@ def _ticket_content_type():
     from django.contrib.contenttypes.models import ContentType  # pylint: disable=import-outside-toplevel
 
     return ContentType.objects.get_for_model(EventTicket)
-
-
-#: The shortest legal route to each status, walked one transition at a time. `new` needs no moves.
-_PATHS = {
-    TicketStatusChoices.NEW: [],
-    TicketStatusChoices.TRIAGED: [TicketStatusChoices.TRIAGED],
-    TicketStatusChoices.IN_PROGRESS: [TicketStatusChoices.TRIAGED, TicketStatusChoices.IN_PROGRESS],
-    TicketStatusChoices.SUPPRESSED: [TicketStatusChoices.SUPPRESSED],
-    TicketStatusChoices.RESOLVED: [TicketStatusChoices.TRIAGED, TicketStatusChoices.RESOLVED],
-    TicketStatusChoices.CLOSED: [TicketStatusChoices.TRIAGED, TicketStatusChoices.CLOSED],
-}

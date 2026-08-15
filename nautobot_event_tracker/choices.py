@@ -144,3 +144,31 @@ TERMINAL_STATUSES = frozenset({TicketStatusChoices.RESOLVED, TicketStatusChoices
 
 #: The update types that together derive a ticket's attached objects (spec 3.4).
 ATTACHMENT_UPDATE_TYPES = (UpdateTypeChoices.OBJECT_ATTACHED, UpdateTypeChoices.OBJECT_DETACHED)
+
+
+def shortest_transition_path(to_status, from_status=TicketStatusChoices.NEW):
+    """The fewest legal transitions that get a ticket from one status to another.
+
+    Derived from the graph by breadth-first search rather than written out beside it: a hand-kept
+    list of routes is a second definition of legality, and it would go stale the first time an edge
+    changed. Returns an empty tuple when the ticket is already there, and None when no route exists
+    - which, since `closed` is terminal, is every route out of it.
+
+    Used by the test fixtures and by the test data command, both of which need a ticket in a given
+    state and must not get there by assigning `status`.
+    """
+    if from_status == to_status:
+        return ()
+
+    queue = [(from_status, ())]
+    seen = {from_status}
+    while queue:
+        status, route = queue.pop(0)
+        for step in sorted(TICKET_STATUS_TRANSITIONS[status]):
+            if step in seen:
+                continue
+            if step == to_status:
+                return route + (step,)
+            seen.add(step)
+            queue.append((step, route + (step,)))
+    return None

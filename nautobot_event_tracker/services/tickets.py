@@ -26,6 +26,7 @@ from nautobot_event_tracker.choices import (
     TicketSourceChoices,
     TicketStatusChoices,
     UpdateTypeChoices,
+    shortest_transition_path,
 )
 from nautobot_event_tracker.models import EventTicket, TicketUpdate
 from nautobot_event_tracker.services.exceptions import (
@@ -366,6 +367,36 @@ def create_ticket_for_user(  # pylint: disable=too-many-arguments
         if tags:
             ticket.tags.set(tags)
     return ticket
+
+
+def walk_to_status(  # pylint: disable=too-many-arguments
+    *, ticket, to_status, source, user=None, message="", resolution=""
+):
+    """Move a ticket to `to_status` by the shortest legal route, one transition at a time.
+
+    Every step is an ordinary `transition()`, so the trail reads like a ticket somebody worked and
+    every rule that governs a transition governs these too. `resolution` is required when the route
+    passes through `resolved`, exactly as it is for the single move.
+
+    Raises `InvalidTransitionError` when no route exists - out of `closed`, for instance.
+    """
+    route = shortest_transition_path(to_status, from_status=ticket.status)
+    if route is None:
+        raise InvalidTransitionError(f"There is no legal route from '{ticket.status}' to '{to_status}'.")
+
+    updates = []
+    for step in route:
+        updates.append(
+            transition(
+                ticket=ticket,
+                to_status=step,
+                source=source,
+                user=user,
+                message=message,
+                resolution=resolution if step == TicketStatusChoices.RESOLVED else "",
+            )
+        )
+    return updates
 
 
 def add_comment(*, ticket, message, source, user=None):

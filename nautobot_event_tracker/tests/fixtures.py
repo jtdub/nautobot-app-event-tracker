@@ -17,7 +17,7 @@ from django.utils import timezone
 from nautobot.dcim.models import Location, LocationType
 from nautobot.extras.models import Status
 
-from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices
 from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
 from nautobot_event_tracker.models import EventType, IngestionStats
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -75,14 +75,6 @@ def create_ticket(user=None, event_type=None, **kwargs):
 
 
 #: Shortest path from `new` to each status, as a list of transitions to walk.
-PATHS_TO_STATUS = {
-    TicketStatusChoices.NEW: [],
-    TicketStatusChoices.TRIAGED: [TicketStatusChoices.TRIAGED],
-    TicketStatusChoices.IN_PROGRESS: [TicketStatusChoices.TRIAGED, TicketStatusChoices.IN_PROGRESS],
-    TicketStatusChoices.SUPPRESSED: [TicketStatusChoices.SUPPRESSED],
-    TicketStatusChoices.RESOLVED: [TicketStatusChoices.TRIAGED, TicketStatusChoices.RESOLVED],
-    TicketStatusChoices.CLOSED: [TicketStatusChoices.CLOSED],
-}
 
 
 def create_ticket_in_status(status, user=None, **kwargs):
@@ -90,14 +82,13 @@ def create_ticket_in_status(status, user=None, **kwargs):
     if user is None:
         user = create_user()
     ticket = create_ticket(user=user, **kwargs)
-    for step in PATHS_TO_STATUS[status]:
-        ticket_service.transition(
-            ticket=ticket,
-            to_status=step,
-            source=TicketSourceChoices.HUMAN,
-            user=user,
-            resolution="Fixed in tests." if step == TicketStatusChoices.RESOLVED else "",
-        )
+    ticket_service.walk_to_status(
+        ticket=ticket,
+        to_status=status,
+        source=TicketSourceChoices.HUMAN,
+        user=user,
+        resolution="Fixed in tests.",
+    )
     ticket.refresh_from_db()
     return ticket
 
