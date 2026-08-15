@@ -12,6 +12,7 @@ router = NautobotUIViewSetRouter()
 
 router.register("event-types", views.EventTypeUIViewSet)
 router.register("tickets", views.EventTicketUIViewSet)
+router.register("ingestion-stats", views.IngestionStatsUIViewSet)
 
 urlpatterns = [
     path(

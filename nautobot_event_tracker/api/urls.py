@@ -8,6 +8,7 @@ router = OrderedDefaultRouter()
 router.register("event-types", views.EventTypeViewSet)
 router.register("tickets", views.EventTicketViewSet)
 router.register("ticket-updates", views.TicketUpdateViewSet)
+router.register("ingestion-stats", views.IngestionStatsViewSet)
 
 app_name = "nautobot_event_tracker-api"
 urlpatterns = router.urls

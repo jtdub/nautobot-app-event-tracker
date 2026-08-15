@@ -18,13 +18,20 @@ from nautobot.apps.ui import (
     ButtonColorChoices,
     DropdownButton,
     GroupedKeyValueTablePanel,
+    KeyValueTablePanel,
     ObjectDetailContent,
     ObjectFieldsPanel,
     ObjectsTablePanel,
     ObjectTextPanel,
     SectionChoices,
 )
-from nautobot.apps.views import GenericView, NautobotUIViewSet, ObjectPermissionRequiredMixin
+from nautobot.apps.views import (
+    GenericView,
+    NautobotUIViewSet,
+    ObjectDetailViewMixin,
+    ObjectListViewMixin,
+    ObjectPermissionRequiredMixin,
+)
 
 from nautobot_event_tracker import filters, forms, models, tables
 from nautobot_event_tracker.api import serializers
@@ -507,3 +514,63 @@ class EventTicketDetachView(ObjectPermissionRequiredMixin, GenericView):
             messages.success(request, f"Detached {obj}.")
 
         return redirect(ticket.get_absolute_url())
+
+
+class DropsByReasonPanel(KeyValueTablePanel):
+    """The drop breakdown from a counter row.
+
+    The stock panel reads its data from a render context key; this one reads it off the object,
+    where it lives. Keys are rule names and filter constants, so they are rendered verbatim rather
+    than through `bettertitle()`, which would turn `lab-estate` into `Lab-Estate`.
+    """
+
+    def get_data(self, context):
+        """The object's own breakdown."""
+        return getattr(context.get("object"), "drops_by_reason", None) or {}
+
+    def render_key(self, key, value, context):
+        """A rule name is a name, not a label."""
+        return key
+
+
+class IngestionStatsUIViewSet(ObjectListViewMixin, ObjectDetailViewMixin):  # pylint: disable=too-many-ancestors
+    """Read-only views for the ingestion counters.
+
+    List and detail only: there is no add, edit or delete route, because the consumer is the only
+    thing that writes these rows. Same posture as the update trail, for the same reason.
+    """
+
+    queryset = models.IngestionStats.objects.all()
+    table_class = tables.IngestionStatsTable
+    filterset_class = filters.IngestionStatsFilterSet
+    filterset_form_class = forms.IngestionStatsFilterForm
+    serializer_class = serializers.IngestionStatsSerializer
+    action_buttons = ()
+
+    object_detail_content = ObjectDetailContent(
+        panels=(
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=(
+                    "consumer_name",
+                    "topic",
+                    "bucket_start",
+                    "received",
+                    "tickets_opened",
+                    "tickets_joined",
+                    "suppressed",
+                    "dropped",
+                    "errored",
+                    "last_message_at",
+                ),
+            ),
+            # "Which rule is eating my events" is the question this page exists to answer, so the
+            # breakdown gets a panel of its own rather than a cell in the table above.
+            DropsByReasonPanel(
+                weight=200,
+                section=SectionChoices.RIGHT_HALF,
+                label="Drops by reason",
+            ),
+        ),
+    )

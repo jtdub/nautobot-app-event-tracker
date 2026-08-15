@@ -17,7 +17,7 @@ from rest_framework.serializers import ListSerializer
 from nautobot_event_tracker import filters
 from nautobot_event_tracker.api import serializers
 from nautobot_event_tracker.choices import TicketSourceChoices
-from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
+from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import (
     InvalidActorError,
@@ -106,6 +106,19 @@ class TicketUpdateViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-anc
     queryset = TicketUpdate.objects.select_related("ticket", "user", "related_object_type")
     serializer_class = serializers.TicketUpdateSerializer
     filterset_class = filters.TicketUpdateFilterSet
+    http_method_names = ["get", "head", "options"]
+
+
+class IngestionStatsViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-ancestors
+    """IngestionStats viewset.
+
+    Read-only by construction, like TicketUpdate and for the same reason: the rows are written by
+    one process, as a record of what it saw, and there is nothing for a client to change.
+    """
+
+    queryset = IngestionStats.objects.all()
+    serializer_class = serializers.IngestionStatsSerializer
+    filterset_class = filters.IngestionStatsFilterSet
     http_method_names = ["get", "head", "options"]
 
 

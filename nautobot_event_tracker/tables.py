@@ -3,7 +3,7 @@
 import django_tables2 as tables
 from nautobot.apps.tables import BaseTable, ButtonsColumn, LinkedCountColumn, ToggleColumn
 
-from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
+from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
 
 #: The ticket's core fields, in the order they read best. Shared by the list table and the detail
 #: panel so the two cannot drift into showing different things.
@@ -94,3 +94,32 @@ class TicketUpdateTable(BaseTable):
         fields = ("created", "update_type", "source", "user", "message", "related_object")
         default_columns = ("created", "update_type", "source", "user", "message", "related_object")
         order_by = ("created",)
+
+
+class IngestionStatsTable(BaseTable):
+    # pylint: disable=R0903
+    """Table for the IngestionStats list view.
+
+    No ToggleColumn and no ButtonsColumn: there is no bulk action and no per-row action, because
+    nothing outside the consumer writes these rows.
+    """
+
+    bucket_start = tables.DateTimeColumn(linkify=True, verbose_name="Window")
+
+    class Meta(BaseTable.Meta):
+        """Meta attributes."""
+
+        model = IngestionStats
+        fields = (
+            "bucket_start",
+            "consumer_name",
+            "topic",
+            "received",
+            "tickets_opened",
+            "tickets_joined",
+            "suppressed",
+            "dropped",
+            "errored",
+            "last_message_at",
+        )
+        default_columns = fields
