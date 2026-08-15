@@ -1,0 +1,61 @@
+---
+# A small SR Linux fabric whose logs are real.
+#
+# The point of this lab is not the topology - it is that a device, rather than a fixture, decides
+# what a syslog message looks like. The Phase 2 field map was written from what a syslog payload
+# usually looks like; this is what turns that into evidence.
+#
+# Cost: each SR Linux node wants roughly 1 GB of memory and tens of seconds to boot. Three of them
+# plus Redpanda, Nautobot, PostgreSQL and Redis needs an 8 GB machine, comfortably 12. containerlab
+# also needs privileged Docker and manages network namespaces directly, so it does not run in every
+# sandbox. Nothing else in this repository requires any of it.
+#
+#     leaf-01 ────────── leaf-02
+#         │                │
+#         └──── spine-01 ──┘
+#                  │
+#              client-01
+
+name: event-tracker
+
+mgmt:
+  network: event-tracker-mgmt
+  ipv4-subnet: 172.30.30.0/24
+
+topology:
+  kinds:
+    nokia_srlinux:
+      # Publicly pullable and needs no licence, which is most of why this lab exists at all.
+      image: ghcr.io/nokia/srlinux:24.10.1
+      # Every node exports syslog to the Fluent Bit bridge, which is what puts a real message on
+      # the broker. The address is the bridge's on the management network.
+      startup-config: srlinux-startup.cli
+    linux:
+      image: alpine:3.20
+
+  nodes:
+    leaf-01:
+      kind: nokia_srlinux
+      mgmt-ipv4: 172.30.30.11
+    leaf-02:
+      kind: nokia_srlinux
+      mgmt-ipv4: 172.30.30.12
+    spine-01:
+      kind: nokia_srlinux
+      mgmt-ipv4: 172.30.30.13
+    client-01:
+      kind: linux
+      mgmt-ipv4: 172.30.30.21
+      exec:
+        - ip address add 10.0.0.10/24 dev eth1
+        - ip route add 10.0.0.0/8 via 10.0.0.1
+
+  links:
+    # The fabric. Shutting either leaf-to-spine link produces an Interface Down event on both ends
+    # and, once BGP is up, a BGP Session Down alongside it.
+    - endpoints: ["leaf-01:e1-1", "spine-01:e1-1"]
+    - endpoints: ["leaf-02:e1-1", "spine-01:e1-2"]
+    # The leaves are connected directly so that a link can be broken without isolating a node.
+    - endpoints: ["leaf-01:e1-2", "leaf-02:e1-2"]
+    # Somewhere to send traffic from, so an outage is visible as more than a log line.
+    - endpoints: ["client-01:eth1", "leaf-01:e1-3"]
