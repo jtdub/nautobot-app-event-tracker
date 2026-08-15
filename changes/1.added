@@ -5,3 +5,5 @@ Added REST API endpoints for tickets, event types and ticket updates, including 
 Added GraphQL types for all three models.
 Added filtersets, list and detail views, transition buttons that render only for legal next states, an attach-object flow, and navigation menu items.
 Added the transition_eventticket permission, which gates moving a ticket through the workflow separately from editing its content.
+Added a detach control to each attached object on the ticket page, and split the attach flow into a type choice followed by a type-ahead object picker.
+Added severity and assignment changes to the update trail: editing either through the UI or the REST API now records who changed it and what it was before.

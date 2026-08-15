@@ -246,9 +246,11 @@ All parameters are keyword-only. All mutating functions return the `TicketUpdate
 ```python
 def create_ticket(*, title, event_type, source, severity=None, description="",
                   user=None, dedup_key="", payload=None, related_objects=None,
-                  occurred_at=None) -> EventTicket
+                  occurred_at=None, pk=None) -> EventTicket
 ```
-Creates a ticket in `new`, or returns an existing one per S5. `severity` defaults to `event_type.default_severity`. `occurred_at` defaults to now and sets both `first_seen` and `last_seen`. Each object in `related_objects` is attached with its own `object_attached` update. Writes a `created` update. Raises `ValidationError` if `event_type.enabled` is false.
+Creates a ticket in `new`, or returns an existing one per S5. `severity` defaults to `event_type.default_severity`. `occurred_at` defaults to now and sets both `first_seen` and `last_seen`. Each object in `related_objects` is attached with its own `object_attached` update — on a new ticket and on a joined one alike, since a recurrence can implicate objects the first occurrence did not name. Writes a `created` update. Raises `ValidationError` if `event_type.enabled` is false.
+
+`pk` lets the caller choose the ticket's primary key, which the REST API allows on create and data imports rely on; it is ignored when the call joins an existing ticket. The returned instance carries `was_created`, True when this call opened the ticket and False when it joined one — the transports read it rather than inferring from the event count, so that a recurrence never has the caller's custom fields written over it.
 
 ```python
 def add_comment(*, ticket, message, source, user=None) -> TicketUpdate
@@ -308,7 +310,9 @@ The check runs **first**, before actor validation and before transition legality
 
 **S5 — Idempotent creation.** When `create_ticket` is called with a non-empty `dedup_key`, the service looks for an existing ticket with that key whose status is **not** `resolved` or `closed`. If one exists it does not create a second ticket; instead, within one transaction, it increments `event_count`, advances `last_seen` to `occurred_at`, writes a `recurrence` update, and returns the existing ticket.
 
-If the only matching tickets are resolved or closed, a new ticket is created — a recurrence after a fix is a new problem, not a continuation of the old one. Lookup takes `select_for_update()` so that concurrent consumers cannot both create a ticket for the same key. An empty `dedup_key` disables the behaviour entirely.
+If the only matching tickets are resolved or closed, a new ticket is created — a recurrence after a fix is a new problem, not a continuation of the old one. An empty `dedup_key` disables the behaviour entirely.
+
+Concurrent deliveries of the same key are serialized by a transaction-scoped PostgreSQL advisory lock taken on the key before the lookup. `select_for_update()` cannot do this job: until the first ticket for a key exists there is no row to lock, so two simultaneous first deliveries would each find nothing and each open a ticket — precisely the case this rule exists to prevent. The lock is keyed on the value rather than on a row, so it holds before the row exists; ADR 0003 already makes PostgreSQL the only supported backend.
 
 ## 5. REST API and GraphQL
 
@@ -323,7 +327,9 @@ Routes are registered under `/api/plugins/event-tracker/`.
 | `tickets/{id}/attach/` `tickets/{id}/detach/` | `POST` | Body carries `object_type` (an `app_label.model` string) and `object_id` (a UUID). Attach rejects types outside the section 3.5 allowlist with 400 |
 | `ticket-updates/` | `GET` only | `http_method_names = ["get", "head", "options"]` |
 
-**Creation through the API** routes to `services.tickets.create_ticket()` by overriding `perform_create()` on the ticket viewset, so an API-created ticket gets its `created` update and its dedup behaviour like any other.
+**Creation through the API** routes to `services.tickets.create_ticket()` by overriding `perform_create()` on the ticket viewset, so an API-created ticket gets its `created` update and its dedup behaviour like any other. A list payload is a bulk create in Nautobot, so the override handles one ticket or many. Fields the service does not own — custom fields, relationships — are applied by the serializer to the row the service wrote, except when the call joined an existing ticket, which belongs to an earlier event and is left alone.
+
+**Updates that carry their own update type** route through the service too. `perform_update()` sends a changed `severity` to `set_severity()` and a changed `assigned_to` to `assign()` before saving the rest, so a `PATCH` cannot change either without recording who changed it and from what. The bulk `PATCH` route calls `perform_update()` once per object, so it is covered by the same override. The stored row is re-read first: Nautobot's `ValidatedModelSerializer.validate()` has already applied the incoming values to `serializer.instance`, so comparing against that instance would find nothing changed.
 
 **Direct status changes are rejected, not ignored.** `status` is in `read_only_fields`, which alone would make DRF silently drop it — a client would get a 200 and believe it had worked. Instead `EventTicketSerializer.validate()` inspects `self.initial_data`: if `status` is present it raises `ValidationError` pointing at the transition endpoint. Same treatment for `resolved_at`, `closed_at` and `event_count`, which are equally service-owned.
 
@@ -350,14 +356,20 @@ Per [ADR 0008](../decisions/0008-ui-component-framework-only.md), `NautobotUIVie
 
 Where more than three transitions are legal from a state, they collapse into a `DropdownButton`.
 
-**Attaching objects.** An **Attach Object** `Button` on the ticket detail page links to an attach view on the same viewset. The view renders an `AttachObjectForm` with two fields:
+**Attaching objects.** An **Attach Object** `Button` on the ticket detail page links to an attach view on the same viewset, which asks two questions in turn:
 
-- `object_type` — a `ContentTypeChoiceField` limited to the allowlist in section 3.5.
-- `object_id` — a `DynamicModelChoiceField` whose queryset follows the chosen `object_type`, giving the standard Nautobot type-ahead object picker rather than a raw UUID box.
+- `AttachObjectTypeForm` — a choice field over the allowlist in section 3.5.
+- `AttachObjectForm` — the chosen type as a hidden field, plus `object_id` as a `DynamicModelChoiceField` over that type's objects, giving the standard Nautobot type-ahead picker rather than a raw UUID box.
+
+Two steps rather than one because a `DynamicModelChoiceField` needs a concrete queryset to exist at all, and the queryset is not known until the type is chosen. A submission carrying both fields at once — as the REST API and the test suite send — skips straight to the attachment, so the second step is a convenience for people rather than a required round trip.
 
 On submit the view calls `services.tickets.attach_object()` with `source=human` and `user=request.user`, and redirects back to the ticket. It never touches `TicketUpdate` itself. The button renders only for users holding `change_eventticket`, and is hidden entirely when the ticket is `resolved` or `closed`.
 
-Each row of the grouped related-objects panel carries a detach control, posting to the detach endpoint through the service under the same permission. Detaching writes an `object_detached` row; it removes nothing.
+Each row of the grouped related-objects panel carries a detach control, linking to a detach confirmation and then through the service under the same permission. The control appears only on an open ticket, and only for a user holding `change_eventticket`. Detaching writes an `object_detached` row; it removes nothing.
+
+The panel renders each object under its own name. `KeyValueTablePanel` would otherwise run the key through `bettertitle()`, which is right for a field label and wrong for a device called `edge_rtr_01`, so `RelatedObjectsPanel` overrides `render_key()` to return the name verbatim.
+
+**Transition buttons collapse into a `DropdownButton`** that renders only when at least one of its children does. The stock component renders regardless of its children, which would offer a closed ticket — or a user without the permission — a button opening an empty menu.
 
 This is a form view, not a hand-written page: Nautobot renders it through its generic object-edit template, so ADR 0008 holds. The form and its two service calls are the only UI-side attachment code.
 
@@ -452,4 +464,4 @@ These are the calls made while writing this spec that most deserve a second opin
 
 **11.9 The attachable-type allowlist and its default (section 3.5).** The first draft of this spec had no constraint on what could be attached, which would have let a ticket point at a `Secret` or a `User`. *Proposed reading:* constrain it, defaulting to the seven DCIM/IPAM/Circuits models named in the architecture diagram, and let deployments extend the list through `PLUGINS_CONFIG`. The default is a guess at what an operator wants on day one — if `dcim.devicetype`, `dcim.rack`, `dcim.virtualchassis` or the virtualization models belong there too, adding them is a one-line change to the default and costs nothing later.
 
-**11.10 Attach is a form view rather than an inline control.** Section 6 routes attachment through a small form on the ticket page, using Nautobot's generic object-edit rendering so that ADR 0008 holds. *Proposed reading:* accept the extra click. An inline type-ahead directly in the detail panel would be nicer to use, but the UI Component Framework has no control for a dependent two-field picker, so building it means either custom JavaScript or a hand-written template — and the second is exactly what ADR 0008 forbids.
+**11.10 Attach is a form view rather than an inline control.** *Resolved: two form steps.* Section 6 routes attachment through a small form on the ticket page, using Nautobot's generic object-edit rendering so that ADR 0008 holds. The dependent two-field picker the first draft wanted does not exist in the UI Component Framework, and building it inline would mean custom JavaScript or a hand-written template — the second is exactly what ADR 0008 forbids. Splitting the question in two gets the real type-ahead picker without either: the type is chosen first, and the object picker is then built over a concrete queryset. The cost is one extra click for a person, and none at all for a client that already knows both values.

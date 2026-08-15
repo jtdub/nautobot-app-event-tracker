@@ -59,6 +59,8 @@ Every status change has to leave an entry in the trail, has to follow the diagra
 
 The same applies to Resolved At, Closed At, Resolution and Event Count. They are set for you as a side effect of transitions.
 
+Severity and assignee work the other way round: you edit them on the ticket as you would any other field, and the app records the change in the trail for you. Whether the edit comes from the form or from a REST `PATCH`, the entry says who changed it and what it was before.
+
 ### Permissions
 
 Transitioning needs the **Can transition event ticket status** permission (`transition_eventticket`), which is separate from the ordinary change permission. That separation is useful: you can let a first-line team move tickets through the workflow without letting them rewrite ticket content.
@@ -73,7 +75,7 @@ Entries record *who* acted and *what kind* of actor they were — a person, an A
 
 ## Attaching network objects
 
-Tickets point at the real thing in Nautobot rather than describing it. Use **Attach Object** on the ticket page to link a device, interface, IP address, prefix, cable, circuit or location. Attached objects appear on the ticket grouped by type, each one a link.
+Tickets point at the real thing in Nautobot rather than describing it. Use **Attach Object** on the ticket page to link a device, interface, IP address, prefix, cable, circuit or location. You are asked for the kind of object first, then for the object itself through the usual type-ahead picker. Attached objects appear on the ticket grouped by type, each one a link, each with a control to detach it again.
 
 Detaching an object does not erase the fact that it was attached — you will still see both events in the trail. That is often the useful part: knowing an interface was implicated at 03:14 and ruled out at 04:02 tells you more than a ticket that simply never mentions it.
 
