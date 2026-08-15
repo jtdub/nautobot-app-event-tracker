@@ -70,6 +70,7 @@ PLUGINS_CONFIG = {
             "max_payload_bytes": 65536,
             "event_type_cache_seconds": 60,
             "max_retries": 5,
+            "poll_timeout_seconds": 1.0,
             "stats_bucket_seconds": 300,
             "stats_flush_seconds": 10,
             "stats_retention_days": 30,
@@ -77,7 +78,6 @@ PLUGINS_CONFIG = {
                 "bootstrap_servers": ["kafka-1:9092", "kafka-2:9092"],
                 "group_id": "nautobot-event-tracker",
                 "external_integration": "",     # name of an ExternalIntegration, optional
-                "poll_timeout_seconds": 1.0,
             },
             "redis": {
                 "external_integration": "",
@@ -432,9 +432,9 @@ Timing is injected, never slept on: the rate limiter and the stats bucket both t
 
 Each states a proposed reading, so that silence can be taken as agreement. **13.1 needs an explicit answer before implementation starts.**
 
-**13.1 The Kafka client is a new dependency.** ADR 0004 names Kafka but no library. *Proposed reading:* `confluent-kafka`, the librdkafka binding, as an **optional extra** — `pip install nautobot-event-tracker[kafka]` — so that a deployment using Redis, or not using ingestion at all, installs nothing new, and the Kafka module raises a clear `ImproperlyConfigured` when the extra is missing. The alternative, `kafka-python`, is pure Python and easier to install but slower and less actively maintained. This is the one new runtime dependency in the phase, and the kickoff rule says to ask.
+**13.1 The Kafka client is a new dependency.** *Resolved: `confluent-kafka`, as an optional extra.* `pip install nautobot-event-tracker[kafka]` installs it; a deployment using Redis, or not using ingestion at all, installs nothing new, and the Kafka module imports without it and raises `ImproperlyConfigured` naming the extra when it is missing. It is the only new runtime dependency in the phase.
 
-**13.2 The enrichment resolver's phase.** The architecture's phasing table puts it in Phase 4; the Phase 1 spec's section 4.2 called it "the Phase 2 enrichment resolver". They disagree, and this PR corrects the Phase 1 wording to match the table. *Proposed reading:* it stays in Phase 4, and Phase 2 tickets carry a raw payload with no attached objects. The cost is real and worth naming: until Phase 4, an ingested ticket says "Interface Down on edge-rtr-07" without linking to that device, so the operator still searches by hand. If you would rather have it in Phase 2 — it is deterministic, needs no LLM, and would make ingested tickets substantially more useful — say so, and it adds a section here for the hostname and interface resolution rules plus the `related_objects` argument on the `create_ticket` call in 8.1.
+**13.2 The enrichment resolver's phase.** *Resolved: it stays in Phase 4.* The architecture's phasing table puts it there; the Phase 1 spec's section 4.2 called it "the Phase 2 enrichment resolver", and that wording is corrected. The cost is worth naming: until Phase 4, an ingested ticket says "Interface Down on edge-rtr-07" without linking to that device, so an operator still searches by hand. Adding it later means a resolution-rules section here and a `related_objects` argument on the `create_ticket` call in 8.1; nothing else in this phase changes.
 
 **13.3 Redis pub/sub rather than Redis Streams.** ADR 0004 specifies pub/sub. Streams would give consumer groups, acknowledgement and replay — the properties pub/sub lacks — from a dependency the deployment already has. *Proposed reading:* implement pub/sub as the ADR says, and record Streams as a candidate third implementation rather than reopening the ADR now. The interface admits it without change.
 
@@ -451,3 +451,14 @@ Each states a proposed reading, so that silence can be taken as agreement. **13.
 **13.9 The payload cap defaults to 64 KiB (section 6).** *Proposed reading:* keep a cap, because an uncapped `JSONField` fed by telemetry is a table that grows unpredictably. The number is a guess; if typical events are larger, raise it in configuration rather than removing the cap.
 
 **13.10 No dead-letter topic.** A poison message is logged, counted and dropped (I4). *Proposed reading:* enough for Phase 2 — the counter and the log line make it visible, and republishing failures to a broker topic is a second producer path with its own failure modes. If operators need the messages themselves, a dead-letter topic is a small addition later.
+
+
+## 14. What the implementation changed
+
+Recorded here rather than left to a reader to discover by diffing the spec against the code.
+
+- **`poll_timeout_seconds` moved to the top of the `ingestion` block**, out of the Kafka block. Both implementations poll, and the timeout is also how often the loop can notice a shutdown signal — which has nothing to do with which broker is in use.
+- **The unresolvable-dedup-template case is logged rather than counted** (section 3.2). Counting it in `drops_by_reason` would have broken that field's invariant, since the event is not dropped. The log line is rate-limited to once per topic per stats bucket, so a misconfigured template cannot itself become the flood.
+- **Retention pruning covers every consumer's rows**, not only the pruning process's own. An instance that has stopped running would otherwise leave its counters behind forever.
+- **A database failure drops the connection before retrying**, but only when not inside an enclosing transaction. Retrying on a connection the server has already closed just fails again; a connection inside someone else's transaction is not ours to close.
+- **`IngestionStats` gained a filter form** alongside its filterset, so the list page filters the way every other list page in the app does.
