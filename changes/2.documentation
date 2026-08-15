@@ -1,0 +1,1 @@
+Added the Phase 2 ingestion specification covering the event consumer interface, the standalone consumer process, normalization, the deterministic pre-filter, and ingestion statistics.

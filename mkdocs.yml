@@ -116,8 +116,10 @@ nav:
           - Event Ticket: "models/eventticket.md"
           - Event Type: "models/eventtype.md"
           - Ticket Update: "models/ticketupdate.md"
+          - Ingestion Stats: "models/ingestionstats.md"
   - Administrator Guide:
       - Install and Configure: "admin/install.md"
+      - Running the Event Consumer: "admin/ingestion.md"
       - Upgrade: "admin/upgrade.md"
       - Uninstall: "admin/uninstall.md"
       - Compatibility Matrix: "admin/compatibility_matrix.md"
@@ -144,6 +146,8 @@ nav:
               - 0008 UI Component Framework: "decisions/0008-ui-component-framework-only.md"
           - Specifications:
               - "Phase 1 — Ticketing": "specs/phase-1-tickets.md"
+              - "Phase 2 — Ingestion": "specs/phase-2-ingestion.md"
+              - "Phase 2.5 — Lab Environment": "specs/phase-2-5-lab-environment.md"
       - Code Reference:
           - "dev/code_reference/index.md"
           - Package: "dev/code_reference/package.md"

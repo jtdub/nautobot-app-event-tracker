@@ -17,7 +17,7 @@ from rest_framework.serializers import ListSerializer
 from nautobot_event_tracker import filters
 from nautobot_event_tracker.api import serializers
 from nautobot_event_tracker.choices import TicketSourceChoices
-from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
+from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import (
     InvalidActorError,
@@ -109,6 +109,19 @@ class TicketUpdateViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-anc
     http_method_names = ["get", "head", "options"]
 
 
+class IngestionStatsViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-ancestors
+    """IngestionStats viewset.
+
+    Read-only by construction, like TicketUpdate and for the same reason: the rows are written by
+    one process, as a record of what it saw, and there is nothing for a client to change.
+    """
+
+    queryset = IngestionStats.objects.all()
+    serializer_class = serializers.IngestionStatsSerializer
+    filterset_class = filters.IngestionStatsFilterSet
+    http_method_names = ["get", "head", "options"]
+
+
 class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
     """EventTicket viewset.
 
@@ -146,9 +159,12 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
         A list payload is a bulk create in Nautobot, so this handles one ticket or many. Object
         permissions are enforced the way the base class does it, by checking the created rows
         against the restricted queryset inside the transaction that made them.
+
+        Service refusals go through the same mapping as every other action: creating a ticket with
+        a disabled event type is a 400 with the service's own message, not a 500.
         """
         try:
-            with transaction.atomic():
+            with transaction.atomic(), _reporting_service_errors():
                 if isinstance(serializer, ListSerializer):
                     instance = [self._create_ticket(serializer.child, data) for data in serializer.validated_data]
                 else:

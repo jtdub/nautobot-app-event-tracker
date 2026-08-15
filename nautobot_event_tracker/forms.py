@@ -14,7 +14,7 @@ from nautobot.apps.forms import (
 )
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
-from nautobot_event_tracker.models import EventTicket, EventType
+from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats
 from nautobot_event_tracker.services import tickets as ticket_service
 
 #: Nautobot has BOOLEAN_WITH_BLANK_CHOICES, but only under nautobot.core.forms.constants, which is
@@ -218,3 +218,18 @@ class DetachObjectForm(forms.Form):
 
     object_type = forms.ModelChoiceField(queryset=ContentType.objects.all(), widget=forms.HiddenInput)
     object_id = forms.UUIDField(widget=forms.HiddenInput)
+
+
+class IngestionStatsFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for IngestionStats.
+
+    Two questions the page exists to answer: what is one consumer doing, and what is happening on
+    one topic.
+    """
+
+    model = IngestionStats
+    field_order = ["q", "consumer_name", "topic"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within consumer name and topic.")
+    consumer_name = forms.CharField(required=False, label="Consumer name")
+    topic = forms.CharField(required=False, label="Topic")

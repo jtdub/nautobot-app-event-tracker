@@ -409,3 +409,43 @@ class TicketUpdateAPITest(APITestCase):
         self.add_permissions("nautobot_event_tracker.delete_ticketupdate")
         response = self.client.delete(self.detail_url, **self.header)
         self.assertHttpStatus(response, 405)
+
+
+class TestCreateRejectsADisabledEventType(APITestCase):
+    """A service refusal on create is reported, not raised through as a 500."""
+
+    def setUp(self):
+        """Create test data."""
+        super().setUp()
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
+        self.disabled = EventType.objects.create(name="Retired Type", enabled=False)
+
+    def _post(self):
+        """Try to open a ticket against the disabled type."""
+        return self.client.post(
+            reverse("plugins-api:nautobot_event_tracker-api:eventticket-list"),
+            {
+                "title": "Should not open",
+                "event_type": str(self.disabled.pk),
+                "severity": SeverityChoices.MAJOR,
+            },
+            format="json",
+            **self.header,
+        )
+
+    def test_a_disabled_event_type_is_a_bad_request(self):
+        """The service refuses it, and a refusal the client caused is a 400, not a 500."""
+        self.assertEqual(self._post().status_code, 400)
+
+    def test_the_message_says_which_type(self):
+        """An operator should not have to read a traceback to find out which."""
+        self.assertIn("Retired Type", str(self._post().data))
+
+    def test_no_ticket_is_left_behind(self):
+        """The refusal happens inside the create transaction."""
+        self._post()
+        self.assertFalse(EventTicket.objects.filter(title="Should not open").exists())

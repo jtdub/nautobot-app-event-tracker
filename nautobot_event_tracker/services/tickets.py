@@ -201,6 +201,17 @@ def ticket_ids_with_attached_types(queryset, content_types):
     return {ticket_id for ticket_id, _, _ in _replay_attachments(rows)}
 
 
+def effective_severity(severity, event_type):
+    """The severity a ticket of this type will end up with.
+
+    One expression, in the layer that owns the write. The ingestion pre-filter has to weigh an
+    event against its severity floor before the ticket exists, so it calls this rather than
+    restating the fallback - the same way every transport reads the workflow graph through
+    `get_allowed_transitions()` instead of keeping a copy.
+    """
+    return severity or event_type.default_severity
+
+
 def _lock_dedup_key(dedup_key):
     """Hold a transaction-scoped lock on this dedup key until the surrounding transaction ends.
 
@@ -251,7 +262,7 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
         raise ValidationError(f"Event type '{event_type}' is disabled and cannot be used for new tickets.")
 
     occurred_at = occurred_at or timezone.now()
-    severity = severity or event_type.default_severity
+    severity = effective_severity(severity, event_type)
 
     with transaction.atomic():
         if dedup_key:
@@ -333,6 +344,10 @@ def create_ticket_for_user(  # pylint: disable=too-many-arguments
 
     Shared by the REST and UI create paths so that "a person opened a ticket" has one definition
     and the two transports cannot drift apart.
+
+    On a dedup join the assignee and tags are left alone: the ticket belongs to an earlier event,
+    and somebody may already be working it. Both transports guard every other field on
+    `was_created` for the same reason.
     """
     ticket = create_ticket(
         title=title,
@@ -345,10 +360,11 @@ def create_ticket_for_user(  # pylint: disable=too-many-arguments
         payload=payload,
         pk=pk,
     )
-    if assignee is not None:
-        assign(ticket=ticket, assignee=assignee, source=TicketSourceChoices.HUMAN, user=user)
-    if tags:
-        ticket.tags.set(tags)
+    if ticket.was_created:
+        if assignee is not None:
+            assign(ticket=ticket, assignee=assignee, source=TicketSourceChoices.HUMAN, user=user)
+        if tags:
+            ticket.tags.set(tags)
     return ticket
 
 

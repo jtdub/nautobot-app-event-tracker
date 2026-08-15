@@ -30,6 +30,12 @@ class EventTrackerConfig(NautobotAppConfig):
             "ipam.prefix",
             "circuits.circuit",
         ],
+        # Event ingestion. An empty block means the consumer has nothing to subscribe to, which is
+        # the right default for an app installed before anyone has pointed it at a broker. Nautobot
+        # merges PLUGINS_CONFIG over these defaults one top-level key at a time, so the defaults
+        # for the keys inside this one are applied by `ingestion.config`, not here. See the Phase 2
+        # spec, section 3.
+        "ingestion": {},
     }
     docs_view_name = "plugins:nautobot_event_tracker:docs"
     searchable_models = ["eventticket", "eventtype"]

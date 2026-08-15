@@ -15,7 +15,7 @@ from nautobot.apps.filters import (
 )
 
 from nautobot_event_tracker.choices import TERMINAL_STATUSES
-from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
+from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
 from nautobot_event_tracker.services import tickets as ticket_service
 
 
@@ -154,3 +154,22 @@ class TicketUpdateFilterSet(NautobotFilterSet):
 
         model = TicketUpdate
         fields = ["ticket", "update_type", "source", "message"]  # pylint: disable=nb-use-fields-all
+
+
+class IngestionStatsFilterSet(NautobotFilterSet):
+    """Filter for IngestionStats.
+
+    Two questions the page exists to answer: what is one consumer doing, and what is happening on
+    one topic. Everything else is a matter of reading the newest rows, which is the default order.
+    """
+
+    q = SearchFilter(filter_predicates={"consumer_name": "icontains", "topic": "icontains"})
+    consumer_name = MultiValueCharFilter(label="Consumer name")
+    topic = MultiValueCharFilter(label="Topic")
+    bucket_start = MultiValueDateTimeFilter(label="Bucket start")
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = IngestionStats
+        fields = ["consumer_name", "topic", "bucket_start"]  # pylint: disable=nb-use-fields-all

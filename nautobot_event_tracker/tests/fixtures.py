@@ -6,13 +6,20 @@ This is slower than setting `status` directly, and it is deliberate: a fixture t
 would be the first violation of the rule the whole app exists to enforce.
 """
 
+import json
+from datetime import datetime, timedelta
+from datetime import timezone as datetime_timezone
+
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.test import override_settings
+from django.utils import timezone
 from nautobot.dcim.models import Location, LocationType
 from nautobot.extras.models import Status
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
-from nautobot_event_tracker.models import EventType
+from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
+from nautobot_event_tracker.models import EventType, IngestionStats
 from nautobot_event_tracker.services import tickets as ticket_service
 
 
@@ -103,3 +110,131 @@ def create_eventticket():
         create_ticket(user=user, event_type=event_type, title=title)
         for title in ("Ticket One", "Ticket Two", "Ticket Three")
     ]
+
+
+class FakeEventConsumer(EventConsumer):
+    """An in-memory broker, so no test in CI needs a real one.
+
+    Records what was acknowledged, which is how the at-least-once tests check that a message whose
+    ticket failed was left on the queue.
+    """
+
+    supports_replay = False
+
+    def __init__(self, *, settings=None, topics=(), messages=()):
+        """Queue these messages for delivery."""
+        super().__init__(settings=settings or {}, topics=topics)
+        self.messages = list(messages)
+        self.acknowledged = []
+        self.connected = False
+        self.closed = False
+
+    def connect(self):
+        """Nothing to connect to, but the loop expects to be able to say so."""
+        self.connected = True
+
+    def poll(self, timeout):
+        """Hand over the next queued message, or None once they run out."""
+        if not self.messages:
+            return None
+        return self.messages.pop(0)
+
+    def acknowledge(self, message):
+        """Record the acknowledgement rather than sending one."""
+        self.acknowledged.append(message)
+
+    def close(self):
+        """Note that the loop closed us, which the shutdown tests assert."""
+        self.closed = True
+
+
+def broker_message(payload, *, topic="network.events", **kwargs):
+    """Build a BrokerMessage carrying this payload as JSON."""
+    return BrokerMessage(topic=topic, value=json.dumps(payload).encode("utf-8"), **kwargs)
+
+
+#: A topic configuration the ingestion tests share, so the pipeline, the command and the pre-filter
+#: are all exercised against the same shape of payload.
+INGESTION_TOPIC = {
+    "field_map": {"event_type": "event.type", "title": "message", "severity": "event.severity"},
+    "defaults": {"event_type": "Test Interface Down"},
+    "dedup_key_template": "{event.type}:{host}",
+}
+
+
+def event_payload(**overrides):
+    """A payload the pre-filter accepts and the pipeline turns into a ticket."""
+    base = {
+        "event": {"type": "Test Interface Down", "severity": SeverityChoices.MAJOR},
+        "message": "Interface ethernet-1/1 is down",
+        "host": "leaf-01",
+    }
+    base.update(overrides)
+    return base
+
+
+class FakeClock:
+    """A monotonic clock a test moves by hand, for flush intervals and token buckets."""
+
+    def __init__(self, start=0.0):
+        """Start here."""
+        self.now = start
+
+    def __call__(self):
+        """Read the clock, as `time.monotonic` would."""
+        return self.now
+
+    def advance(self, seconds):
+        """Move time forward."""
+        self.now += seconds
+
+
+class FakeWallClock:
+    """Wall time a test moves by hand, for the bucket a count lands in."""
+
+    def __init__(self, start=datetime(2026, 8, 15, 3, 14, tzinfo=datetime_timezone.utc)):
+        """Start at a fixed moment, so buckets are predictable."""
+        self.now = start
+
+    def __call__(self):
+        """Read the clock, as `timezone.now` would."""
+        return self.now
+
+    def advance(self, **kwargs):
+        """Move wall time forward."""
+        self.now += timedelta(**kwargs)
+
+
+def ingestion_settings(**overrides):
+    """A PLUGINS_CONFIG override carrying this ingestion block.
+
+    One spelling of the app label and the `ingestion` key, so a test that moves between modules
+    cannot find two same-named helpers meaning different things.
+    """
+    block = {"topics": {"network.events": INGESTION_TOPIC}, **overrides}
+    return override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": block}})
+
+
+def create_ingestionstats(**overrides):
+    """One ingestion counter row."""
+    defaults = {
+        "consumer_name": "consumer-1",
+        "topic": "network.events",
+        "bucket_start": timezone.now().replace(second=0, microsecond=0),
+    }
+    return IngestionStats.objects.create(**{**defaults, **overrides})
+
+
+class RefusalAssertions:  # pylint: disable=too-few-public-methods
+    """Assert that something was refused, and that the message says why.
+
+    Mixed into the tests for both halves of startup validation. The message is the whole point of
+    the exercise - an operator reading it at 03:00 is the reason the validation exists - so every
+    test asserts on it rather than on the exception's type alone.
+    """
+
+    def assert_names(self, message, fragments):
+        """Assert the message names each of these faults."""
+        for fragment in fragments:
+            self.assertIn(fragment, message)  # pylint: disable=no-member
+        return message

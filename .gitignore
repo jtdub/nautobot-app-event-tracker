@@ -336,3 +336,7 @@ GEMINI.md
 .ollama/
 # https://github.com/kirodotdev/Kiro
 .kiro/
+
+# Redis snapshot, written here when redis-server is started with the repo as its
+# working directory. Never part of the app.
+dump.rdb

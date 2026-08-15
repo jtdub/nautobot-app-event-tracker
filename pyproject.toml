@@ -31,6 +31,9 @@ include = [
 python = ">=3.10,<3.15"
 # Used for local development
 nautobot = ">=3.2.0,<4.0.0"
+# The Kafka consumer's client, optional: a deployment consuming from Redis, or not consuming at
+# all, installs nothing it does not use. See the Phase 2 spec, section 13.1.
+confluent-kafka = { version = ">=2.0.0,<3.0.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 coverage = "*"
@@ -68,7 +71,9 @@ griffe = "1.1.1"
 mkdocs-glightbox = "~0.5.2"
 
 [tool.poetry.extras]
+kafka = ["confluent-kafka"]
 all = [
+    "confluent-kafka",
 ]
 
 [tool.pylint.main]

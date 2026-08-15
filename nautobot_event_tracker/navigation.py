@@ -15,6 +15,11 @@ items = (
         ),
     ),
     NavMenuItem(
+        link="plugins:nautobot_event_tracker:ingestionstats_list",
+        name="Ingestion Stats",
+        permissions=["nautobot_event_tracker.view_ingestionstats"],
+    ),
+    NavMenuItem(
         link="plugins:nautobot_event_tracker:eventtype_list",
         name="Event Types",
         permissions=["nautobot_event_tracker.view_eventtype"],

@@ -21,6 +21,282 @@
                 "ipam.prefix",
                 "circuits.circuit"
             ]
+        },
+        "ingestion": {
+            "type": "object",
+            "description": "Event ingestion. An empty object means the consumer subscribes to nothing, which is the default until a deployment points it at a broker.",
+            "default": {},
+            "properties": {
+                "consumer": {
+                    "type": "string",
+                    "description": "Which broker implementation to run. Kafka is the reference; Redis pub/sub is best-effort and loses messages published while the consumer is down.",
+                    "enum": [
+                        "kafka",
+                        "redis"
+                    ],
+                    "default": "redis"
+                },
+                "consumer_name": {
+                    "type": "string",
+                    "description": "Name this process reports its counters under. Blank means `hostname:pid`.",
+                    "default": ""
+                },
+                "max_payload_bytes": {
+                    "type": "integer",
+                    "description": "Largest raw event stored on a ticket. A payload over this is replaced by its size and a readable prefix.",
+                    "minimum": 1,
+                    "default": 65536
+                },
+                "event_type_cache_seconds": {
+                    "type": "integer",
+                    "description": "How long the consumer holds the event type catalogue between reads. Disabling an event type takes up to this long to take effect.",
+                    "minimum": 1,
+                    "default": 60
+                },
+                "max_retries": {
+                    "type": "integer",
+                    "description": "Attempts at a message whose database write fails transiently, before the process exits without acknowledging it.",
+                    "minimum": 1,
+                    "default": 5
+                },
+                "poll_timeout_seconds": {
+                    "type": "number",
+                    "description": "How long a poll waits before returning empty, which is also how often the loop can notice a shutdown signal or roll a stats bucket while no traffic is arriving.",
+                    "exclusiveMinimum": 0,
+                    "default": 1.0
+                },
+                "stats_bucket_seconds": {
+                    "type": "integer",
+                    "description": "Width of one IngestionStats counter window.",
+                    "minimum": 1,
+                    "default": 300
+                },
+                "stats_flush_seconds": {
+                    "type": "integer",
+                    "description": "How often in-memory counters are written to the database. Bounds the write rate regardless of the message rate.",
+                    "minimum": 1,
+                    "default": 10
+                },
+                "stats_retention_days": {
+                    "type": "integer",
+                    "description": "Age at which counter rows are pruned, on bucket rollover.",
+                    "minimum": 1,
+                    "default": 30
+                },
+                "kafka": {
+                    "type": "object",
+                    "description": "Kafka connection settings. Requires the `kafka` extra.",
+                    "properties": {
+                        "bootstrap_servers": {
+                            "type": "array",
+                            "description": "Broker addresses. Ignored when `external_integration` is set.",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": []
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Consumer group. Instances sharing it split the partitions between them.",
+                            "default": "nautobot-event-tracker"
+                        },
+                        "external_integration": {
+                            "type": "string",
+                            "description": "Name of a Nautobot ExternalIntegration holding the broker URL and its SecretsGroup. Preferred over settings for anything credentialed.",
+                            "default": ""
+                        },
+                        "security_protocol": {
+                            "type": "string",
+                            "description": "Security protocol used when the external integration supplies credentials. Ignored otherwise.",
+                            "enum": [
+                                "SASL_PLAINTEXT",
+                                "SASL_SSL"
+                            ],
+                            "default": "SASL_PLAINTEXT"
+                        },
+                        "sasl_mechanism": {
+                            "type": "string",
+                            "description": "SASL mechanism used when the external integration supplies credentials.",
+                            "enum": [
+                                "PLAIN",
+                                "SCRAM-SHA-256",
+                                "SCRAM-SHA-512"
+                            ],
+                            "default": "PLAIN"
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "redis": {
+                    "type": "object",
+                    "description": "Redis pub/sub connection settings.",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "Redis URL. Ignored when `external_integration` is set.",
+                            "default": ""
+                        },
+                        "external_integration": {
+                            "type": "string",
+                            "description": "Name of a Nautobot ExternalIntegration holding the Redis URL and its SecretsGroup.",
+                            "default": ""
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "topics": {
+                    "type": "object",
+                    "description": "Per-topic configuration, keyed by broker topic or channel name. A topic with no entry here is not consumed.",
+                    "default": {},
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                            "field_map": {
+                                "type": "object",
+                                "description": "Where each event field lives in the payload, as dotted paths. `event_type` and `title` are required.",
+                                "properties": {
+                                    "event_type": {
+                                        "type": "string"
+                                    },
+                                    "title": {
+                                        "type": "string"
+                                    },
+                                    "severity": {
+                                        "type": "string"
+                                    },
+                                    "description": {
+                                        "type": "string"
+                                    },
+                                    "occurred_at": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "event_type",
+                                    "title"
+                                ],
+                                "additionalProperties": false
+                            },
+                            "defaults": {
+                                "type": "object",
+                                "description": "Values used when the payload does not carry them.",
+                                "properties": {
+                                    "event_type": {
+                                        "type": "string"
+                                    },
+                                    "severity": {
+                                        "type": "string",
+                                        "enum": [
+                                            "critical",
+                                            "major",
+                                            "minor",
+                                            "warning",
+                                            "info"
+                                        ]
+                                    }
+                                },
+                                "additionalProperties": false
+                            },
+                            "severity_map": {
+                                "type": "object",
+                                "description": "Raw severity values mapped onto the app's scale. Keys are compared as strings, so 4 and \"4\" behave the same.",
+                                "additionalProperties": {
+                                    "type": "string",
+                                    "enum": [
+                                        "critical",
+                                        "major",
+                                        "minor",
+                                        "warning",
+                                        "info"
+                                    ]
+                                }
+                            },
+                            "dedup_key_template": {
+                                "type": "string",
+                                "description": "Idempotency key, rendered from `{dotted.path}` placeholders. An unresolvable path yields an empty key, so the event opens its own ticket."
+                            },
+                            "minimum_severity": {
+                                "type": "string",
+                                "description": "Events below this severity are dropped.",
+                                "enum": [
+                                    "critical",
+                                    "major",
+                                    "minor",
+                                    "warning",
+                                    "info"
+                                ]
+                            },
+                            "unknown_event_type": {
+                                "type": "string",
+                                "description": "What to do with an event naming a type the catalogue does not hold.",
+                                "enum": [
+                                    "default",
+                                    "drop"
+                                ],
+                                "default": "default"
+                            },
+                            "rate_limit": {
+                                "type": "object",
+                                "description": "Token bucket, per process. Omit for no limit.",
+                                "properties": {
+                                    "per_minute": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    },
+                                    "burst": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    }
+                                },
+                                "required": [
+                                    "per_minute"
+                                ],
+                                "additionalProperties": false
+                            },
+                            "rules": {
+                                "type": "array",
+                                "description": "Match rules, tried in order. The first whose clauses all match decides.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {
+                                            "type": "string",
+                                            "description": "Counter key this rule's decisions are recorded under. Unique within the topic."
+                                        },
+                                        "action": {
+                                            "type": "string",
+                                            "description": "`drop` discards the event entirely; `suppress` opens the ticket and puts it straight into the suppressed state.",
+                                            "enum": [
+                                                "drop",
+                                                "suppress"
+                                            ]
+                                        },
+                                        "when": {
+                                            "type": "object",
+                                            "description": "Dotted path to regular expression. Every clause must match for the rule to fire.",
+                                            "additionalProperties": {
+                                                "type": "string"
+                                            },
+                                            "minProperties": 1
+                                        }
+                                    },
+                                    "required": [
+                                        "name",
+                                        "action",
+                                        "when"
+                                    ],
+                                    "additionalProperties": false
+                                }
+                            }
+                        },
+                        "required": [
+                            "field_map"
+                        ],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
         }
     },
     "additionalProperties": false

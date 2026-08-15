@@ -27,6 +27,28 @@ def _python_files_outside_services():
         yield path
 
 
+def _manager_call_offenders(paths, models, methods):
+    """Yield `path:line` for every `<Model>.objects.<method>()` call in these files.
+
+    The AST rather than a string search: a docstring mentioning the call is not the call. Shared by
+    both write guards so a fix to the matcher cannot land in one copy only.
+    """
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            value = node.func.value
+            if (
+                node.func.attr in methods
+                and isinstance(value, ast.Attribute)
+                and value.attr == "objects"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in models
+            ):
+                yield f"{path.relative_to(APP_ROOT)}:{node.lineno}"
+
+
 class StatusAssignmentGuardTest(SimpleTestCase):
     """No module outside services/ may assign to a ticket's status."""
 
@@ -60,29 +82,16 @@ class StatusAssignmentGuardTest(SimpleTestCase):
         The model test suite is exempt: it has to exercise the append-only guard directly, which
         means constructing rows without going through a service function.
         """
-        offenders = []
         allowed = {"tests/test_models.py"}
-        for path in _python_files_outside_services():
-            relative = str(path.relative_to(APP_ROOT))
-            if relative in allowed:
-                continue
+        paths = [path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in allowed]
+        offenders = list(_manager_call_offenders(paths, {"TicketUpdate"}, {"create"}))
+
+        # Direct construction, which the manager matcher cannot see.
+        for path in paths:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                # Matches TicketUpdate(...) and TicketUpdate.objects.create(...)
-                if isinstance(func, ast.Name) and func.id == "TicketUpdate":
-                    offenders.append(f"{relative}:{node.lineno}")
-                elif isinstance(func, ast.Attribute) and func.attr == "create":
-                    value = func.value
-                    if (
-                        isinstance(value, ast.Attribute)
-                        and value.attr == "objects"
-                        and isinstance(value.value, ast.Name)
-                        and value.value.id == "TicketUpdate"
-                    ):
-                        offenders.append(f"{relative}:{node.lineno}")
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "TicketUpdate":
+                    offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno}")
 
         self.assertEqual(
             offenders,
@@ -172,3 +181,64 @@ class TemplateGuardTest(SimpleTestCase):
         """Catch a stray template placed somewhere other than templates/."""
         html_files = [path.relative_to(APP_ROOT) for path in APP_ROOT.rglob("*.html") if "static" not in path.parts]
         self.assertEqual([str(path) for path in html_files], [])
+
+
+class IngestionGuardTest(SimpleTestCase):
+    """Phase 2's two rules, asserted rather than trusted.
+
+    The ingestion package writes tickets only through the service layer, and calls no language
+    model. Both are the kind of rule a well-meaning change breaks silently.
+    """
+
+    #: Anything that would mean an LLM had arrived in a phase that is meant to have none.
+    FORBIDDEN_IMPORTS = ("litellm", "openai", "anthropic", "langchain", "transformers")
+
+    def _ingestion_modules(self):
+        """Every module in the ingestion package and the consumer command."""
+        ingestion = APP_ROOT / "ingestion"
+        command = APP_ROOT / "management" / "commands" / "eventconsumer.py"
+        return sorted(ingestion.rglob("*.py")) + [command]
+
+    def test_no_direct_ticket_writes_in_the_ingestion_package(self):
+        """`EventTicket.objects.create()` there would bypass the trail and the dedup rule."""
+        offenders = list(
+            _manager_call_offenders(
+                self._ingestion_modules(),
+                {"EventTicket", "TicketUpdate"},
+                {"create", "get_or_create", "update_or_create", "bulk_create"},
+            )
+        )
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Ingestion must write tickets through services/tickets.py. Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_ingestion_package_imports_no_language_model(self):
+        """Phase 2 is AI-free by design; triage is Phase 3 and plugs in at a named seam."""
+        offenders = []
+        for path in self._ingestion_modules():
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                for name in names:
+                    if name.split(".")[0] in self.FORBIDDEN_IMPORTS:
+                        offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "No module under ingestion/ may import a language model client. Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_app_declares_no_language_model_dependency(self):
+        """The same rule at the packaging level, where it is equally easy to break."""
+        pyproject = (APP_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
+        dependencies = pyproject.split("[tool.poetry.group.dev.dependencies]")[0]
+        for name in self.FORBIDDEN_IMPORTS:
+            self.assertNotIn(name, dependencies, f"'{name}' must not be a runtime dependency in Phase 2")

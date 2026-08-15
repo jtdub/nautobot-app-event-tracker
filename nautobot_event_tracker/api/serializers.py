@@ -3,7 +3,7 @@
 from nautobot.apps.api import BaseModelSerializer, ContentTypeField, NautobotModelSerializer, TaggedModelSerializerMixin
 from rest_framework import serializers
 
-from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
+from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
 
 #: Fields the service layer owns. A write to any of them through the generic endpoints is rejected
 #: rather than silently dropped, so a client never gets a 200 for a change that did not happen.
@@ -119,3 +119,35 @@ class TicketObjectSerializer(serializers.Serializer):  # pylint: disable=abstrac
 
     object_type = serializers.CharField(help_text="An 'app_label.model' string, for example 'dcim.device'.")
     object_id = serializers.UUIDField()
+
+
+class IngestionStatsSerializer(BaseModelSerializer):
+    """IngestionStats Serializer.
+
+    Read-only in every field. These counters are a record of what a consumer saw; nothing outside
+    the consumer has any business writing them.
+    """
+
+    class Meta:
+        """Meta attributes."""
+
+        model = IngestionStats
+        fields = [
+            "id",
+            "url",
+            # Nautobot's generic API tests expect every object to expose its natural slug, and a
+            # client following one detail representation to another expects the same shape.
+            "natural_slug",
+            "consumer_name",
+            "topic",
+            "bucket_start",
+            "received",
+            "errored",
+            "dropped",
+            "tickets_opened",
+            "tickets_joined",
+            "suppressed",
+            "drops_by_reason",
+            "last_message_at",
+        ]
+        read_only_fields = fields

@@ -1,13 +1,14 @@
 """GraphQL types for nautobot_event_tracker.
 
 `EventType` and `EventTicket` are exposed automatically through the `graphql` entry in their
-`extras_features`. `TicketUpdate` needs an explicit type because it is not a PrimaryModel.
+`extras_features`. `TicketUpdate` and `IngestionStats` need explicit types because neither is a
+PrimaryModel.
 """
 
 from nautobot.apps.graphql import OptimizedNautobotObjectType
 
-from nautobot_event_tracker.filters import TicketUpdateFilterSet
-from nautobot_event_tracker.models import TicketUpdate
+from nautobot_event_tracker.filters import IngestionStatsFilterSet, TicketUpdateFilterSet
+from nautobot_event_tracker.models import IngestionStats, TicketUpdate
 
 
 class TicketUpdateType(OptimizedNautobotObjectType):
@@ -29,4 +30,17 @@ class TicketUpdateType(OptimizedNautobotObjectType):
         filterset_class = TicketUpdateFilterSet
 
 
-graphql_types = [TicketUpdateType]
+class IngestionStatsType(OptimizedNautobotObjectType):
+    """GraphQL type for IngestionStats.
+
+    Query-only, like everything else here, and doubly so for a model only the consumer writes.
+    """
+
+    class Meta:  # pylint: disable=too-few-public-methods
+        """Meta attributes."""
+
+        model = IngestionStats
+        filterset_class = IngestionStatsFilterSet
+
+
+graphql_types = [TicketUpdateType, IngestionStatsType]
