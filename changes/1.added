@@ -1,0 +1,9 @@
+Added the Event Tracker application scaffold, generated from cookiecutter-nautobot-app at template tag nautobot-app-v3.1.4.
+Added the EventTicket, EventType and TicketUpdate models, with a starter catalogue of ten event types seeded on install.
+Added a ticket service layer that owns every ticket mutation, enforcing the status workflow graph, the append-only update trail, and immutability of resolved and closed tickets to AI actors.
+Added REST API endpoints for tickets, event types and ticket updates, including a transition action and comment, attach and detach actions that route through the service layer.
+Added GraphQL types for all three models.
+Added filtersets, list and detail views, transition buttons that render only for legal next states, an attach-object flow, and navigation menu items.
+Added the transition_eventticket permission, which gates moving a ticket through the workflow separately from editing its content.
+Added a detach control to each attached object on the ticket page, and split the attach flow into a type choice followed by a type-ahead object picker.
+Added severity and assignment changes to the update trail: editing either through the UI or the REST API now records who changed it and what it was before.

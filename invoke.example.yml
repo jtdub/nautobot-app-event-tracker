@@ -1,0 +1,7 @@
+---
+nautobot_event_tracker:
+  nautobot_ver: "3.2.0"
+  python_ver: "3.12"
+  # local: false
+  # ephemeral_ports: false
+  # compose_dir: "/full/path/to/nautobot-app-event-tracker/development"

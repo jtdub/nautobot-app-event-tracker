@@ -1,0 +1,38 @@
+{
+    "cookiecutter": {
+        "codeowner_github_usernames": "@jtdub",
+        "full_name": "James Williams",
+        "email": "james.williams@jtdub.com",
+        "github_org": "jtdub",
+        "app_name": "nautobot_event_tracker",
+        "verbose_name": "Event Tracker",
+        "app_slug": "nautobot-event-tracker",
+        "project_slug": "nautobot-app-event-tracker",
+        "repo_url": "https://github.com/jtdub/nautobot-app-event-tracker",
+        "base_url": "event-tracker",
+        "camel_name": "EventTracker",
+        "project_short_description": "Network event ticketing and AI-assisted network operations for Nautobot.",
+        "model_class_name": "EventTrackerExampleModel",
+        "open_source_license": "Apache-2.0",
+        "docs_base_url": "https://docs.nautobot.com",
+        "docs_app_url": "https://docs.nautobot.com/projects/event-tracker/en/latest",
+        "__commercial": false,
+        "_extensions": [
+            "local_extensions.camel_case_to_kebab",
+            "local_extensions.camel_case_to_words",
+            "local_extensions.NautobotVersions"
+        ],
+        "_template": "https://github.com/nautobot/cookiecutter-nautobot-app.git",
+        "_drift_manager": {
+            "template": "https://github.com/nautobot/cookiecutter-nautobot-app.git",
+            "template_dir": "nautobot-app",
+            "template_ref": "nautobot-app-v3.1.4",
+            "cookie_dir": "",
+            "pull_request_strategy": "create",
+            "post_actions": [],
+            "draft": false,
+            "baked_commit_ref": "d2f2e8bd2a224de36763139af18b86efaffdc849",
+            "drift_managed_branch": "main"
+        }
+    }
+}

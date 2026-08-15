@@ -1,0 +1,3 @@
+Added an architecture overview describing the target system and its phase boundaries.
+Added architecture decision records 0001 through 0008 covering the ticket service layer, the status workflow graph, the PostgreSQL and pgvector constraint, event broker consumers, the standalone consumer process, the litellm service layer, MCP tool access, and the UI Component Framework.
+Added the Phase 1 ticketing specification covering the data model, service layer contracts, REST and GraphQL surfaces, filtersets, UI, and permissions.
