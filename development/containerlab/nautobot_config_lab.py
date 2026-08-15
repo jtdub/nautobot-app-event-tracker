@@ -27,14 +27,18 @@ LAB_INGESTION = {
                 "occurred_at": "timestamp",
             },
             "defaults": {"event_type": "Unclassified"},
-            # Syslog severities: 0-2 are the ones that wake somebody, 3 is an error, 4 a warning.
+            # Syslog severities: 0-2 are the ones that wake somebody, 3 is an error, 4 a warning,
+            # and 5-7 are notice, informational and debug. Nothing maps to `minor`, deliberately:
+            # our scale is ordered critical > major > minor > warning > info, so putting syslog's
+            # notice on `minor` would rank it above syslog's warning and a floor of `minor` would
+            # then drop real warnings while keeping chatter.
             "severity_map": {
                 "0": "critical",
                 "1": "critical",
                 "2": "critical",
                 "3": "major",
                 "4": "warning",
-                "5": "minor",
+                "5": "info",
                 "6": "info",
                 "7": "info",
             },

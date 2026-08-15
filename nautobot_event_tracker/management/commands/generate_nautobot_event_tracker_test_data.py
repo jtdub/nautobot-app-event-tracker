@@ -177,6 +177,11 @@ class Command(BaseCommand):
 
     def _generate(self, rng, count):
         """Create `count` tickets and give each of them a history."""
+        if count <= 0:
+            # `--flush --count 0` is the way to leave the database clean: there are no tickets to
+            # be about, so there is no estate to create either.
+            return 0
+
         tag = self._tag()
         user = self._user()
         event_types = list(EventType.objects.filter(enabled=True))
@@ -187,14 +192,12 @@ class Command(BaseCommand):
             )
 
         self._inventory(tag)
-        # Read after the estate exists, so the tickets attach to the devices this command just made
-        # as well as to anything the database already held.
-        attachable = self._attachable_objects()
+        devices = self._attachable_devices()
         created = 0
         for status, ticket_count in self._status_plan(count):
             for _ in range(ticket_count):
                 ticket = self._create_ticket(rng, user, tag, event_types)
-                self._add_history(rng, ticket, user, attachable)
+                self._add_history(rng, ticket, user, devices)
                 self._walk_to(rng, ticket, user, status)
                 created += 1
         return created
@@ -225,7 +228,7 @@ class Command(BaseCommand):
             tags=[tag],
         )
 
-    def _add_history(self, rng, ticket, user, attachable):
+    def _add_history(self, rng, ticket, user, devices):
         """Give the ticket the kind of trail a worked ticket has."""
         for _ in range(rng.randint(0, 3)):
             ticket_service.add_comment(
@@ -243,10 +246,14 @@ class Command(BaseCommand):
                 user=user,
             )
 
-        if attachable and rng.random() < 0.5:
+        # The device the ticket is about, not an arbitrary object: a demo where the ticket titled
+        # "ethernet-1/1 is down on leaf-02" is attached to a location in another country teaches
+        # the reader that the attachment means nothing.
+        device = devices.get(ticket.payload.get("host"))
+        if device is not None:
             ticket_service.attach_object(
                 ticket=ticket,
-                obj=rng.choice(attachable),
+                obj=device,
                 source=TicketSourceChoices.HUMAN,
                 user=user,
             )
@@ -291,6 +298,19 @@ class Command(BaseCommand):
                 ensure_interface(device=device, name=interface_name, status=interface_status)
 
     @staticmethod
+    def _attachable_devices():
+        """The demo estate, by name, if a device may be attached to a ticket here at all.
+
+        Read after `_inventory` has run, so it holds whichever device answers to each name - the
+        one this command made, or the lab's. An installation that has taken `dcim.device` out of
+        `attachable_object_types` gets tickets with no attachments rather than a crash halfway
+        through: the service layer would refuse every one of them, and it would be right to.
+        """
+        if "dcim.device" not in ticket_service.get_attachable_object_types():
+            return {}
+        return {device.name: device for device in Device.objects.filter(name__in=HOSTS)}
+
+    @staticmethod
     def _tag():
         """The tag every generated ticket carries, created if this is the first run."""
         tag, _ = Tag.objects.get_or_create(
@@ -307,19 +327,3 @@ class Command(BaseCommand):
         if user is not None:
             return user
         return get_user_model().objects.create(username=DEMO_USERNAME, is_active=True)
-
-    @staticmethod
-    def _attachable_objects():
-        """Real objects to attach: the demo estate this command just made, and anything else here.
-
-        Read after `_inventory` has run, so the tickets point at the devices they are about - and
-        at whatever else the database already holds, which after the lab has been populated
-        includes the devices you can go and break.
-        """
-        objects = []
-        for content_type in ticket_service.get_attachable_content_types():
-            model = content_type.model_class()
-            if model is None:
-                continue
-            objects.extend(model.objects.all()[:5])
-        return objects

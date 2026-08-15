@@ -1,0 +1,1 @@
+Corrected the lab's syslog severity map, which ranked syslog `notice` above syslog `warning`, and its message classifier, which filed BGP session-down events as interface-down events.

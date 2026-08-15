@@ -87,10 +87,15 @@ anything:
 invoke generate-test-data
 ```
 
-Fifty tickets across every status, each with a trail. It creates its own demo devices too, but
-having populated Nautobot from the topology in step 4 it will use those instead where the names
-match — so `leaf-01` in a ticket is the `leaf-01` you can shut an interface on. `invoke
-generate-test-data --flush` removes everything it made, leaving anything you made alone.
+Fifty tickets across every status, each with a trail and attached to the device its title names. It
+creates its own demo devices too, but having populated Nautobot from the topology in step 4 it will
+use those instead where the names match — so `leaf-01` in a ticket is the `leaf-01` you can shut an
+interface on.
+
+`invoke generate-test-data --flush` deletes everything a previous run made and then generates a
+fresh set — that is how to re-run it without ending up with a hundred tickets. To clean up instead
+of regenerating, `invoke generate-test-data --flush --count 0` deletes them and makes nothing.
+Either way, a ticket or a device you made yourself is untagged and is left alone.
 
 **6. Run the consumer**, in the foreground where you can watch it:
 
@@ -140,7 +145,7 @@ one per flap. That is rule S5 working against a real device rather than a fixtur
 - The raw messages on the broker, when the field map does not match and you need to see why:
 
   ```shell
-  docker compose --project-name nautobot_event_tracker \
+  docker compose --project-name nautobot-event-tracker \
     --project-directory development \
     -f development/docker-compose.redpanda.yml --profile console up -d redpanda-console
   ```
@@ -151,7 +156,7 @@ one per flap. That is rule S5 working against a real device rather than a fixtur
 - Or from the command line:
 
   ```shell
-  docker exec -it nautobot_event_tracker-redpanda-1 rpk topic consume network.events --num 5
+  docker exec -it nautobot-event-tracker-redpanda-1 rpk topic consume network.events --num 5
   ```
 
 ## Tuning the filters against real traffic
@@ -184,13 +189,19 @@ shape. `nautobot_event_tracker/tests/test_lab_configuration.py` asserts they agr
 the bridge is *written* to produce; if that passes and the tickets are still wrong, the bridge is not
 producing what it claims, and the console will show you what it really sends.
 
-**Every event opens its own ticket.** The dedup key template is not resolving — usually `interface`,
-which `classify.lua` only fills in when the message names one. The consumer logs a warning about
-this once per topic per five minutes.
+**Every event opens its own ticket.** The dedup key template is not resolving: one of `event.type`,
+`host` or `interface` is missing from the payload altogether. The consumer logs a warning about this
+once per topic per five minutes, naming the template.
+
+**Unrelated events join one ticket.** The opposite symptom, and the more likely one, because
+`classify.lua` fills `interface` in with an empty string when the message names no interface —
+deliberately, so that the key still resolves. Every interface-less event of one type on one host
+therefore joins a single ticket. If you want them apart, give the template a field that
+distinguishes them rather than removing `interface`, which brings back the symptom above.
 
 **Nothing arrives at all.** Check in order: is the consumer running; does **Ingestion Stats** show
 anything received; does the console show messages on the topic; is Fluent Bit logging
-(`docker logs nautobot_event_tracker-fluent-bit-1`); does the device have the remote server
+(`docker logs nautobot-event-tracker-fluent-bit-1`); does the device have the remote server
 configured (`docker exec -it clab-event-tracker-leaf-01 sr_cli "info / system logging"`).
 
 ## Tearing it down

@@ -16,19 +16,19 @@
 #                  │
 #              client-01
 
-name: event-tracker
+name: "event-tracker"
 
 mgmt:
-  network: event-tracker-mgmt
-  ipv4-subnet: 172.30.30.0/24
+  network: "event-tracker-mgmt"
+  ipv4-subnet: "172.30.30.0/24"
 
 topology:
   kinds:
     nokia_srlinux:
       # Publicly pullable and needs no licence, which is most of why this lab exists at all.
-      image: ghcr.io/nokia/srlinux:24.10.1
+      image: "ghcr.io/nokia/srlinux:24.10.1"
     linux:
-      image: alpine:3.20
+      image: "alpine:3.20"
 
   nodes:
     # One startup config per node rather than one shared by all three: they export syslog to the
@@ -36,23 +36,23 @@ topology:
     # each node's own. A shared config gave every node the same router-id and no neighbours at all,
     # which meant no session ever came up and no session could ever go down.
     leaf-01:
-      kind: nokia_srlinux
-      mgmt-ipv4: 172.30.30.11
-      startup-config: leaf-01.cli
+      kind: "nokia_srlinux"
+      mgmt-ipv4: "172.30.30.11"
+      startup-config: "leaf-01.cli"
     leaf-02:
-      kind: nokia_srlinux
-      mgmt-ipv4: 172.30.30.12
-      startup-config: leaf-02.cli
+      kind: "nokia_srlinux"
+      mgmt-ipv4: "172.30.30.12"
+      startup-config: "leaf-02.cli"
     spine-01:
-      kind: nokia_srlinux
-      mgmt-ipv4: 172.30.30.13
-      startup-config: spine-01.cli
+      kind: "nokia_srlinux"
+      mgmt-ipv4: "172.30.30.13"
+      startup-config: "spine-01.cli"
     client-01:
-      kind: linux
-      mgmt-ipv4: 172.30.30.21
+      kind: "linux"
+      mgmt-ipv4: "172.30.30.21"
       exec:
-        - ip address add 10.0.0.10/24 dev eth1
-        - ip route add 10.0.0.0/8 via 10.0.0.1
+        - "ip address add 10.0.0.10/24 dev eth1"
+        - "ip route add 10.0.0.0/8 via 10.0.0.1"
 
   links:
     # The fabric. Shutting either leaf-to-spine link produces an Interface Down event on both ends

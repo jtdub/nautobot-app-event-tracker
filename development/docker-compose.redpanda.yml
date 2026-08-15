@@ -8,6 +8,18 @@
 # is the entire point. The reference deployment in ADR 0004 is still Kafka; this is the development
 # stand-in for it.
 services:
+  # `EVENT_TRACKER_LAB=true invoke start` sets the variable in the shell running compose, and
+  # compose passes nothing to a container it was not told to pass. Without these two blocks the
+  # stack comes up with an empty ingestion configuration and `eventconsumer` exits saying no topics
+  # are configured, which is a long way from the cause.
+  nautobot:
+    environment:
+      EVENT_TRACKER_LAB: "${EVENT_TRACKER_LAB:-false}"
+
+  worker:
+    environment:
+      EVENT_TRACKER_LAB: "${EVENT_TRACKER_LAB:-false}"
+
   redpanda:
     image: "redpandadata/redpanda:v24.2.7"
     command:

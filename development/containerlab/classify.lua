@@ -7,13 +7,16 @@
 -- The names on the right are the seeded event types from migration 0002. They have to match
 -- exactly, or the pre-filter falls back to `defaults.event_type`.
 
+-- Order matters: the first match wins, so the specific patterns come before the general ones. A
+-- BGP peer-down message says "is down" too, and with `is down` first every session-down event was
+-- filed as an Interface Down and merged into that host's interface ticket.
 local PATTERNS = {
-    {"is down",                     "Interface Down"},
-    {"oper%-state.*down",           "Interface Down"},
-    {"bgp.*[Nn]eighbor.*[Dd]own",   "BGP Session Down"},
-    {"bgp.*session.*clear",         "BGP Session Down"},
+    {"[Bb][Gg][Pp].*[Nn]eighbor",   "BGP Session Down"},
+    {"[Bb][Gg][Pp].*[Ss]ession",    "BGP Session Down"},
     {"[Uu]nreachable",              "Device Unreachable"},
     {"[Kk]eepalive.*expired",       "Device Unreachable"},
+    {"is down",                     "Interface Down"},
+    {"oper%-state.*down",           "Interface Down"},
     {"[Oo]ptical.*threshold",       "Optical Degradation"},
     {"[Cc]pu.*threshold",           "High CPU Utilization"},
     {"[Mm]emory.*threshold",        "High Memory Utilization"},
@@ -25,6 +28,11 @@ local PATTERNS = {
 
 -- The interface name, where the message names one. The dedup key uses it, so that two different
 -- interfaces flapping on one device are two tickets rather than one.
+--
+-- Empty rather than absent when the message names none: the dedup key template then still
+-- resolves, and every interface-less event of that type on that host joins one ticket. Leaving the
+-- field out instead would make the key unresolvable, which gives each of those events a ticket of
+-- its own and a warning in the consumer log.
 local function interface_of(message)
     return string.match(message, "(ethernet%-%d+/%d+)")
         or string.match(message, "(%a+%d+/%d+/%d+)")

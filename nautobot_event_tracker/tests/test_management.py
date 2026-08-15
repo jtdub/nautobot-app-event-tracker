@@ -13,7 +13,7 @@ from io import StringIO
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from nautobot.dcim.models import Device, Interface
 
 from nautobot_event_tracker.choices import TicketStatusChoices, UpdateTypeChoices
@@ -111,10 +111,12 @@ class TestTheDefaultRun(TestCase):
         comments = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.COMMENT).distinct().count()
         self.assertGreater(comments, 0)
 
-    def test_tickets_attach_to_the_demo_devices(self):
-        """Which is the whole reason for creating them."""
-        attached = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).distinct()
-        self.assertTrue(attached.exists())
+    def test_every_ticket_is_attached_to_the_device_it_names(self):
+        """An attachment to some other object would teach a reader that attachments mean nothing."""
+        devices = {device.name: device for device in Device.objects.all()}
+        for ticket in EventTicket.objects.all():
+            update = ticket.updates.get(update_type=UpdateTypeChoices.OBJECT_ATTACHED)
+            self.assertEqual(update.related_object_id, devices[ticket.payload["host"]].pk)
 
 
 class TestDeterminism(TestCase):
@@ -216,12 +218,12 @@ class TestRunningTwice(TestCase):
 class TestAttachments(TestCase):
     """What the tickets point at."""
 
-    def test_it_attaches_objects_that_already_exist(self):
-        """Anything else attachable in the database is fair game too."""
-        fixtures.create_location()
+    @override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"attachable_object_types": ["dcim.location"]}})
+    def test_it_attaches_nothing_where_devices_may_not_be_attached(self):
+        """The service layer would refuse every one of them, and it would be right to."""
         generate(count=12)
-        attached = EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).distinct()
-        self.assertTrue(attached.exists())
+        self.assertEqual(EventTicket.objects.count(), 12)
+        self.assertFalse(EventTicket.objects.filter(updates__update_type=UpdateTypeChoices.OBJECT_ATTACHED).exists())
 
 
 class TestRefusals(TestCase):
