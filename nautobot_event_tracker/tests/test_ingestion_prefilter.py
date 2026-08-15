@@ -22,11 +22,7 @@ from nautobot_event_tracker.ingestion.normalize import normalize
 from nautobot_event_tracker.models import EventType
 from nautobot_event_tracker.tests import fixtures
 
-TOPIC = {
-    "field_map": {"event_type": "event.type", "title": "message", "severity": "event.severity"},
-    "defaults": {"event_type": "Test Interface Down"},
-    "dedup_key_template": "{event.type}:{host}",
-}
+TOPIC = fixtures.INGESTION_TOPIC
 
 
 class FakeClock:
@@ -72,16 +68,7 @@ class PreFilterTestCase(TestCase):
         event = normalize(payload, topic_config=topic_config, max_payload_bytes=65536)
         return rules.decide(event, topic_config)
 
-    @staticmethod
-    def payload(**overrides):
-        """A payload the pre-filter would ordinarily accept."""
-        base = {
-            "event": {"type": "Test Interface Down", "severity": SeverityChoices.MAJOR},
-            "message": "Interface ethernet-1/1 is down",
-            "host": "leaf-01",
-        }
-        base.update(overrides)
-        return base
+    payload = staticmethod(fixtures.event_payload)
 
 
 class TestTopicLookup(PreFilterTestCase):
@@ -107,13 +94,13 @@ class TestEventTypeRules(PreFilterTestCase):
         """The ordinary case."""
         result = self.decide(self.payload())
         self.assertEqual(result.decision.action, ACTION_ACCEPT)
-        self.assertEqual(result.event_type.name, "Test Interface Down")
+        self.assertEqual(result.event_type, EventType.objects.get(name="Test Interface Down"))
 
     def test_an_unknown_type_falls_back_to_the_default(self):
         """An unclassified ticket beats a silent hole."""
         result = self.decide(self.payload(event={"type": "Nothing We Know About"}))
         self.assertEqual(result.decision.action, ACTION_ACCEPT)
-        self.assertEqual(result.event_type.name, "Test Interface Down")
+        self.assertEqual(result.event_type, EventType.objects.get(name="Test Interface Down"))
 
     def test_an_unknown_type_can_be_dropped_instead(self):
         """A deployment that would rather refuse what it cannot classify may."""

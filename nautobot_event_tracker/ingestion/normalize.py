@@ -33,7 +33,7 @@ class NormalizationError(Exception):
 
 
 @dataclass(frozen=True)
-class NormalizedEvent:
+class NormalizedEvent:  # pylint: disable=too-many-instance-attributes
     """One event, in the shape `services.tickets.create_ticket()` wants it.
 
     `severity` may be empty, meaning the payload did not say and the configuration had no default.

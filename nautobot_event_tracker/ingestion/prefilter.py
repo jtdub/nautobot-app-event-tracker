@@ -73,7 +73,7 @@ class EventTypeCache:
         self._read_at = self._clock()
 
 
-class TokenBucket:
+class TokenBucket:  # pylint: disable=too-few-public-methods
     """A rate limit that admits bursts but not floods.
 
     Per process, so N instances admit N times as many - documented rather than coordinated, because
@@ -117,7 +117,7 @@ class PreFilter:
         """F1 - the topic's configuration, or None when it has none."""
         return self.config.topics.get(name)
 
-    def decide(self, event, topic_config):
+    def decide(self, event, topic_config):  # pylint: disable=too-many-return-statements
         """Rules F2 to F6, in order, on an event whose topic is already known."""
         event_type = self.event_types.get(event.event_type_name)
 

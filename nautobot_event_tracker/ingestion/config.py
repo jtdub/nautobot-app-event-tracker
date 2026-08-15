@@ -86,7 +86,7 @@ class RateLimit:
 
 
 @dataclass(frozen=True)
-class TopicConfig:
+class TopicConfig:  # pylint: disable=too-many-instance-attributes
     """Everything the pipeline needs to know about one topic."""
 
     name: str
@@ -101,7 +101,7 @@ class TopicConfig:
 
 
 @dataclass(frozen=True)
-class IngestionConfig:
+class IngestionConfig:  # pylint: disable=too-many-instance-attributes
     """The whole ingestion block, parsed and checked."""
 
     consumer: str

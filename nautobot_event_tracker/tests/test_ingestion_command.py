@@ -12,7 +12,6 @@ from django.core.management.base import CommandError
 from django.db import DatabaseError
 from django.test import TestCase, override_settings
 
-from nautobot_event_tracker.choices import SeverityChoices
 from nautobot_event_tracker.ingestion import config
 from nautobot_event_tracker.management.commands.eventconsumer import (
     EXIT_UNRECOVERABLE,
@@ -22,11 +21,7 @@ from nautobot_event_tracker.management.commands.eventconsumer import (
 from nautobot_event_tracker.models import EventTicket, IngestionStats
 from nautobot_event_tracker.tests import fixtures
 
-TOPIC = {
-    "field_map": {"event_type": "event.type", "title": "message", "severity": "event.severity"},
-    "defaults": {"event_type": "Test Interface Down"},
-    "dedup_key_template": "{event.type}:{host}",
-}
+TOPIC = fixtures.INGESTION_TOPIC
 
 
 def ingestion(**overrides):
@@ -35,15 +30,7 @@ def ingestion(**overrides):
     return override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": settings}})
 
 
-def payload(**overrides):
-    """A payload the pipeline would turn into a ticket."""
-    base = {
-        "event": {"type": "Test Interface Down", "severity": SeverityChoices.MAJOR},
-        "message": "Interface ethernet-1/1 is down",
-        "host": "leaf-01",
-    }
-    base.update(overrides)
-    return base
+payload = fixtures.event_payload
 
 
 class RunnerTestCase(TestCase):
@@ -216,7 +203,7 @@ class TestDryRun(RunnerTestCase):
         self.assertIn("network.events", stdout.getvalue())
 
 
-class TestStartupValidation(TestCase):
+class TestStartupValidation(fixtures.RefusalAssertions, TestCase):
     """What the command refuses to start with, before it opens a socket."""
 
     @classmethod
@@ -229,10 +216,7 @@ class TestStartupValidation(TestCase):
         with ingestion(**settings):
             with self.assertRaises(CommandError) as caught:
                 call_command("eventconsumer", stdout=StringIO(), stderr=StringIO())
-        message = str(caught.exception)
-        for fragment in expected:
-            self.assertIn(fragment, message)
-        return message
+        return self.assert_names(str(caught.exception), expected)
 
     def test_an_invalid_configuration_is_refused(self):
         """And the process never reaches the broker."""

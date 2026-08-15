@@ -24,7 +24,7 @@ utc = datetime_timezone.utc
 
 
 @dataclass
-class Counts:
+class Counts:  # pylint: disable=too-many-instance-attributes
     """One bucket's worth of counts, before they reach the database."""
 
     received: int = 0
@@ -47,7 +47,7 @@ class Counts:
             self.last_message_at = when
 
 
-class StatsRecorder:
+class StatsRecorder:  # pylint: disable=too-many-instance-attributes
     """Accumulates counts and writes them to `IngestionStats` on a timer.
 
     The clock is injected in two pieces because the two jobs need different clocks: `monotonic`
@@ -55,7 +55,7 @@ class StatsRecorder:
     count belongs to, since that is what a person reads off the page.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self, *, consumer_name, bucket_seconds, flush_seconds, retention_days, clock=time.monotonic, now=timezone.now
     ):
         """Hold the shape of the buckets and how often to write them."""
@@ -78,7 +78,7 @@ class StatsRecorder:
         epoch_seconds = int(when.timestamp())
         return datetime.fromtimestamp(epoch_seconds - (epoch_seconds % self.bucket_seconds), tz=utc)
 
-    def record(
+    def record(  # pylint: disable=too-many-arguments
         self, topic, *, received=0, errored=0, opened=0, joined=0, suppressed=0, drop_reason=None, message_time=None
     ):
         """Add to the current bucket's counts for this topic."""

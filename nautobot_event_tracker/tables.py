@@ -5,6 +5,18 @@ from nautobot.apps.tables import BaseTable, ButtonsColumn, LinkedCountColumn, To
 
 from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
 
+#: The counters, in the order they read best: what arrived, what became of it, and when the last
+#: message was. Shared by the list table and the detail panel so the two cannot drift apart.
+INGESTION_STATS_COUNTER_FIELDS = (
+    "received",
+    "tickets_opened",
+    "tickets_joined",
+    "suppressed",
+    "dropped",
+    "errored",
+    "last_message_at",
+)
+
 #: The ticket's core fields, in the order they read best. Shared by the list table and the detail
 #: panel so the two cannot drift into showing different things.
 TICKET_CORE_FIELDS = (
@@ -110,16 +122,5 @@ class IngestionStatsTable(BaseTable):
         """Meta attributes."""
 
         model = IngestionStats
-        fields = (
-            "bucket_start",
-            "consumer_name",
-            "topic",
-            "received",
-            "tickets_opened",
-            "tickets_joined",
-            "suppressed",
-            "dropped",
-            "errored",
-            "last_message_at",
-        )
+        fields = ("bucket_start", "consumer_name", "topic", *INGESTION_STATS_COUNTER_FIELDS)
         default_columns = fields

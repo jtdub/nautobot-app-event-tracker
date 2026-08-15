@@ -31,7 +31,7 @@ def create_stats():
     ]
 
 
-class IngestionStatsAPITest(
+class IngestionStatsAPITest(  # pylint: disable=too-many-ancestors
     APIViewTestCases.GetObjectViewTestCase,
     APIViewTestCases.ListObjectsViewTestCase,
 ):
@@ -74,7 +74,7 @@ class IngestionStatsAPITest(
         self.assertIn("drops_by_reason", response.data)
 
 
-class IngestionStatsViewTest(
+class IngestionStatsViewTest(  # pylint: disable=too-many-ancestors
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.ListObjectsViewTestCase,
 ):
@@ -116,7 +116,7 @@ class IngestionStatsViewTest(
         self.assertContains(response, "lab-estate")
 
 
-class IngestionStatsNavigationTest(ViewTestCases.ListObjectsViewTestCase):
+class IngestionStatsNavigationTest(ViewTestCases.ListObjectsViewTestCase):  # pylint: disable=too-many-ancestors
     """The list is reachable, and gated on the permission the nav entry names."""
 
     model = IngestionStats

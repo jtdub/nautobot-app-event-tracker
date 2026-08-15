@@ -45,14 +45,14 @@ def _drop_a_broken_connection():
         connection.close_if_unusable_or_obsolete()
 
 
-class ConsumerRunner:
+class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
     """The loop: poll, handle, acknowledge, flush, repeat.
 
     Kept as a class rather than a method so tests can drive it with a fake consumer and a fake
     clock, without installing signal handlers or going through `call_command`.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         *,
         consumer,
@@ -200,7 +200,6 @@ class Command(BaseCommand):
             raise CommandError(str(error)) from error
 
         self.stdout.write(self.style.SUCCESS(f"Stopped after handling {runner.handled} messages."))
-        return None
 
     def _load(self, options):
         """Parse and validate the configuration, refusing to start on any fault."""

@@ -100,7 +100,7 @@ class TestTopicParsing(SimpleTestCase):
         self.assertEqual(config.load().topics["network.events"].unknown_event_type, UNKNOWN_EVENT_TYPE_DROP)
 
 
-class TestValidation(SimpleTestCase):
+class TestValidation(fixtures.RefusalAssertions, SimpleTestCase):
     """Every fault is reported, and reported in terms an operator can act on."""
 
     def assert_refuses(self, ingestion, *expected):
@@ -108,10 +108,7 @@ class TestValidation(SimpleTestCase):
         with settings_with(ingestion):
             with self.assertRaises(ImproperlyConfigured) as caught:
                 config.load()
-        message = str(caught.exception)
-        for fragment in expected:
-            self.assertIn(fragment, message)
-        return message
+        return self.assert_names(str(caught.exception), expected)
 
     def test_field_map_must_name_the_event_type_and_title(self):
         """A ticket with no type and no title is not a ticket anyone can act on."""

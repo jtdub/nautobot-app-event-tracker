@@ -31,11 +31,7 @@ from nautobot_event_tracker.models import EventTicket, IngestionStats, TicketUpd
 from nautobot_event_tracker.tests import fixtures
 from nautobot_event_tracker.tests.test_ingestion_prefilter import FakeClock
 
-TOPIC = {
-    "field_map": {"event_type": "event.type", "title": "message", "severity": "event.severity"},
-    "defaults": {"event_type": "Test Interface Down"},
-    "dedup_key_template": "{event.type}:{host}",
-}
+TOPIC = fixtures.INGESTION_TOPIC
 
 
 class PipelineTestCase(TestCase):
@@ -76,16 +72,7 @@ class PipelineTestCase(TestCase):
         )
         return pipeline.handle_message(message, rules=rules, recorder=self.recorder, config=loaded, **kwargs)
 
-    @staticmethod
-    def payload(**overrides):
-        """A payload the pipeline would ordinarily turn into a ticket."""
-        base = {
-            "event": {"type": "Test Interface Down", "severity": SeverityChoices.MAJOR},
-            "message": "Interface ethernet-1/1 is down",
-            "host": "leaf-01",
-        }
-        base.update(overrides)
-        return base
+    payload = staticmethod(fixtures.event_payload)
 
     def counts(self, topic="network.events"):
         """Flush and return the counter row for this topic."""

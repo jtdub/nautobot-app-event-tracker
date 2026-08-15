@@ -147,3 +147,38 @@ class FakeEventConsumer(EventConsumer):
 def broker_message(payload, *, topic="network.events", **kwargs):
     """Build a BrokerMessage carrying this payload as JSON."""
     return BrokerMessage(topic=topic, value=json.dumps(payload).encode("utf-8"), **kwargs)
+
+
+#: A topic configuration the ingestion tests share, so the pipeline, the command and the pre-filter
+#: are all exercised against the same shape of payload.
+INGESTION_TOPIC = {
+    "field_map": {"event_type": "event.type", "title": "message", "severity": "event.severity"},
+    "defaults": {"event_type": "Test Interface Down"},
+    "dedup_key_template": "{event.type}:{host}",
+}
+
+
+def event_payload(**overrides):
+    """A payload the pre-filter accepts and the pipeline turns into a ticket."""
+    base = {
+        "event": {"type": "Test Interface Down", "severity": SeverityChoices.MAJOR},
+        "message": "Interface ethernet-1/1 is down",
+        "host": "leaf-01",
+    }
+    base.update(overrides)
+    return base
+
+
+class RefusalAssertions:  # pylint: disable=too-few-public-methods
+    """Assert that something was refused, and that the message says why.
+
+    Mixed into the tests for both halves of startup validation. The message is the whole point of
+    the exercise - an operator reading it at 03:00 is the reason the validation exists - so every
+    test asserts on it rather than on the exception's type alone.
+    """
+
+    def assert_names(self, message, fragments):
+        """Assert the message names each of these faults."""
+        for fragment in fragments:
+            self.assertIn(fragment, message)  # pylint: disable=no-member
+        return message

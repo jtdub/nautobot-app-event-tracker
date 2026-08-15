@@ -62,8 +62,12 @@ class StubKafkaMessage:
         return self._error
 
 
-class StubKafkaConsumer:
-    """A confluent-kafka Consumer that records what was asked of it."""
+class StubKafkaConsumer:  # pylint: disable=unused-argument
+    """A confluent-kafka Consumer that records what was asked of it.
+
+    Signatures mirror the real client's, argument names included: `commit(asynchronous=False)` is
+    called by keyword, so the name is part of the contract even where the stub ignores the value.
+    """
 
     def __init__(self, config):
         """Keep the configuration so the tests can assert on it."""
@@ -110,8 +114,12 @@ class TestConsumerRegistry(SimpleTestCase):
         self.assertTrue(issubclass(KafkaEventConsumer, EventConsumer))
 
 
-class ConsumerConformanceTests:
-    """The contract every implementation keeps. Mixed into one test case per implementation."""
+class ConsumerConformanceTests:  # pylint: disable=no-member
+    """The contract every implementation keeps. Mixed into one test case per implementation.
+
+    A mixin rather than a base class, so each implementation's own tests sit alongside it. The
+    assertion methods come from the TestCase it is mixed into.
+    """
 
     def build(self):
         """Return a connected consumer and whatever the test needs to drive it."""
@@ -247,26 +255,31 @@ class TestRedisConsumer(ConsumerConformanceTests, SimpleTestCase):
             """The subset of redis-py's PubSub this consumer uses."""
 
             def __init__(self):
+                """Start unsubscribed."""
                 self.subscribed = None
                 self.closed = False
 
             def subscribe(self, *channels):
+                """Record the subscription."""
                 self.subscribed = channels
 
-            def get_message(self, timeout=None):
+            def get_message(self, timeout=None):  # pylint: disable=unused-argument
+                """Hand over the next queued message."""
                 return queued.pop(0) if queued else None
 
             def close(self):
+                """Note that we unsubscribed."""
                 self.closed = True
 
         class StubClient:
             """The subset of redis-py's Redis this consumer uses."""
 
             def pubsub(self, **kwargs):
+                """Return the stub pubsub."""
                 return StubPubSub()
 
             def close(self):
-                pass
+                """Nothing to release."""
 
         consumer = RedisEventConsumer(
             settings={"url": "redis://localhost:6379/2", "external_integration": ""},

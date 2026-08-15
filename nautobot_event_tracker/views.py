@@ -533,11 +533,18 @@ class DropsByReasonPanel(KeyValueTablePanel):
         return key
 
 
-class IngestionStatsUIViewSet(ObjectListViewMixin, ObjectDetailViewMixin):  # pylint: disable=too-many-ancestors
+class IngestionStatsUIViewSet(  # pylint: disable=too-many-ancestors,abstract-method
+    ObjectListViewMixin,
+    ObjectDetailViewMixin,
+):
     """Read-only views for the ingestion counters.
 
     List and detail only: there is no add, edit or delete route, because the consumer is the only
     thing that writes these rows. Same posture as the update trail, for the same reason.
+
+    `abstract-method` is disabled deliberately: `NautobotViewSetMixin` declares the form-processing
+    hooks for creating, updating and destroying objects, and a viewset offering none of those
+    routes has no form to process.
     """
 
     queryset = models.IngestionStats.objects.all()
@@ -552,18 +559,7 @@ class IngestionStatsUIViewSet(ObjectListViewMixin, ObjectDetailViewMixin):  # py
             ObjectFieldsPanel(
                 weight=100,
                 section=SectionChoices.LEFT_HALF,
-                fields=(
-                    "consumer_name",
-                    "topic",
-                    "bucket_start",
-                    "received",
-                    "tickets_opened",
-                    "tickets_joined",
-                    "suppressed",
-                    "dropped",
-                    "errored",
-                    "last_message_at",
-                ),
+                fields=("consumer_name", "topic", "bucket_start", *tables.INGESTION_STATS_COUNTER_FIELDS),
             ),
             # "Which rule is eating my events" is the question this page exists to answer, so the
             # breakdown gets a panel of its own rather than a cell in the table above.
