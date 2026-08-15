@@ -270,7 +270,7 @@ def detach_object(*, ticket, obj, source, user=None, message="") -> TicketUpdate
 
 Attaching an already-attached object, or detaching one that is not attached, is a no-op that returns `None` without writing a row — so a re-delivered event does not pollute the timeline.
 
-These are the two functions the Phase 2 enrichment resolver calls: it turns the hostname and interface strings in a raw event payload into real Nautobot objects and attaches them with `source=system`. Phase 1 builds them for humans and the API; nothing about the contract changes when the resolver arrives.
+These are the two functions the enrichment resolver calls: it turns the hostname and interface strings in a raw event payload into real Nautobot objects and attaches them with `source=system`. The architecture's phasing table places the resolver in Phase 4; an earlier draft of this line said Phase 2, which the [Phase 2 spec](phase-2-ingestion.md) records as open question 13.2. Phase 1 builds these functions for humans and the API; nothing about the contract changes when the resolver arrives.
 
 ```python
 def assign(*, ticket, assignee, source, user=None) -> TicketUpdate
