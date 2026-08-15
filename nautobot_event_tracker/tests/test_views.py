@@ -4,12 +4,19 @@
 
 from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
+from nautobot.apps.choices import CustomFieldTypeChoices
 from nautobot.apps.testing import TestCase, ViewTestCases
 from nautobot.dcim.models import Location
+from nautobot.extras.models import CustomField
 
 from nautobot_event_tracker import forms
 from nautobot_event_tracker.api.serializers import SERVICE_OWNED_FIELDS
-from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.choices import (
+    SeverityChoices,
+    TicketSourceChoices,
+    TicketStatusChoices,
+    UpdateTypeChoices,
+)
 from nautobot_event_tracker.models import EventTicket, EventType
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.tests import fixtures
@@ -110,6 +117,51 @@ class TicketCreationRoutesThroughServiceTest(TestCase):
             "a UI-created ticket must still get its 'created' trail entry",
         )
 
+    def test_ui_creation_keeps_custom_field_values(self):
+        """Routing through the service must not cost the form its own fields."""
+        custom_field = CustomField.objects.create(type=CustomFieldTypeChoices.TYPE_TEXT, label="Runbook")
+        custom_field.content_types.set([ContentType.objects.get_for_model(EventTicket)])
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
+        self.client.post(
+            reverse("plugins:nautobot_event_tracker:eventticket_add"),
+            {
+                "title": "With a custom field",
+                "event_type": str(self.event_type.pk),
+                "severity": SeverityChoices.MAJOR,
+                "description": "",
+                "dedup_key": "",
+                f"cf_{custom_field.key}": "runbook-42",
+            },
+        )
+        ticket = EventTicket.objects.get(title="With a custom field")
+        self.assertEqual(ticket.cf[custom_field.key], "runbook-42")
+
+    def test_ui_creation_does_not_rewrite_a_deduped_ticket(self):
+        """A recurrence joins the open ticket; the second submission must not overwrite it."""
+        self.add_permissions(
+            "nautobot_event_tracker.add_eventticket",
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
+        url = reverse("plugins:nautobot_event_tracker:eventticket_add")
+        data = {
+            "title": "First wording",
+            "event_type": str(self.event_type.pk),
+            "severity": SeverityChoices.MAJOR,
+            "description": "",
+            "dedup_key": "ui-dedup",
+        }
+        self.client.post(url, data)
+        self.client.post(url, {**data, "title": "Second wording"})
+
+        tickets = EventTicket.objects.filter(dedup_key="ui-dedup")
+        self.assertEqual(tickets.count(), 1)
+        self.assertEqual(tickets.first().title, "First wording")
+
 
 class TransitionViewTest(TestCase):
     """The transition view and its buttons."""
@@ -180,6 +232,17 @@ class TransitionViewTest(TestCase):
         for status in TicketStatusChoices.values():
             self.assertNotIn(f"to_status={status}", content)
 
+    def test_transition_menu_is_hidden_when_nothing_is_legal(self):
+        """A closed ticket has no legal move, so it must not offer an empty menu."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.transition_eventticket",
+        )
+        closed = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, user=self.user)
+        response = self.client.get(closed.get_absolute_url())
+        self.assertHttpStatus(response, 200)
+        self.assertNotIn("Transition", response.content.decode())
+
 
 class AttachViewTest(TestCase):
     """The attach and detach views and the related-objects panel."""
@@ -236,6 +299,98 @@ class AttachViewTest(TestCase):
         self.assertIn("Locations", content)
         self.assertIn(str(self.location), content)
 
+    def test_attach_asks_for_the_type_then_the_object(self):
+        """The two-step flow: type first, then a picker over that type's objects."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.change_eventticket",
+        )
+        first = self.client.get(self.attach_url)
+        self.assertHttpStatus(first, 200)
+        self.assertIsInstance(first.context["form"], forms.AttachObjectTypeForm)
+
+        second = self.client.post(self.attach_url, {"object_type": self.location_type.pk})
+        self.assertHttpStatus(second, 200)
+        form = second.context["form"]
+        self.assertIsInstance(form, forms.AttachObjectForm)
+        self.assertEqual(form.fields["object_id"].queryset.model, Location)
+
+    def test_attach_rejects_a_type_off_the_allowlist(self):
+        """A type the service would refuse never reaches the object picker."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.change_eventticket",
+        )
+        response = self.client.post(
+            self.attach_url,
+            {"object_type": ContentType.objects.get_for_model(EventType).pk, "object_id": str(self.location.pk)},
+        )
+        self.assertHttpStatus(response, 200)
+        self.assertIsInstance(response.context["form"], forms.AttachObjectTypeForm)
+        self.assertEqual(ticket_service.get_related_objects(self.ticket), {})
+
+    def test_panel_offers_a_detach_control(self):
+        """Every attached object carries a link to detach it (spec section 6)."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.change_eventticket",
+        )
+        ticket_service.attach_object(
+            ticket=self.ticket,
+            obj=self.location,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+        )
+        response = self.client.get(self.ticket.get_absolute_url())
+        self.assertHttpStatus(response, 200)
+        self.assertIn(
+            f"{self.detach_url}?object_type={self.location_type.pk}&amp;object_id={self.location.pk}",
+            response.content.decode(),
+        )
+
+    def test_detach_control_is_hidden_without_permission(self):
+        """A read-only user sees the attachment but no way to remove it."""
+        self.add_permissions("nautobot_event_tracker.view_eventticket")
+        ticket_service.attach_object(
+            ticket=self.ticket,
+            obj=self.location,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+        )
+        response = self.client.get(self.ticket.get_absolute_url())
+        self.assertHttpStatus(response, 200)
+        content = response.content.decode()
+        self.assertIn(str(self.location), content)
+        self.assertNotIn(self.detach_url, content)
+
+    def test_detach_confirmation_page_renders(self):
+        """The detach link leads to a confirmation, not a bare POST target."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.change_eventticket",
+        )
+        response = self.client.get(
+            f"{self.detach_url}?object_type={self.location_type.pk}&object_id={self.location.pk}"
+        )
+        self.assertHttpStatus(response, 200)
+        self.assertIsInstance(response.context["form"], forms.DetachObjectForm)
+
+    def test_object_names_are_shown_verbatim(self):
+        """An object's own name is not re-title-cased as if it were a field label."""
+        self.add_permissions("nautobot_event_tracker.view_eventticket")
+        location = fixtures.create_location(name="edge_rtr_01")
+        ticket_service.attach_object(
+            ticket=self.ticket,
+            obj=location,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+        )
+        response = self.client.get(self.ticket.get_absolute_url())
+        self.assertHttpStatus(response, 200)
+        content = response.content.decode()
+        self.assertIn("edge_rtr_01", content)
+        self.assertNotIn("Edge Rtr 01", content)
+
     def test_attach_button_hidden_on_closed_tickets(self):
         """A closed ticket offers no attach control."""
         self.add_permissions(
@@ -247,6 +402,64 @@ class AttachViewTest(TestCase):
         self.assertHttpStatus(response, 200)
         attach_url = reverse("plugins:nautobot_event_tracker:eventticket_attach", args=[closed.pk])
         self.assertNotIn(attach_url, response.content.decode())
+
+
+class TicketEditRoutesThroughServiceTest(TestCase):
+    """Editing a ticket in the UI must leave the same trail as any other mutation."""
+
+    def setUp(self):
+        """A ticket to edit, and the permissions to edit it."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.event_type = EventType.objects.get(name="Test Interface Down")
+        self.ticket = fixtures.create_ticket(
+            user=self.user,
+            event_type=self.event_type,
+            title="Editable",
+            severity=SeverityChoices.MINOR,
+        )
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.change_eventticket",
+            "nautobot_event_tracker.view_eventtype",
+        )
+        self.edit_url = reverse("plugins:nautobot_event_tracker:eventticket_edit", args=[self.ticket.pk])
+
+    def _post_edit(self, **overrides):
+        data = {
+            "title": self.ticket.title,
+            "event_type": str(self.event_type.pk),
+            "severity": self.ticket.severity,
+            "description": "",
+            "dedup_key": "",
+            **overrides,
+        }
+        return self.client.post(self.edit_url, data)
+
+    def test_severity_change_writes_an_update(self):
+        """A severity edit records who changed it and from what."""
+        self._post_edit(severity=SeverityChoices.CRITICAL)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.severity, SeverityChoices.CRITICAL)
+        update = self.ticket.updates.filter(update_type=UpdateTypeChoices.SEVERITY_CHANGE).last()
+        self.assertIsNotNone(update)
+        self.assertEqual(update.user, self.user)
+        self.assertIn(SeverityChoices.MINOR, update.message)
+
+    def test_assignment_change_writes_an_update(self):
+        """So does an assignment."""
+        self._post_edit(assigned_to=str(self.user.pk))
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.assigned_to, self.user)
+        self.assertTrue(self.ticket.updates.filter(update_type=UpdateTypeChoices.ASSIGNMENT).exists())
+
+    def test_editing_something_else_writes_no_spurious_update(self):
+        """An unchanged severity is a no-op, as it is everywhere else in the service."""
+        self._post_edit(description="just a description")
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.description, "just a description")
+        self.assertFalse(self.ticket.updates.filter(update_type=UpdateTypeChoices.SEVERITY_CHANGE).exists())
+        self.assertFalse(self.ticket.updates.filter(update_type=UpdateTypeChoices.ASSIGNMENT).exists())
 
 
 class UpdateTrailViewTest(TestCase):

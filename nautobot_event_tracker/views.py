@@ -7,10 +7,10 @@ See ADR 0008.
 from contextlib import contextmanager
 
 from django.contrib import messages
-from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils.html import format_html
 from nautobot.apps.models import count_related
 from nautobot.apps.templatetags import hyperlinked_object
 from nautobot.apps.ui import (
@@ -77,7 +77,7 @@ TRANSITION_COLORS = {
 
 
 class RelatedObjectsPanel(GroupedKeyValueTablePanel):
-    """Attached Nautobot objects, grouped by object type.
+    """Attached Nautobot objects, grouped by object type, each with a detach control.
 
     Attachment is derived from the ticket's update trail, so the data comes from the service layer
     rather than from a relation on the ticket.
@@ -100,12 +100,40 @@ class RelatedObjectsPanel(GroupedKeyValueTablePanel):
         if cached is not None:
             return cached
 
+        request = context.get("request")
         grouped = {}
         for content_type, objects in ticket_service.get_related_objects(ticket).items():
             label = content_type.model_class()._meta.verbose_name_plural.title()  # pylint: disable=protected-access
-            grouped[label] = {str(obj): hyperlinked_object(obj) for obj in objects}
+            grouped[label] = {str(obj): self._render_object(ticket, content_type, obj, request) for obj in objects}
         ticket._related_objects_panel_cache = grouped  # pylint: disable=protected-access
         return grouped
+
+    def render_key(self, key, value, context):
+        """Show the object's own name, not a title-cased guess at a field name.
+
+        The inherited implementation renders keys as field labels - underscores to spaces, then
+        title case - which would turn a device named `edge_rtr_01` into "Edge Rtr 01".
+        """
+        return key
+
+    @staticmethod
+    def _render_object(ticket, content_type, obj, request):
+        """The object as a link, followed by a detach control when this user may detach it."""
+        link = hyperlinked_object(obj)
+        may_detach = request is not None and request.user.has_perm(CHANGE_PERMISSION)
+        if not ticket.is_open or not may_detach:
+            return link
+
+        url = reverse("plugins:nautobot_event_tracker:eventticket_detach", kwargs={"pk": ticket.pk})
+        return format_html(
+            '{} <a href="{}?object_type={}&amp;object_id={}" class="float-end" title="Detach">'
+            '<span class="mdi mdi-link-variant-off" aria-hidden="true"></span>'
+            '<span class="visually-hidden">Detach</span></a>',
+            link,
+            url,
+            content_type.pk,
+            obj.pk,
+        )
 
 
 class TransitionButton(Button):
@@ -137,6 +165,20 @@ class TransitionButton(Button):
         if ticket is None or not super().should_render(context):
             return False
         return self.to_status in ticket_service.get_allowed_transitions(ticket)
+
+
+class TransitionDropdownButton(DropdownButton):
+    """The transition menu, which renders only when it would have something in it.
+
+    `DropdownButton` renders itself regardless of its children, so without this a closed ticket -
+    or a user without the transition permission - would see a button that opens an empty menu.
+    """
+
+    def should_render(self, context):
+        """Render only when at least one transition is available to this user on this ticket."""
+        if not super().should_render(context):
+            return False
+        return any(child.should_render(context) for child in self.children)
 
 
 class AttachObjectButton(Button):
@@ -199,17 +241,29 @@ class EventTicketUIViewSet(NautobotUIViewSet):
     table_class = tables.EventTicketTable
 
     def form_save(self, form, **kwargs):
-        """Route creation through the service layer.
+        """Route both create and edit through the service layer.
 
         Without this, a ticket created in the UI would be written straight to the database with no
-        `created` entry in its trail and no dedup handling - the one path that would quietly
+        `created` entry in its trail and no dedup handling, and an edit would change severity or
+        assignee with nothing in the trail to say who did - the two paths that would quietly
         violate ADR 0001.
         """
-        if self.action != "create":
-            return super().form_save(form, **kwargs)
+        if self.action == "create":
+            return self._create_from_form(form, **kwargs)
+        if self.action == "update":
+            self._apply_tracked_fields(form)
+        return super().form_save(form, **kwargs)
 
+    def _create_from_form(self, form, **kwargs):
+        """Create through the service, then let the form finish its own work.
+
+        The form's mixins own custom fields and relationships, which the service knows nothing
+        about, so the form is re-pointed at the row the service wrote and saved as usual. A dedup
+        join is the exception: that ticket belongs to an earlier event, and this form must not
+        rewrite it.
+        """
         data = form.cleaned_data
-        return ticket_service.create_ticket_for_user(
+        ticket = ticket_service.create_ticket_for_user(
             user=self.request.user,
             title=data["title"],
             event_type=data["event_type"],
@@ -218,6 +272,34 @@ class EventTicketUIViewSet(NautobotUIViewSet):
             dedup_key=data.get("dedup_key", ""),
             assignee=data.get("assigned_to"),
             tags=data.get("tags"),
+        )
+        if not ticket.was_created:
+            return ticket
+
+        # `clean()` has already stashed the submitted custom field values on the unsaved instance.
+        ticket._custom_field_data = form.instance._custom_field_data  # pylint: disable=protected-access
+        form.instance = ticket
+        return super().form_save(form, **kwargs)
+
+    def _apply_tracked_fields(self, form):
+        """Send the edited fields that carry their own update type through the service.
+
+        The form then saves an instance whose severity and assignee already hold the new values, so
+        its own save is a no-op for them.
+        """
+        ticket = self.get_queryset().get(pk=form.instance.pk)
+        data = form.cleaned_data
+        ticket_service.set_severity(
+            ticket=ticket,
+            severity=data["severity"],
+            source=TicketSourceChoices.HUMAN,
+            user=self.request.user,
+        )
+        ticket_service.assign(
+            ticket=ticket,
+            assignee=data.get("assigned_to"),
+            source=TicketSourceChoices.HUMAN,
+            user=self.request.user,
         )
 
     object_detail_content = ObjectDetailContent(
@@ -265,7 +347,7 @@ class EventTicketUIViewSet(NautobotUIViewSet):
         ],
         extra_buttons=[
             AttachObjectButton(weight=100, label="Attach Object", icon="mdi-link-variant"),
-            DropdownButton(
+            TransitionDropdownButton(
                 weight=200,
                 label="Transition",
                 color=ButtonColorChoices.BLUE,
@@ -329,20 +411,35 @@ class EventTicketAttachView(ObjectPermissionRequiredMixin, GenericView):
         return CHANGE_PERMISSION
 
     def get(self, request, pk):
-        """Render the attach form."""
+        """Ask which kind of object is being attached, or which object once the kind is known.
+
+        Two steps rather than one because the object picker is a `DynamicModelChoiceField`, which
+        needs a concrete queryset - and so a chosen content type - to exist at all.
+        """
         ticket = get_object_or_404(self.queryset, pk=pk)
-        return _render_object_form(request, ticket, forms.AttachObjectForm())
+        content_type = self._attachable_type(request.GET.get("object_type"))
+        if content_type is None:
+            return _render_object_form(request, ticket, forms.AttachObjectTypeForm())
+        return _render_object_form(request, ticket, forms.AttachObjectForm(content_type))
 
     def post(self, request, pk):
-        """Attach the selected object."""
+        """Attach the selected object, or move the user on to the second step."""
         ticket = get_object_or_404(self.queryset, pk=pk)
-        form = forms.AttachObjectForm(request.POST)
-        if not form.is_valid():
-            messages.error(request, "Select an object type and an object to attach.")
-            return redirect(ticket.get_absolute_url())
+        content_type = self._attachable_type(request.POST.get("object_type"))
+        if content_type is None:
+            messages.error(request, "Select an object type that may be attached to a ticket.")
+            return _render_object_form(request, ticket, forms.AttachObjectTypeForm())
 
+        if "object_id" not in request.POST:
+            # The type picker was submitted; ask for the object itself.
+            return _render_object_form(request, ticket, forms.AttachObjectForm(content_type))
+
+        form = forms.AttachObjectForm(content_type, request.POST)
+        if not form.is_valid():
+            return _render_object_form(request, ticket, form)
+
+        obj = form.cleaned_data["object_id"]
         with _reporting_service_errors(request):
-            obj = ticket_service.resolve_object(form.cleaned_data["object_type"], form.cleaned_data["object_id"])
             update = ticket_service.attach_object(
                 ticket=ticket,
                 obj=obj,
@@ -356,6 +453,14 @@ class EventTicketAttachView(ObjectPermissionRequiredMixin, GenericView):
 
         return redirect(ticket.get_absolute_url())
 
+    @staticmethod
+    def _attachable_type(value):
+        """Resolve a submitted content type ID against the allowlist, or None if it is not on it."""
+        try:
+            return ticket_service.get_attachable_content_types().filter(pk=value).first()
+        except (TypeError, ValueError):
+            return None
+
 
 class EventTicketDetachView(ObjectPermissionRequiredMixin, GenericView):
     """Detach a Nautobot object from a ticket through the service layer."""
@@ -366,6 +471,17 @@ class EventTicketDetachView(ObjectPermissionRequiredMixin, GenericView):
         """Detaching is a change to the ticket."""
         return CHANGE_PERMISSION
 
+    def get(self, request, pk):
+        """Confirm the detach the panel's control asked for."""
+        ticket = get_object_or_404(self.queryset, pk=pk)
+        form = forms.DetachObjectForm(
+            initial={
+                "object_type": request.GET.get("object_type"),
+                "object_id": request.GET.get("object_id"),
+            }
+        )
+        return _render_object_form(request, ticket, form)
+
     def post(self, request, pk):
         """Detach the identified object.
 
@@ -375,13 +491,13 @@ class EventTicketDetachView(ObjectPermissionRequiredMixin, GenericView):
         here is safe.
         """
         ticket = get_object_or_404(self.queryset, pk=pk)
-        content_type = ContentType.objects.filter(pk=request.POST.get("object_type")).first()
-        if content_type is None:
+        form = forms.DetachObjectForm(request.POST)
+        if not form.is_valid():
             messages.error(request, "Could not identify the object to detach.")
             return redirect(ticket.get_absolute_url())
 
         with _reporting_service_errors(request):
-            obj = ticket_service.resolve_object(content_type, request.POST.get("object_id"))
+            obj = ticket_service.resolve_object(form.cleaned_data["object_type"], form.cleaned_data["object_id"])
             ticket_service.detach_object(
                 ticket=ticket,
                 obj=obj,

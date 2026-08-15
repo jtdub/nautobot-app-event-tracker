@@ -1,6 +1,9 @@
 """Test the Event Tracker forms."""
 
+from django.contrib.contenttypes.models import ContentType
+from nautobot.apps.forms import DynamicModelChoiceField
 from nautobot.apps.testing import TestCase
+from nautobot.dcim.models import Location
 
 from nautobot_event_tracker import forms
 from nautobot_event_tracker.api.serializers import SERVICE_OWNED_FIELDS
@@ -78,28 +81,49 @@ class EventTicketFormTest(TestCase):
 
 
 class AttachObjectFormTest(TestCase):
-    """AttachObjectForm."""
+    """The two steps of attaching an object."""
 
-    def test_type_choices_come_from_the_allowlist(self):
-        """The picker offers exactly the configured types that exist."""
-        form = forms.AttachObjectForm()
-        offered = {
+    def setUp(self):
+        """The content type used for the second step."""
+        super().setUp()
+        self.location = fixtures.create_location()
+        self.content_type = ContentType.objects.get_for_model(Location)
+
+    @staticmethod
+    def _offered(form):
+        return {
             f"{content_type.app_label}.{content_type.model}" for content_type in form.fields["object_type"].queryset
         }
+
+    def test_type_choices_come_from_the_allowlist(self):
+        """The first step offers exactly the configured types that exist."""
+        offered = self._offered(forms.AttachObjectTypeForm())
         self.assertTrue(offered)
         self.assertTrue(offered.issubset(set(get_attachable_object_types())))
 
     def test_disallowed_type_is_not_offered(self):
         """The app's own models are not attachable."""
-        form = forms.AttachObjectForm()
-        offered = {
-            f"{content_type.app_label}.{content_type.model}" for content_type in form.fields["object_type"].queryset
-        }
-        self.assertNotIn("nautobot_event_tracker.eventtype", offered)
+        self.assertNotIn("nautobot_event_tracker.eventtype", self._offered(forms.AttachObjectTypeForm()))
+
+    def test_second_step_picks_objects_of_the_chosen_type(self):
+        """The object field is a picker over that type's objects, not a UUID box."""
+        form = forms.AttachObjectForm(self.content_type)
+        self.assertIsInstance(form.fields["object_id"], DynamicModelChoiceField)
+        self.assertEqual(form.fields["object_id"].queryset.model, Location)
+        self.assertEqual(form.fields["object_type"].initial, self.content_type.pk)
+
+    def test_second_step_accepts_an_object_of_that_type(self):
+        """A valid submission cleans to the object itself."""
+        form = forms.AttachObjectForm(
+            self.content_type,
+            data={"object_type": self.content_type.pk, "object_id": self.location.pk},
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["object_id"], self.location)
 
     def test_both_fields_are_required(self):
         """An empty submission is rejected."""
-        form = forms.AttachObjectForm(data={})
+        form = forms.AttachObjectForm(self.content_type, data={})
         self.assertFalse(form.is_valid())
         self.assertIn("object_type", form.errors)
         self.assertIn("object_id", form.errors)

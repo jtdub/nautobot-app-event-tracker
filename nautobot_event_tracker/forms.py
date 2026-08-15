@@ -163,8 +163,8 @@ class TicketTransitionForm(forms.Form):
     )
 
 
-class AttachObjectForm(forms.Form):
-    """Attach a Nautobot object to a ticket.
+class AttachObjectTypeForm(forms.Form):
+    """Step one of attaching: which kind of object?
 
     The type choices come from the configured allowlist, so the picker cannot offer something
     `services.tickets.attach_object()` would reject.
@@ -174,13 +174,43 @@ class AttachObjectForm(forms.Form):
         queryset=ContentType.objects.none(),
         label="Object type",
         widget=StaticSelect2,
-    )
-    object_id = forms.UUIDField(
-        label="Object",
-        help_text="Select the object to attach.",
+        help_text="Choose the kind of object, then pick the object itself.",
     )
 
     def __init__(self, *args, **kwargs):
         """Limit the type choices to the configured allowlist."""
         super().__init__(*args, **kwargs)
         self.fields["object_type"].queryset = ticket_service.get_attachable_content_types()
+
+
+class AttachObjectForm(AttachObjectTypeForm):
+    """Step two of attaching: which object of the chosen type?
+
+    Splitting the two steps is what makes the second field a real type-ahead picker: a
+    `DynamicModelChoiceField` needs a concrete queryset, which only exists once the type is known.
+    The type comes back as a hidden field so the submission carries both halves.
+    """
+
+    def __init__(self, content_type, *args, **kwargs):
+        """Build the object picker for this content type."""
+        super().__init__(*args, **kwargs)
+        model = content_type.model_class()
+        self.fields["object_type"].widget = forms.HiddenInput()
+        self.fields["object_type"].initial = content_type.pk
+        self.fields["object_id"] = DynamicModelChoiceField(
+            queryset=model.objects.all(),
+            label=model._meta.verbose_name.title(),
+            help_text="Select the object to attach.",
+        )
+
+
+class DetachObjectForm(forms.Form):
+    """Confirm detaching an object from a ticket.
+
+    Both fields are hidden: the object is identified by the link the user followed, and the page is
+    a confirmation, not a picker. The type is deliberately not limited to the allowlist, so that an
+    object attached under an older configuration stays removable.
+    """
+
+    object_type = forms.ModelChoiceField(queryset=ContentType.objects.all(), widget=forms.HiddenInput)
+    object_id = forms.UUIDField(widget=forms.HiddenInput)
