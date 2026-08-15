@@ -20,6 +20,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from nautobot_event_tracker.choices import (
+    ATTACHMENT_UPDATE_TYPES,
     TERMINAL_STATUSES,
     TICKET_STATUS_TRANSITIONS,
     TicketSourceChoices,
@@ -37,23 +38,81 @@ __all__ = [
     "add_comment",
     "assign",
     "attach_object",
+    "content_type_label",
+    "content_types_from_labels",
     "create_ticket",
     "create_ticket_for_user",
     "detach_object",
     "get_allowed_transitions",
+    "get_attachable_content_types",
     "get_attachable_object_types",
     "get_related_objects",
+    "resolve_object",
     "set_severity",
+    "ticket_ids_with_attached_types",
     "transition",
 ]
 
-ATTACHMENT_UPDATE_TYPES = (UpdateTypeChoices.OBJECT_ATTACHED, UpdateTypeChoices.OBJECT_DETACHED)
+
+def content_type_label(content_type):
+    """Render a ContentType as the `app_label.model` string this app uses everywhere."""
+    return f"{content_type.app_label}.{content_type.model}"
 
 
 def get_attachable_object_types():
     """Return the configured allowlist of attachable object types as `app_label.model` strings."""
     app_config = settings.PLUGINS_CONFIG.get("nautobot_event_tracker", {})
     return [str(entry).lower() for entry in app_config.get("attachable_object_types", [])]
+
+
+def content_types_from_labels(labels):
+    """Return a ContentType queryset for these `app_label.model` strings, skipping unknown ones.
+
+    Unknown labels are skipped rather than raising: both callers - the configured allowlist and a
+    filter's query string - are better served by ignoring a stale entry than by failing outright.
+    """
+    pks = []
+    for label in labels:
+        app_label, _, model = str(label).lower().partition(".")
+        try:
+            pks.append(ContentType.objects.get_by_natural_key(app_label, model).pk)
+        except ContentType.DoesNotExist:
+            continue
+    return ContentType.objects.filter(pk__in=pks).order_by("app_label", "model")
+
+
+def get_attachable_content_types():
+    """Return the allowlist as a ContentType queryset.
+
+    The allowlist is configured as strings, but forms and filters need ContentType objects. Doing
+    the conversion here keeps the label format known to one module.
+    """
+    return content_types_from_labels(get_attachable_object_types())
+
+
+def resolve_object(object_type, object_id):
+    """Turn an `app_label.model` string (or a ContentType) and an ID into a model instance.
+
+    Raises `ValidationError` when the type is unknown or no such object exists, so that every
+    transport reports the same thing for the same mistake.
+    """
+    if isinstance(object_type, ContentType):
+        content_type = object_type
+    else:
+        app_label, _, model = str(object_type).lower().partition(".")
+        try:
+            content_type = ContentType.objects.get_by_natural_key(app_label, model)
+        except ContentType.DoesNotExist as error:
+            raise ValidationError(f"Unknown object type '{object_type}'.") from error
+
+    model_class = content_type.model_class()
+    if model_class is None:
+        raise ValidationError(f"Object type '{content_type_label(content_type)}' has no model.")
+
+    obj = model_class.objects.filter(pk=object_id).first()
+    if obj is None:
+        raise ValidationError(f"No {content_type_label(content_type)} with ID {object_id}.")
+    return obj
 
 
 def _validate_actor(source, user):
@@ -94,17 +153,52 @@ def _record(*, ticket, update_type, source, user=None, message="", **fields):
     return update
 
 
-def _attached_keys(ticket):
-    """Return the set of (content_type_id, object_id) currently attached to the ticket."""
+def _replay_attachments(rows):
+    """Fold ordered (ticket, type, object, update_type) rows into the set still attached.
+
+    This is the attachment-derivation rule of spec 3.4, and the only implementation of it. Callers
+    supply the scope; the rule lives here.
+    """
     attached = set()
-    updates = ticket.updates.filter(update_type__in=ATTACHMENT_UPDATE_TYPES).order_by("created")
-    for update in updates:
-        key = (update.related_object_type_id, update.related_object_id)
-        if update.update_type == UpdateTypeChoices.OBJECT_ATTACHED:
+    for ticket_id, content_type_id, object_id, update_type in rows:
+        key = (ticket_id, content_type_id, object_id)
+        if update_type == UpdateTypeChoices.OBJECT_ATTACHED:
             attached.add(key)
         else:
             attached.discard(key)
     return attached
+
+
+def _attachment_rows(queryset):
+    """Order an attach/detach queryset and reduce it to the four columns the replay reads."""
+    return (
+        queryset.filter(update_type__in=ATTACHMENT_UPDATE_TYPES)
+        .order_by("created")
+        .values_list("ticket_id", "related_object_type_id", "related_object_id", "update_type")
+    )
+
+
+def _attached_keys(ticket):
+    """Return the set of (content_type_id, object_id) currently attached to the ticket."""
+    rows = _attachment_rows(ticket.updates)
+    return {(content_type_id, object_id) for _, content_type_id, object_id in _replay_attachments(rows)}
+
+
+def ticket_ids_with_attached_types(queryset, content_types):
+    """Return the IDs of tickets in `queryset` currently holding an object of one of these types.
+
+    Scoped to the queryset so the replay reads only the rows that could matter, rather than every
+    attachment row in the database.
+    """
+    if not content_types:
+        return set()
+    rows = _attachment_rows(
+        TicketUpdate.objects.filter(
+            ticket__in=queryset.values("pk"),
+            related_object_type__in=content_types,
+        )
+    )
+    return {ticket_id for ticket_id, _, _ in _replay_attachments(rows)}
 
 
 def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
@@ -239,6 +333,30 @@ def add_comment(*, ticket, message, source, user=None):
         )
 
 
+def _apply_terminal_bookkeeping(ticket, *, from_status, to_status, resolution, now):
+    """Keep the terminal timestamps and resolution consistent with the new status.
+
+    This is what makes rules C1 and C2 hold across a transition: entering a terminal state stamps
+    the times and records how it ended, and leaving one clears both so a reopened ticket does not
+    carry a stale answer.
+    """
+    if to_status == TicketStatusChoices.RESOLVED:
+        ticket.resolved_at = now
+        ticket.resolution = resolution
+    elif to_status == TicketStatusChoices.CLOSED:
+        ticket.closed_at = now
+        if ticket.resolved_at is None:
+            ticket.resolved_at = now
+        if resolution:
+            ticket.resolution = resolution
+        elif not ticket.resolution:
+            ticket.resolution = f"Closed from '{from_status}' without a recorded resolution."
+    elif from_status in TERMINAL_STATUSES:
+        ticket.resolved_at = None
+        ticket.closed_at = None
+        ticket.resolution = ""
+
+
 def transition(*, ticket, to_status, source, user=None, message="", resolution=""):  # pylint: disable=too-many-arguments
     """Move the ticket along the workflow graph and record the change (S2)."""
     _check_mutable(ticket, source)
@@ -259,24 +377,9 @@ def transition(*, ticket, to_status, source, user=None, message="", resolution="
 
     with transaction.atomic():
         ticket.status = to_status
-
-        if to_status == TicketStatusChoices.RESOLVED:
-            ticket.resolved_at = now
-            ticket.resolution = resolution
-        elif to_status == TicketStatusChoices.CLOSED:
-            ticket.closed_at = now
-            if ticket.resolved_at is None:
-                ticket.resolved_at = now
-            if resolution:
-                ticket.resolution = resolution
-            elif not ticket.resolution:
-                ticket.resolution = f"Closed from '{from_status}' without a recorded resolution."
-        elif from_status in TERMINAL_STATUSES:
-            # Reopening: drop the terminal bookkeeping so C1 and C2 stay satisfied.
-            ticket.resolved_at = None
-            ticket.closed_at = None
-            ticket.resolution = ""
-
+        _apply_terminal_bookkeeping(
+            ticket, from_status=from_status, to_status=to_status, resolution=resolution, now=now
+        )
         ticket.full_clean()
         ticket.save()
 
@@ -291,6 +394,30 @@ def transition(*, ticket, to_status, source, user=None, message="", resolution="
         )
 
 
+def _record_attachment(*, ticket, obj, content_type, update_type, source, user, message):  # pylint: disable=too-many-arguments
+    """Write one attach or detach row, or nothing if it would be a no-op.
+
+    Attaching what is already attached and detaching what is not attached are both no-ops, so that
+    a re-delivered event does not pollute the timeline.
+    """
+    attaching = update_type == UpdateTypeChoices.OBJECT_ATTACHED
+    already_attached = (content_type.pk, obj.pk) in _attached_keys(ticket)
+    if attaching == already_attached:
+        return None
+
+    verb = "Attached" if attaching else "Detached"
+    with transaction.atomic():
+        return _record(
+            ticket=ticket,
+            update_type=update_type,
+            source=source,
+            user=user,
+            message=message or f"{verb} {content_type_label(content_type)} '{obj}'.",
+            related_object_type=content_type,
+            related_object_id=obj.pk,
+        )
+
+
 def attach_object(*, ticket, obj, source, user=None, message=""):
     """Attach a Nautobot object to the ticket.
 
@@ -301,7 +428,7 @@ def attach_object(*, ticket, obj, source, user=None, message=""):
     _validate_actor(source, user)
 
     content_type = ContentType.objects.get_for_model(obj)
-    label = f"{content_type.app_label}.{content_type.model}"
+    label = content_type_label(content_type)
     allowed_types = get_attachable_object_types()
     if label not in allowed_types:
         raise ValidationError(
@@ -309,19 +436,15 @@ def attach_object(*, ticket, obj, source, user=None, message=""):
             f"Permitted types: {', '.join(sorted(allowed_types)) or 'none configured'}."
         )
 
-    if (content_type.pk, obj.pk) in _attached_keys(ticket):
-        return None
-
-    with transaction.atomic():
-        return _record(
-            ticket=ticket,
-            update_type=UpdateTypeChoices.OBJECT_ATTACHED,
-            source=source,
-            user=user,
-            message=message or f"Attached {label} '{obj}'.",
-            related_object_type=content_type,
-            related_object_id=obj.pk,
-        )
+    return _record_attachment(
+        ticket=ticket,
+        obj=obj,
+        content_type=content_type,
+        update_type=UpdateTypeChoices.OBJECT_ATTACHED,
+        source=source,
+        user=user,
+        message=message,
+    )
 
 
 def detach_object(*, ticket, obj, source, user=None, message=""):
@@ -334,21 +457,15 @@ def detach_object(*, ticket, obj, source, user=None, message=""):
     _check_mutable(ticket, source)
     _validate_actor(source, user)
 
-    content_type = ContentType.objects.get_for_model(obj)
-    if (content_type.pk, obj.pk) not in _attached_keys(ticket):
-        return None
-
-    label = f"{content_type.app_label}.{content_type.model}"
-    with transaction.atomic():
-        return _record(
-            ticket=ticket,
-            update_type=UpdateTypeChoices.OBJECT_DETACHED,
-            source=source,
-            user=user,
-            message=message or f"Detached {label} '{obj}'.",
-            related_object_type=content_type,
-            related_object_id=obj.pk,
-        )
+    return _record_attachment(
+        ticket=ticket,
+        obj=obj,
+        content_type=ContentType.objects.get_for_model(obj),
+        update_type=UpdateTypeChoices.OBJECT_DETACHED,
+        source=source,
+        user=user,
+        message=message,
+    )
 
 
 def assign(*, ticket, assignee, source, user=None):

@@ -4,6 +4,7 @@ import django_filters
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from nautobot.apps.filters import (
+    ContentTypeMultipleChoiceFilter,
     MultiValueCharFilter,
     MultiValueDateTimeFilter,
     MultiValueNumberFilter,
@@ -13,19 +14,9 @@ from nautobot.apps.filters import (
     SearchFilter,
 )
 
-from nautobot_event_tracker.choices import TERMINAL_STATUSES, UpdateTypeChoices
+from nautobot_event_tracker.choices import TERMINAL_STATUSES
 from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
-
-ATTACHMENT_UPDATE_TYPES = (UpdateTypeChoices.OBJECT_ATTACHED, UpdateTypeChoices.OBJECT_DETACHED)
-
-
-def _content_type_ids(labels):
-    """Turn `app_label.model` strings into ContentType primary keys, skipping unknown ones."""
-    ids = []
-    for label in labels:
-        app_label, _, model = str(label).lower().partition(".")
-        ids.extend(ContentType.objects.filter(app_label=app_label, model=model).values_list("pk", flat=True))
-    return ids
+from nautobot_event_tracker.services import tickets as ticket_service
 
 
 class EventTypeFilterSet(NautobotFilterSet):
@@ -118,34 +109,18 @@ class EventTicketFilterSet(NautobotFilterSet):
         """Match tickets that *currently* have an object of one of these types attached.
 
         Attachment is derived from the update trail (spec section 3.4), so this cannot be a plain
-        join: an object that was attached and later detached must not match. Replay the attach and
-        detach rows in order and keep the tickets left holding at least one attachment.
+        join: an object attached and later detached must not match. The derivation itself belongs
+        to the service layer, so this filter only supplies the scope and consumes the result.
         """
         if not value:
             return queryset
 
-        content_type_ids = _content_type_ids(value)
-        if not content_type_ids:
+        content_types = ticket_service.content_types_from_labels(value)
+        if not content_types:
             return queryset.none()
 
-        rows = (
-            TicketUpdate.objects.filter(
-                update_type__in=ATTACHMENT_UPDATE_TYPES,
-                related_object_type__in=content_type_ids,
-            )
-            .order_by("created")
-            .values_list("ticket_id", "related_object_type_id", "related_object_id", "update_type")
-        )
-
-        attached = set()
-        for ticket_id, content_type_id, object_id, update_type in rows:
-            key = (ticket_id, content_type_id, object_id)
-            if update_type == UpdateTypeChoices.OBJECT_ATTACHED:
-                attached.add(key)
-            else:
-                attached.discard(key)
-
-        return queryset.filter(pk__in={key[0] for key in attached})
+        ticket_ids = ticket_service.ticket_ids_with_attached_types(queryset, content_types)
+        return queryset.filter(pk__in=ticket_ids)
 
 
 class TicketUpdateFilterSet(NautobotFilterSet):
@@ -164,9 +139,14 @@ class TicketUpdateFilterSet(NautobotFilterSet):
         label="User (username or ID)",
     )
     created = MultiValueDateTimeFilter(label="Created")
-    related_object_type = MultiValueCharFilter(
-        method="filter_related_object_type",
-        label="Related object type (app_label.model)",
+    # A plain FK to ContentType, so core's filter handles `app_label.model` without a method.
+    related_object_type = ContentTypeMultipleChoiceFilter(
+        field_name="related_object_type",
+        choices=lambda: [
+            (ticket_service.content_type_label(content_type), ticket_service.content_type_label(content_type))
+            for content_type in ContentType.objects.order_by("app_label", "model")
+        ],
+        conjoined=False,
     )
 
     class Meta:
@@ -174,12 +154,3 @@ class TicketUpdateFilterSet(NautobotFilterSet):
 
         model = TicketUpdate
         fields = ["ticket", "update_type", "source", "message"]  # pylint: disable=nb-use-fields-all
-
-    def filter_related_object_type(self, queryset, name, value):  # pylint: disable=unused-argument
-        """Filter by `app_label.model`, matching the convention core filtersets use."""
-        if not value:
-            return queryset
-        content_type_ids = _content_type_ids(value)
-        if not content_type_ids:
-            return queryset.none()
-        return queryset.filter(related_object_type__in=content_type_ids)

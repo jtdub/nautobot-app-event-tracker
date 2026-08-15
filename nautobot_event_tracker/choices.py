@@ -137,5 +137,10 @@ TICKET_STATUS_TRANSITIONS = {
     TicketStatusChoices.CLOSED: frozenset(),
 }
 
-#: Statuses an AI actor may not mutate a ticket in. See rule S3.
+#: The finished states: resolved or closed. A ticket in one of these is not open work, and an AI
+#: actor may not mutate it (rule S3). Every module that needs "is this ticket finished" reads this
+#: rather than spelling the pair out.
 TERMINAL_STATUSES = frozenset({TicketStatusChoices.RESOLVED, TicketStatusChoices.CLOSED})
+
+#: The update types that together derive a ticket's attached objects (spec 3.4).
+ATTACHMENT_UPDATE_TYPES = (UpdateTypeChoices.OBJECT_ATTACHED, UpdateTypeChoices.OBJECT_DETACHED)

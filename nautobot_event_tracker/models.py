@@ -13,6 +13,8 @@ from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.models import BaseModel, ChangeLoggedModel, OrganizationalModel, PrimaryModel, extras_features
 
 from nautobot_event_tracker.choices import (
+    ATTACHMENT_UPDATE_TYPES,
+    TERMINAL_STATUSES,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
@@ -125,15 +127,17 @@ class EventTicket(PrimaryModel):  # pylint: disable=too-many-ancestors
     @property
     def is_open(self):
         """True when the ticket is neither resolved nor closed."""
-        return self.status not in (TicketStatusChoices.RESOLVED, TicketStatusChoices.CLOSED)
+        return self.status not in TERMINAL_STATUSES
 
     def clean(self):
         """Validate shape, never actor. Actor rules live in the service layer (ADR 0001)."""
         super().clean()
         errors = {}
 
+        is_terminal = self.status in TERMINAL_STATUSES
+
         # C1 - timestamps agree with status.
-        expects_resolved_at = self.status in (TicketStatusChoices.RESOLVED, TicketStatusChoices.CLOSED)
+        expects_resolved_at = is_terminal
         if expects_resolved_at and self.resolved_at is None:
             errors["resolved_at"] = f"A ticket with status '{self.status}' must have a resolved time."
         if not expects_resolved_at and self.resolved_at is not None:
@@ -149,7 +153,7 @@ class EventTicket(PrimaryModel):  # pylint: disable=too-many-ancestors
             errors["closed_at"] = "Closed time cannot be earlier than resolved time."
 
         # C2 - resolution text agrees with status.
-        expects_resolution = self.status in (TicketStatusChoices.RESOLVED, TicketStatusChoices.CLOSED)
+        expects_resolution = is_terminal
         if expects_resolution and not self.resolution:
             errors["resolution"] = f"A ticket with status '{self.status}' must have a resolution."
         if not expects_resolution and self.resolution:
@@ -209,50 +213,66 @@ class TicketUpdate(BaseModel, ChangeLoggedModel):
         """Stringify instance."""
         return f"{self.get_update_type_display()} on {self.ticket_id}"
 
-    def clean(self):  # pylint: disable=too-many-branches
-        """C3 - an update's payload and actor must match its type."""
+    def clean(self):
+        """C3 - an update's payload and actor must match its type.
+
+        Each rule reports every field it objects to, so a caller fixes one form rather than
+        discovering the next problem on the next attempt.
+        """
         super().clean()
         errors = {}
-
-        if self.update_type == UpdateTypeChoices.COMMENT and not self.message:
-            errors["message"] = "A comment must have a message."
-
-        if self.update_type == UpdateTypeChoices.STATUS_CHANGE:
-            if not self.from_status:
-                errors["from_status"] = "A status change must record the status it moved from."
-            if not self.to_status:
-                errors["to_status"] = "A status change must record the status it moved to."
-            if self.from_status and self.to_status and self.from_status == self.to_status:
-                errors["to_status"] = "A status change must move between two different statuses."
-        else:
-            if self.from_status:
-                errors["from_status"] = f"An update of type '{self.update_type}' must not record a from status."
-            if self.to_status:
-                errors["to_status"] = f"An update of type '{self.update_type}' must not record a to status."
-
-        attachment_types = (UpdateTypeChoices.OBJECT_ATTACHED, UpdateTypeChoices.OBJECT_DETACHED)
-        if self.update_type in attachment_types:
-            if self.related_object_type is None:
-                errors["related_object_type"] = "An attachment update must record the related object type."
-            if self.related_object_id is None:
-                errors["related_object_id"] = "An attachment update must record the related object ID."
-        else:
-            if self.related_object_type is not None:
-                errors["related_object_type"] = (
-                    f"An update of type '{self.update_type}' must not record a related object type."
-                )
-            if self.related_object_id is not None:
-                errors["related_object_id"] = (
-                    f"An update of type '{self.update_type}' must not record a related object ID."
-                )
-
-        if self.source == TicketSourceChoices.HUMAN and self.user is None:
-            errors["user"] = "An update from a human must record the acting user."
-        if self.source in (TicketSourceChoices.AI, TicketSourceChoices.SYSTEM) and self.user is not None:
-            errors["user"] = f"An update from '{self.source}' must not record an acting user."
+        for check in (self._check_message, self._check_status_fields, self._check_related_object, self._check_actor):
+            errors.update(check())
 
         if errors:
             raise ValidationError(errors)
+
+    def _check_message(self):
+        """A comment is nothing without its text."""
+        if self.update_type == UpdateTypeChoices.COMMENT and not self.message:
+            return {"message": "A comment must have a message."}
+        return {}
+
+    def _check_status_fields(self):
+        """Only a status change carries statuses, and it must carry two different ones."""
+        if self.update_type != UpdateTypeChoices.STATUS_CHANGE:
+            return {
+                field: f"An update of type '{self.update_type}' must not record a {label} status."
+                for field, label in (("from_status", "from"), ("to_status", "to"))
+                if getattr(self, field)
+            }
+
+        errors = {}
+        if not self.from_status:
+            errors["from_status"] = "A status change must record the status it moved from."
+        if not self.to_status:
+            errors["to_status"] = "A status change must record the status it moved to."
+        if self.from_status and self.to_status and self.from_status == self.to_status:
+            errors["to_status"] = "A status change must move between two different statuses."
+        return errors
+
+    def _check_related_object(self):
+        """Only an attach or detach carries a related object, and it must carry both halves."""
+        halves = {"related_object_type": "type", "related_object_id": "ID"}
+        if self.update_type in ATTACHMENT_UPDATE_TYPES:
+            return {
+                field: f"An attachment update must record the related object {label}."
+                for field, label in halves.items()
+                if getattr(self, field) is None
+            }
+        return {
+            field: f"An update of type '{self.update_type}' must not record a related object {label}."
+            for field, label in halves.items()
+            if getattr(self, field) is not None
+        }
+
+    def _check_actor(self):
+        """S4 at the row level: a human update names its user, a machine update does not."""
+        if self.source == TicketSourceChoices.HUMAN and self.user is None:
+            return {"user": "An update from a human must record the acting user."}
+        if self.source in (TicketSourceChoices.AI, TicketSourceChoices.SYSTEM) and self.user is not None:
+            return {"user": f"An update from '{self.source}' must not record an acting user."}
+        return {}
 
     def save(self, *args, **kwargs):
         """Append-only: refuse to modify a row that already exists."""
