@@ -9,8 +9,13 @@ from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
 #: rather than silently dropped, so a client never gets a 200 for a change that did not happen.
 SERVICE_OWNED_FIELDS = ("status", "resolved_at", "closed_at", "resolution", "event_count")
 
+#: Fields the service layer fills in at creation. Read-only so that the API does not demand them,
+#: but not in SERVICE_OWNED_FIELDS: offering them is a mistake, not an attempt to bypass anything,
+#: so they are quietly ignored rather than rejected.
+SERVICE_ASSIGNED_FIELDS = ("source", "first_seen", "last_seen")
 
-class EventTypeSerializer(NautobotModelSerializer):
+
+class EventTypeSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
     """EventType Serializer."""
 
     class Meta:
@@ -63,7 +68,7 @@ class EventTicketSerializer(NautobotModelSerializer, TaggedModelSerializerMixin)
 
         model = EventTicket
         fields = "__all__"
-        read_only_fields = SERVICE_OWNED_FIELDS
+        read_only_fields = SERVICE_OWNED_FIELDS + SERVICE_ASSIGNED_FIELDS
 
     def validate(self, attrs):
         """Reject writes to service-owned fields instead of dropping them silently.
@@ -82,6 +87,7 @@ class EventTicketSerializer(NautobotModelSerializer, TaggedModelSerializerMixin)
                     for field in offered
                 }
             )
+
         return super().validate(attrs)
 
 

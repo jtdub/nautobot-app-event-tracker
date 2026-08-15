@@ -84,6 +84,24 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
     serializer_class = serializers.EventTicketSerializer
     filterset_class = filters.EventTicketFilterSet
 
+    def restrict_queryset(self, request, *args, **kwargs):
+        """Map the custom actions onto the object permission they really need.
+
+        The stock implementation derives the permission from the HTTP method, so a POST restricts
+        the queryset to objects the user may *add* - which matches nothing, and the action 404s on
+        a ticket that plainly exists. Same pattern as Nautobot's own Job `/cancel/` endpoint.
+        """
+        action_to_method = {
+            "transition": "view",
+            "comment": "change",
+            "attach": "change",
+            "detach": "change",
+        }
+        if request.user.is_authenticated and self.action in action_to_method:
+            self.queryset = self.queryset.restrict(request.user, action_to_method[self.action])
+        else:
+            super().restrict_queryset(request, *args, **kwargs)
+
     def get_permissions(self):
         """Custom actions post to an existing ticket, so the stock add/change map does not fit."""
         if self.action == "transition":
@@ -95,27 +113,17 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
     def perform_create(self, serializer):
         """Create through the service layer so the ticket gets its trail and dedup behaviour."""
         data = dict(serializer.validated_data)
-        tags = data.pop("tags", None)
-        ticket = ticket_service.create_ticket(
-            title=data.pop("title"),
-            event_type=data.pop("event_type"),
-            source=TicketSourceChoices.HUMAN,
+        serializer.instance = ticket_service.create_ticket_for_user(
             user=self.request.user,
-            severity=data.pop("severity", None),
-            description=data.pop("description", ""),
-            dedup_key=data.pop("dedup_key", ""),
-            payload=data.pop("payload", None),
+            title=data.get("title"),
+            event_type=data.get("event_type"),
+            severity=data.get("severity"),
+            description=data.get("description", ""),
+            dedup_key=data.get("dedup_key", ""),
+            payload=data.get("payload"),
+            assignee=data.get("assigned_to"),
+            tags=data.get("tags"),
         )
-        if data.get("assigned_to"):
-            ticket_service.assign(
-                ticket=ticket,
-                assignee=data["assigned_to"],
-                source=TicketSourceChoices.HUMAN,
-                user=self.request.user,
-            )
-        if tags:
-            ticket.tags.set(tags)
-        serializer.instance = ticket
 
     def _require_transition_permission(self):
         if not self.request.user.has_perm(TRANSITION_PERMISSION):

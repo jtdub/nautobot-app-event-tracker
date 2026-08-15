@@ -4,7 +4,6 @@
 `extras_features`. `TicketUpdate` needs an explicit type because it is not a PrimaryModel.
 """
 
-import graphene
 from graphene_django import DjangoObjectType
 
 from nautobot_event_tracker.filters import TicketUpdateFilterSet
@@ -16,22 +15,18 @@ class TicketUpdateType(DjangoObjectType):
 
     Query-only, like the rest of Nautobot's GraphQL surface, which suits a model the service layer
     owns exclusively.
+
+    `related_object_type` is exposed as the ContentType relation rather than as a synthesized
+    `app_label.model` string: graphene-django generates the relation from the model field and
+    overrides a same-named scalar declared on the type, and the nested form is the more idiomatic
+    GraphQL shape anyway. Query it as `related_object_type { app_label model }`.
     """
 
-    related_object_type = graphene.String()
-
-    class Meta:
+    class Meta:  # pylint: disable=too-few-public-methods
         """Meta attributes."""
 
         model = TicketUpdate
         filterset_class = TicketUpdateFilterSet
-
-    def resolve_related_object_type(self, info):  # pylint: disable=unused-argument
-        """Return the related object type as an `app_label.model` string."""
-        if self.related_object_type_id is None:
-            return None
-        content_type = self.related_object_type
-        return f"{content_type.app_label}.{content_type.model}"
 
 
 graphql_types = [TicketUpdateType]
