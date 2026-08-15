@@ -109,6 +109,13 @@ the queue.
 A typical operator role needs `view` and `add` on all three models, `change` on Event Ticket, and
 `transition_eventticket`.
 
+Two permissions are easy to forget because their absence degrades a page rather than blocking it:
+
+- **`view_ticketupdate`** — without it the ticket page renders, but the update trail panel is
+  hidden. A user who can see tickets but not their history is usually not what you meant.
+- **`view_eventtype`** — without it the event type picker on the ticket form has nothing to offer,
+  so tickets cannot be created.
+
 ### Planning ahead: the AI service account
 
 !!! note "Forward-looking — nothing to do yet"

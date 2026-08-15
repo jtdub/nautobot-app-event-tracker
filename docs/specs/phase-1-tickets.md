@@ -331,6 +331,8 @@ Routes are registered under `/api/plugins/event-tracker/`.
 
 **GraphQL.** `EventType` and `EventTicket` are exposed through the `graphql` entry in their `extras_features`. `TicketUpdate` gets an explicit type in `nautobot_event_tracker/graphql/types.py`, since it is not a `PrimaryModel`. All three are read-only through GraphQL — Nautobot's GraphQL is query-only, which suits a service-layer-owned model.
 
+An update's `related_object_type` is exposed as the `ContentType` relation, queried as `related_object_type { app_label model }`, rather than as a synthesized `app_label.model` string. An earlier draft of this spec specified the string form; graphene-django generates the relation from the model field and overrides a same-named scalar declared on the type, so the string form is not reachable without renaming the field. The nested form is the more idiomatic GraphQL shape in any case. The REST serializer still returns the flat `app_label.model` string, where it is the natural fit.
+
 ## 6. UI
 
 Per [ADR 0008](../decisions/0008-ui-component-framework-only.md), `NautobotUIViewSet` and the UI Component Framework only. The app ships **no page templates**.

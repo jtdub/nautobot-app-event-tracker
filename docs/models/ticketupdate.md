@@ -26,3 +26,17 @@ The one exception: deleting a ticket deletes its updates along with it, because 
 ## Reading the trail
 
 The trail appears at the bottom of every ticket, oldest first. It is also queryable through `/api/plugins/event-tracker/ticket-updates/` and through GraphQL, where it can be filtered by ticket, type, source, user, or date.
+
+In GraphQL, the attached object's type is a nested relation:
+
+```graphql
+{
+  ticket_updates {
+    update_type
+    related_object_type { app_label model }
+    related_object_id
+  }
+}
+```
+
+The REST API returns the same information as a flat `app_label.model` string.
