@@ -1,0 +1,1 @@
+Added `confluent-kafka` as an optional `kafka` extra, needed only by the Kafka consumer.

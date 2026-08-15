@@ -83,6 +83,27 @@ Detaching an object does not erase the fact that it was attached — you will st
 
 Which object types can be attached is configurable; see [Install and Configure](../admin/install.md).
 
+## Where tickets come from
+
+A ticket is opened by a person, by a script through the REST API, or by the event consumer — a
+process that reads network events from a broker and opens tickets for the ones worth working. The
+**Source** field on a ticket says which, and every entry in the trail says the same for itself.
+Events that arrive automatically are recorded as **System**, never as a person.
+
+An automatically opened ticket carries the raw event in its payload, so whoever picks it up can see
+exactly what the device said. Which events become tickets, and which are discarded as noise, is
+configured by an administrator; see [Running the Event Consumer](../admin/ingestion.md).
+
+Some events are opened straight into **Suppressed**. That is a rule saying "this is known noise,
+keep it on the record but do not work it" — a flapping link on a device somebody is already dealing
+with, for instance. The trail says which rule did it. Once a ticket exists, those rules leave it
+alone: if you triage a suppressed ticket and start work, a later matching event will not put it
+back.
+
+**Apps → Event Tracker → Ingestion Stats** shows what the consumer has been doing lately: how many
+events arrived, how many became tickets, and how many were discarded by which rule. It is the page
+to look at when you expected a ticket and did not get one.
+
 ## Repeat events
 
 A ticket can carry a **dedup key**. When a new event arrives with a key matching an open ticket, it does not open a second ticket — the existing ticket's event count goes up, its Last Seen advances, and a recurrence entry lands in the trail.

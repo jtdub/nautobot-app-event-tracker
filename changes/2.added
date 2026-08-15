@@ -1,0 +1,4 @@
+Added event ingestion: a standalone `nautobot-server eventconsumer` process that reads network events from Kafka or Redis and opens tickets through the service layer.
+Added a deterministic pre-filter with per-topic severity floors, match rules that drop or suppress an event, and a rate limit.
+Added declarative payload normalization, mapping a broker payload onto a ticket with dotted paths, a severity map, and a dedup key template.
+Added the `IngestionStats` model, with read-only UI, REST and GraphQL access, recording what each consumer received, opened, joined, suppressed, dropped and could not read.
