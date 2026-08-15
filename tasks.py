@@ -61,7 +61,7 @@ namespace = Collection("nautobot_event_tracker")
 namespace.configure(
     {
         "nautobot_event_tracker": {
-            "nautobot_ver": "3.1.0",
+            "nautobot_ver": "3.2.0",
             "project_name": "nautobot-event-tracker",
             "python_ver": "3.12",
             "local": False,
