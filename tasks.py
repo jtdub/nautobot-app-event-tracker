@@ -1154,6 +1154,20 @@ def _require_docker(context):
         raise Exit("Docker is not answering, and the lab is made entirely of containers.", code=1)
 
 
+def _lab_nodes(context):
+    """The topology's node containers that are running, by name, or an empty list.
+
+    Asked of Docker rather than of containerlab, because containerlab answers the question "is this
+    topology deployed" by failing: `inspect` on a lab that is not up prints a red ERROR about the
+    first node it cannot find, which is a true statement and a poor answer to a question somebody
+    asked precisely because they did not know.
+    """
+    result = context.run(
+        f'docker ps --format "{{{{.Names}}}}" --filter "name={LAB_CONTAINER_PREFIX}"', hide=True, warn=True
+    )
+    return sorted(name for name in result.stdout.split() if name.startswith(LAB_CONTAINER_PREFIX))
+
+
 def containerlab(context, command, **kwargs):
     """Run one containerlab command, as the compose service that defines how it is run.
 
@@ -1220,6 +1234,10 @@ def lab_down(context, volumes=False):
 @task
 def lab_inspect(context):
     """What containerlab thinks is running: the nodes, their kinds, their addresses."""
+    _require_docker(context)
+    if not _lab_nodes(context):
+        print("No lab nodes are running. `invoke lab-up` deploys the topology and starts the stack.")
+        return
     containerlab(context, f'inspect --topo "{LAB_TOPOLOGY}"', pty=True, warn=True)
 
 
@@ -1259,6 +1277,22 @@ def lab_break(context, event="interface", device="leaf-01", interface="ethernet-
     """Cause one of the lab's events on purpose, so a ticket appears."""
     _require_docker(context)
     container = f"{LAB_CONTAINER_PREFIX}{device}"
+
+    running = _lab_nodes(context)
+    if container not in running:
+        # `unreachable --restore` starts a node this stopped, so it is the one case where the
+        # container being absent from `docker ps` is the state the command exists to change.
+        stopped_on_purpose = event == "unreachable" and restore
+        if not stopped_on_purpose:
+            raise Exit(
+                f"{container} is not running.\n"
+                + (
+                    "  Running now: " + ", ".join(running) + "\n"
+                    if running
+                    else "  No lab nodes are running; `invoke lab-up` deploys the topology.\n"
+                ),
+                code=1,
+            )
 
     if event in ("interface", "bgp"):
         # A shut interface takes the link down and, with it, the BGP session that ran over it -
