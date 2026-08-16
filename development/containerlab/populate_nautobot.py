@@ -93,11 +93,11 @@ def _devices(nodes):
         "role": ensure_role(role_name=DEVICE_ROLE),
         "status": default_status(Device),
     }
-    devices = {name: ensure_device(name, **common)[0] for name, node in sorted(nodes.items()) if _is_a_device(node)}
+    devices = {name: ensure_device(name, **common)[0] for name, node in sorted(nodes.items()) if is_a_device(node)}
     return location, devices
 
 
-def _is_a_device(node):
+def is_a_device(node):
     """Whether this topology node belongs in DCIM."""
     return node.get("kind") == DEVICE_KIND
 
@@ -109,7 +109,7 @@ def _interfaces(devices, links):
     from nautobot_event_tracker.dcim_fixtures import default_status, ensure_interface  # pylint: disable=C0415
 
     endpoints = {
-        (node, _interface_name(port))
+        (node, interface_name(port))
         for link in links
         for node, _, port in (endpoint.partition(":") for endpoint in link["endpoints"])
         if node in devices
@@ -121,7 +121,7 @@ def _interfaces(devices, links):
     return len(endpoints)
 
 
-def _interface_name(port):
+def interface_name(port):
     """Turn containerlab's `e1-1` into SR Linux's own `ethernet-1/1`.
 
     The device logs the second form, and a ticket that names an interface Nautobot does not hold is
@@ -186,12 +186,12 @@ def _assign_fabric_addresses(devices):
 
     assigned = 0
     for name, device in sorted(devices.items()):
-        for interface_name, address in sorted(startup_addresses(name).items()):
+        for port, address in sorted(startup_addresses(name).items()):
             network = str(ipaddress.ip_interface(address).network)
             if network not in prefixes:
                 prefixes[network] = ensure_prefix(network)
 
-            interface = ensure_interface(device=device, name=interface_name, status=interface_status)
+            interface = ensure_interface(device=device, name=port, status=interface_status)
             ensure_address(address, interface=interface, prefix=prefixes[network])
             assigned += 1
     return assigned
@@ -219,7 +219,7 @@ def _connect(devices, links):
         if len(ends) != 2 or any(node not in devices for node, _, _ in ends):
             continue
 
-        terminations = [devices[node].interfaces.get(name=_interface_name(port)) for node, _, port in ends]
+        terminations = [devices[node].interfaces.get(name=interface_name(port)) for node, _, port in ends]
         if ensure_cable(*terminations) is not None:
             connected += 1
     return connected

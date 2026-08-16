@@ -19,8 +19,10 @@ from nautobot.ipam.models import IPAddress
 
 from nautobot_event_tracker.choices import TicketStatusChoices, UpdateTypeChoices
 from nautobot_event_tracker.management.commands.generate_nautobot_event_tracker_test_data import (
+    FABRIC,
+    FABRIC_CABLES,
     HOSTS,
-    INTERFACES,
+    MANAGEMENT_INTERFACE,
     TEST_DATA_TAG,
 )
 from nautobot_event_tracker.models import EventTicket, IngestionStats
@@ -68,7 +70,12 @@ class TestOneSmallRun(TestCase):
 
     def test_the_devices_have_interfaces(self):
         """A ticket about an interface should be able to point at one, plus a management port."""
-        self.assertEqual(Interface.objects.filter(device__name=HOSTS[0]).count(), len(INTERFACES) + 1)
+        for host, described in FABRIC.items():
+            self.assertEqual(
+                sorted(Interface.objects.filter(device__name=host).values_list("name", flat=True)),
+                sorted([*described["interfaces"], MANAGEMENT_INTERFACE]),
+                f"{host} does not hold the interfaces the topology gives it",
+            )
 
     def test_it_tags_what_it_created(self):
         """The tag is what makes the estate explicable, and removable."""
@@ -82,13 +89,23 @@ class TestOneSmallRun(TestCase):
     def test_the_devices_are_cabled_to_each_other(self):
         """A device connected to nothing is a device the topology view cannot draw."""
         cabled = {(cable.termination_a.device.name, cable.termination_b.device.name) for cable in Cable.objects.all()}
-        self.assertEqual(len(cabled), len(HOSTS) - 1)
+        self.assertEqual(len(cabled), len(FABRIC_CABLES))
         for left, right in cabled:
             self.assertNotEqual(left, right, "a device is cabled to itself")
 
     def test_the_addresses_carry_the_tag(self):
         """Or `--flush` would leave the demo addresses behind and the next run would collide."""
-        self.assertEqual(IPAddress.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
+        expected = sum(len(described["interfaces"]) + 1 for described in FABRIC.values())
+        self.assertEqual(IPAddress.objects.filter(tags__name=TEST_DATA_TAG).count(), expected)
+
+    def test_every_ticket_names_an_interface_its_device_has(self):
+        """A ticket about `Gi0/0/1 on leaf-01` is a ticket whose first click is a dead end."""
+        for ticket in EventTicket.objects.all():
+            host, interface = ticket.payload["host"], ticket.payload["interface"]
+            self.assertTrue(
+                Interface.objects.filter(device__name=host, name=interface).exists(),
+                f"{host} has no interface {interface}",
+            )
 
 
 class TestTheDefaultRun(TestCase):
@@ -177,7 +194,7 @@ class TestFlush(TestCase):
 
     def test_it_leaves_a_device_somebody_else_made(self):
         """An untagged device of the same name is the lab's, and is not ours to delete."""
-        existing = fixtures.create_device(name=HOSTS[2])
+        existing = fixtures.create_device(name=HOSTS[0])
         generate(count=8)
         generate(flush=True, count=4)
         self.assertTrue(Device.objects.filter(pk=existing.pk).exists())
@@ -213,21 +230,21 @@ class TestADeviceSomebodyElseMade(TestCase):
     @classmethod
     def setUpTestData(cls):
         """A device of one of the command's own names, made by somebody else first."""
-        cls.existing = fixtures.create_device(name=HOSTS[2])
+        cls.existing = fixtures.create_device(name=HOSTS[0])
         generate(count=12)
 
     def test_it_keeps_the_device(self):
         """`get_or_create`, so the ticket points at the device you can go and break."""
-        self.assertEqual(Device.objects.filter(name=HOSTS[2]).count(), 1)
-        self.assertEqual(Device.objects.get(name=HOSTS[2]).pk, self.existing.pk)
+        self.assertEqual(Device.objects.filter(name=HOSTS[0]).count(), 1)
+        self.assertEqual(Device.objects.get(name=HOSTS[0]).pk, self.existing.pk)
 
     def test_it_does_not_tag_the_device(self):
         """Otherwise `--flush` would delete the lab's devices along with its own."""
-        self.assertNotIn(TEST_DATA_TAG, [tag.name for tag in Device.objects.get(name=HOSTS[2]).tags.all()])
+        self.assertNotIn(TEST_DATA_TAG, [tag.name for tag in Device.objects.get(name=HOSTS[0]).tags.all()])
 
     def test_it_creates_no_interfaces_on_it(self):
         """Its interfaces are the lab's business; this command's names would be fiction on it."""
-        self.assertFalse(Interface.objects.filter(device=self.existing, name__in=INTERFACES).exists())
+        self.assertFalse(Interface.objects.filter(device=self.existing).exists())
 
     def test_it_cables_nothing_to_it(self):
         """A cable on somebody else's interface is a change to their inventory, not ours."""

@@ -65,12 +65,15 @@ not exist yet.
 | | |
 | --- | --- |
 | `invoke lab-populate` | Mirror the topology into Nautobot: a Location, a Nokia SR Linux device type, one device per node under the name it uses in its own log messages, the interfaces its links describe, their addresses — management and fabric — and a cable for every link. Idempotent; run it again after redeploying |
-| `invoke generate-test-data` | Fifty tickets across every status, each with a trail and attached to the device its title names, on a small demo estate of its own |
+| `invoke generate-test-data` | Fifty tickets across every status, each with a trail and attached to the device its title names |
 | `invoke lab-consumer` | The consumer in the foreground, where you can watch it decide. It stops the consumer service for the duration and starts it again afterwards — two consumers in one group split the partitions, and on a one-partition topic the one you are watching would see nothing |
 
-`generate-test-data` creates its own demo devices, but where a name matches one the lab populated it
-uses that device instead — so `leaf-01` in a ticket is the `leaf-01` you can shut an interface on,
-and the lab's devices are never tagged, cabled or deleted by it.
+`generate-test-data` creates **this same fabric** when it is missing — the same three devices, the
+same interfaces, the same addresses, the same links — and uses what is already there when it is not.
+So `leaf-01` in a ticket is the `leaf-01` you can shut an interface on, `ethernet-1/2` in a title is
+an interface it really has, and the lab's own devices are never tagged, cabled or deleted by it.
+Running it before the lab and populating afterwards gives exactly the same database as the other way
+round; `test_lab_configuration.py` is what keeps that true.
 
 `invoke generate-test-data --flush` deletes everything a previous run made and then generates a
 fresh set — that is how to re-run it without ending up with a hundred tickets. To clean up instead

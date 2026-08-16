@@ -9,13 +9,17 @@ Deterministic: the same `--seed` produces the same tickets, so two people compar
 looking at the same data. Randomness comes from a seeded `random.Random`, never the module-level
 functions, which any other code in the process could have reseeded.
 
-It also creates the handful of devices and interfaces the tickets point at. An earlier draft
-refused to, on the grounds that a ticketing app inventing DCIM objects leaves a demo database full
-of devices nobody can explain - but that is what `generate_test_data` is *for*, and Nautobot's own
-populates a whole demo estate. The objection is answered by tagging: everything this command makes
-carries `event-tracker-test-data`, so it is explicable at a glance and `--flush` removes it.
+It also creates the devices the tickets point at, with their interfaces, addresses and cables. An
+earlier draft refused to, on the grounds that a ticketing app inventing DCIM objects leaves a demo
+database full of devices nobody can explain - but that is what `generate_test_data` is *for*, and
+Nautobot's own populates a whole demo estate. The objection is answered by tagging: everything this
+command makes carries `event-tracker-test-data`, so it is explicable at a glance and `--flush`
+removes it.
+
+The estate it makes is the containerlab lab's fabric, node for node. See `FABRIC` below for why.
 """
 
+import ipaddress
 import random
 
 from django.contrib.auth import get_user_model
@@ -54,25 +58,59 @@ DEFAULT_COUNT = 50
 #: it for a real account.
 DEMO_USERNAME = "event-tracker-demo"
 
-#: The demo estate: the devices the generated tickets are about, and are attached to. Created by
-#: this command, tagged, and removed by `--flush`. Where a database already holds a device of the
-#: same name - the containerlab lab's `leaf-01`, for instance - that one is used rather than a
-#: second one made.
-HOSTS = ("edge-rtr-01", "edge-rtr-02", "leaf-01", "leaf-02", "spine-01", "core-sw-01")
+#: The estate the generated tickets are about, and are attached to. Created by this command,
+#: tagged, and removed by `--flush`. Where a database already holds a device of the same name, that
+#: one is used rather than a second one made, and it is left untagged.
+#:
+#: **This is the containerlab lab's fabric, device for device.** The same three nodes, the same
+#: interface names, the same addressing, the same links - because the two estates otherwise sit side
+#: by side in one database looking like different networks that happen to share three names, and a
+#: ticket titled "Gi0/0/1 is down on leaf-01" names an interface the `leaf-01` you can log in to has
+#: never had. Copying the lab's fabric means a ticket is about a device you can go and break, on an
+#: interface it really has, whether or not you have run the lab at all.
+#:
+#: `nautobot_event_tracker/tests/test_lab_configuration.py` holds this to the topology file and the
+#: nodes' own startup configurations, so the two cannot drift apart quietly.
+FABRIC = {
+    "leaf-01": {
+        "management": "172.30.30.11/24",
+        "interfaces": {
+            "ethernet-1/1": "10.1.1.0/31",
+            "ethernet-1/2": "10.1.3.0/31",
+            # The client's gateway. The client is a plain container, not network equipment, so
+            # nothing is cabled to this end in Nautobot.
+            "ethernet-1/3": "10.0.0.1/24",
+        },
+    },
+    "leaf-02": {
+        "management": "172.30.30.12/24",
+        "interfaces": {"ethernet-1/1": "10.1.2.0/31", "ethernet-1/2": "10.1.3.1/31"},
+    },
+    "spine-01": {
+        "management": "172.30.30.13/24",
+        "interfaces": {"ethernet-1/1": "10.1.1.1/31", "ethernet-1/2": "10.1.2.1/31"},
+    },
+}
 
-INTERFACES = ("ethernet-1/1", "ethernet-1/2", "ethernet-1/3", "Gi0/0/1", "Te0/0/0/3")
+#: The links between them, as `(device, interface, device, interface)`.
+FABRIC_CABLES = (
+    ("leaf-01", "ethernet-1/1", "spine-01", "ethernet-1/1"),
+    ("leaf-02", "ethernet-1/1", "spine-01", "ethernet-1/2"),
+    ("leaf-01", "ethernet-1/2", "leaf-02", "ethernet-1/2"),
+)
 
-#: What the demo estate is filed under. Named so that nobody wonders where it came from.
-DEMO_LOCATION_TYPE = "Demo Site"
-DEMO_LOCATION = "Event Tracker Demo"
-DEMO_MANUFACTURER = "Event Tracker Demo"
-DEMO_DEVICE_TYPE = "Demo Switch"
-DEMO_ROLE = "Demo Switch"
+#: The hosts tickets are about, in a stable order so that a seed means something.
+HOSTS = tuple(FABRIC)
 
-#: Where the demo devices' management addresses come from. TEST-NET-1, which RFC 5737 reserves for
-#: documentation: an address from it can never be mistaken for one somebody has to reach.
-DEMO_PREFIX = "192.0.2.0/24"
-DEMO_MANAGEMENT_INTERFACE = "mgmt0"
+#: What the estate is filed under, matching the lab's for the same reason everything else does.
+DEMO_LOCATION_TYPE = "Lab"
+DEMO_LOCATION = "containerlab"
+DEMO_MANUFACTURER = "Nokia"
+DEMO_DEVICE_TYPE = "SR Linux"
+DEMO_ROLE = "Lab Switch"
+
+MANAGEMENT_PREFIX = "172.30.30.0/24"
+MANAGEMENT_INTERFACE = "mgmt0"
 
 #: One title template per seeded event type, so a generated list reads like a real one.
 TITLES = {
@@ -238,7 +276,9 @@ class Command(BaseCommand):
         """Open one ticket through the service layer."""
         event_type = rng.choice(event_types)
         host = rng.choice(HOSTS)
-        interface = rng.choice(INTERFACES)
+        # One of that host's own interfaces, not one of the fabric's: a ticket that names an
+        # interface the device does not have is a ticket whose first click is a dead end.
+        interface = rng.choice(sorted(FABRIC[host]["interfaces"]))
         title = TITLES.get(event_type.name, "{host} reported an event").format(host=host, interface=interface)
 
         return ticket_service.create_ticket_for_user(
@@ -312,50 +352,56 @@ class Command(BaseCommand):
             # each call was its own SELECT - thirty-odd per run, for two distinct answers.
             "status": default_status(Device),
         }
-        prefix = ensure_prefix(DEMO_PREFIX)
         interface_status = default_status(Interface)
 
-        ours = []
-        for number, name in enumerate(HOSTS, start=1):
+        ours = {}
+        for name in HOSTS:
             device, created = ensure_device(name, **common)
             if not created:
-                # Somebody else's device - the lab's `leaf-01`, say. Not ours to tag, and therefore
-                # not ours to delete; not ours to hang Cisco-shaped interface names off; and not
-                # ours to cable or address, which would be changing their inventory.
+                # Somebody else's device - the lab's `leaf-01`, after `invoke lab-populate`. Not
+                # ours to tag, and therefore not ours to delete; and not ours to address or cable,
+                # which would be changing their inventory. It already has all of that anyway: it is
+                # this same fabric, made by the script that reads the topology.
                 continue
 
             device.tags.add(tag)
-            self._equip(device, number=number, prefix=prefix, status=interface_status, tag=tag)
-            ours.append(device)
+            self._equip(device, status=interface_status, tag=tag)
+            ours[name] = device
 
         self._cable(ours, tag)
 
     @staticmethod
-    def _equip(device, *, number, prefix, status, tag):
-        """Interfaces for the tickets to name, a management port, and an address on it."""
-        for interface_name in INTERFACES:
-            ensure_interface(device=device, name=interface_name, status=status)
+    def _equip(device, *, status, tag):
+        """The device's interfaces and their addresses, management port included."""
+        prefixes = {}
+        for name, address in sorted(FABRIC[device.name]["interfaces"].items()):
+            network = str(ipaddress.ip_interface(address).network)
+            prefixes.setdefault(network, ensure_prefix(network))
+            interface = ensure_interface(device=device, name=name, status=status)
+            ensure_address(address, interface=interface, prefix=prefixes[network]).tags.add(tag)
 
-        management = ensure_interface(device=device, name=DEMO_MANAGEMENT_INTERFACE, status=status, mgmt_only=True)
-        address = ensure_address(
-            f"{DEMO_PREFIX.rsplit('.', 1)[0]}.{number}/24",
+        management = ensure_interface(device=device, name=MANAGEMENT_INTERFACE, status=status, mgmt_only=True)
+        ensure_address(
+            FABRIC[device.name]["management"],
             interface=management,
-            prefix=prefix,
+            prefix=ensure_prefix(MANAGEMENT_PREFIX),
             primary=True,
-        )
-        address.tags.add(tag)
+        ).tags.add(tag)
 
     @staticmethod
     def _cable(devices, tag):
-        """Cable the demo estate into a chain, so its devices are connected to something.
+        """Cable the estate the way the topology cables it, for the pairs this run created.
 
-        A chain rather than a topology with a shape: the estate is a backdrop for a ticket list,
-        and the only claim worth making about it is that these devices are attached to each other.
+        A link with one end on somebody else's device is skipped rather than half-made: their
+        interface is not ours to occupy, and if that device is the lab's then the link already
+        exists, made by the script that read the topology.
         """
-        for left, right in zip(devices, devices[1:]):
+        for left, left_interface, right, right_interface in FABRIC_CABLES:
+            if left not in devices or right not in devices:
+                continue
             cable = ensure_cable(
-                left.interfaces.get(name=INTERFACES[1]),
-                right.interfaces.get(name=INTERFACES[0]),
+                devices[left].interfaces.get(name=left_interface),
+                devices[right].interfaces.get(name=right_interface),
             )
             if cable is not None:
                 cable.tags.add(tag)
