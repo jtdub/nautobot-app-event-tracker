@@ -38,8 +38,17 @@ ORIGINAL_COMPOSE_FILES = [
 #: `invoke.yml` as `lab: true`, or in the environment, or let the `lab-*` tasks set it for you.
 LAB_ENV_VAR = "EVENT_TRACKER_LAB"
 LAB_COMPOSE_FILE = "docker-compose.redpanda.yml"
-LAB_TOPOLOGY = os.path.join(os.path.dirname(__file__), "development", "containerlab", "topology.clab.yml")
+REPOSITORY = os.path.dirname(os.path.abspath(__file__))
+LAB_TOPOLOGY = os.path.join(REPOSITORY, "development", "containerlab", "topology.clab.yml")
 LAB_POPULATE_SCRIPT = "/source/development/containerlab/populate_nautobot.py"
+
+#: containerlab is run from its own image rather than from a binary on the PATH.
+#:
+#: It needs a Linux kernel - it makes network namespaces and veth pairs directly - so on macOS there
+#: is nothing to install: the kernel that matters is the one inside the Docker VM, and this is how to
+#: reach it. On Linux it costs nothing and means every developer runs the same version. Pinned for
+#: the same reason every other image here is.
+CONTAINERLAB_IMAGE = "ghcr.io/srl-labs/clab:0.78.2"
 #: containerlab prefixes every container it makes with `clab-<lab name>-`.
 LAB_CONTAINER_PREFIX = "clab-event-tracker-"
 
@@ -1139,18 +1148,48 @@ def _enable_lab():
     os.environ[LAB_ENV_VAR] = "true"
 
 
-def _require_containerlab(context):
-    """Stop before anything is started if containerlab is not installed."""
-    if not shutil.which("containerlab") and not shutil.which("clab"):
-        raise Exit(
-            "containerlab is not installed, and the lab is the one thing in this repository that "
-            "needs it. Install it with:\n"
-            '    bash -c "$(curl -sL https://get.containerlab.dev)"\n'
-            "Nothing else in this repository requires it; see docs/dev/lab.md.",
-            code=1,
-        )
+def _require_docker(context):
+    """Stop before anything is started if Docker is not answering."""
     if context.run("docker info", hide=True, warn=True).failed:
-        raise Exit("Docker is not answering. containerlab needs it, and needs it privileged.", code=1)
+        raise Exit("Docker is not answering, and the lab is made entirely of containers.", code=1)
+
+
+def containerlab(context, command, **kwargs):
+    """Run one containerlab command, from its own image.
+
+    Nothing to install, and the same version for everybody. The flags are containerlab's own
+    documented ones for running it in a container:
+
+      --privileged, --network host, --pid host   it makes network namespaces and veth pairs, and
+                                                 has to do it in the namespaces of the machine the
+                                                 nodes run on - which on macOS is the Docker VM,
+                                                 and is why this works there at all
+      docker.sock                                the nodes are containers on that same daemon
+      the repository, at its own path            so the topology file and the nodes' startup
+                                                 configurations are where the topology says, and
+                                                 the lab directory it writes lands in the checkout
+
+    `/var/run/netns` and `/lib/modules` are mounted when the machine running invoke has them, which
+    is to say on Linux. On macOS they would be created empty on the Mac and shadow the VM's.
+    """
+    _require_docker(context)
+
+    mounts = [f'-v "{REPOSITORY}:{REPOSITORY}"', "-v /var/run/docker.sock:/var/run/docker.sock"]
+    mounts += [f"-v {path}:{path}" for path in ("/var/run/netns", "/lib/modules") if os.path.isdir(path)]
+
+    return context.run(
+        " ".join(
+            [
+                "docker run --rm -t --privileged --network host --pid host",
+                *mounts,
+                f'-w "{REPOSITORY}"',
+                CONTAINERLAB_IMAGE,
+                "containerlab",
+                command,
+            ]
+        ),
+        **kwargs,
+    )
 
 
 @task(
@@ -1161,13 +1200,12 @@ def _require_containerlab(context):
 )
 def lab_up(context, populate=True, test_data=False):
     """Deploy the containerlab topology and start Nautobot against its broker."""
-    _require_containerlab(context)
     _enable_lab()
+    _ensure_lab_network(context)
 
-    # The topology first: the compose overlay attaches to the management network containerlab
-    # creates, and compose will not start a service whose external network does not exist.
+    # The topology first, so that the nodes are booting while the stack starts.
     print("Deploying the containerlab topology (the nodes take tens of seconds each to boot)...")
-    context.run(f"sudo containerlab deploy --reconfigure --topo {LAB_TOPOLOGY}", pty=True)
+    containerlab(context, f'deploy --reconfigure --topo "{LAB_TOPOLOGY}"', pty=True)
 
     start(context)
     _await_healthy_service(context, "nautobot")
@@ -1195,9 +1233,15 @@ def lab_down(context, volumes=False):
     docker_compose(context, f"down --remove-orphans {'--volumes' if volumes else ''}", warn=True)
     # After compose, not before: the nodes are on the same network as the broker and the bridge,
     # and nothing can remove a network something is still attached to.
-    context.run(f"sudo containerlab destroy --cleanup --topo {LAB_TOPOLOGY}", pty=True, warn=True)
+    containerlab(context, f'destroy --cleanup --topo "{LAB_TOPOLOGY}"', pty=True, warn=True)
     # Left behind by whichever of the two did not create it; harmless, but it is ours to clean up.
     context.run(f"docker network rm {LAB_NETWORK}", hide=True, warn=True)
+
+
+@task
+def lab_inspect(context):
+    """What containerlab thinks is running: the nodes, their kinds, their addresses."""
+    containerlab(context, f'inspect --topo "{LAB_TOPOLOGY}"', pty=True, warn=True)
 
 
 @task
@@ -1234,7 +1278,7 @@ def lab_consumer(context, dry_run=False):
 )
 def lab_break(context, event="interface", device="leaf-01", interface="ethernet-1/1", restore=False):
     """Cause one of the lab's events on purpose, so a ticket appears."""
-    _require_containerlab(context)
+    _require_docker(context)
     container = f"{LAB_CONTAINER_PREFIX}{device}"
 
     if event in ("interface", "bgp"):

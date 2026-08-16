@@ -23,9 +23,18 @@ a real SR Linux says any of what the field map expects, which is the whole of th
 | | |
 | --- | --- |
 | Memory | 8 GB free, comfortably 12. Each SR Linux node wants about 1 GB |
-| Docker | **Privileged**, and able to manage network namespaces — containerlab does this directly |
-| [containerlab](https://containerlab.dev) | `bash -c "$(curl -sL https://get.containerlab.dev)"` |
+| Docker | That is all. Docker Desktop, OrbStack, Colima or a Linux daemon |
 | Time | The nodes take tens of seconds each to boot |
+
+**containerlab is not installed; it is run from its own image.** It needs a Linux kernel — it makes
+network namespaces and veth pairs directly — so on macOS there is nothing to install anyway: the
+kernel that matters is the one inside the Docker VM, and `invoke lab-up` reaches it by running
+containerlab in a container on that daemon, with `--privileged --network host --pid host` and the
+Docker socket, which is containerlab's own documented way of being run this way. On Linux it costs
+nothing and means every developer runs the same version.
+
+**Apple Silicon works.** SR Linux publishes `linux/arm64` images, so the nodes run natively rather
+than under emulation. So do Redpanda and Fluent Bit.
 
 The SR Linux image (`ghcr.io/nokia/srlinux`) is publicly pullable and needs no licence, which is
 most of why this lab uses it.
@@ -106,6 +115,9 @@ said. `invoke lab-break --restore` puts it back.
 | `invoke lab-break --event drift` | **Configuration Drift** |
 
 `--device` and `--interface` choose where; every one of them takes `--restore`.
+
+`invoke lab-inspect` lists what containerlab has running, with each node's address, when you want to
+know whether the topology is up before blaming anything downstream of it.
 
 The BGP events need the fabric sessions to be up, which takes a minute or so after the nodes boot.
 Each node has its own startup configuration (`leaf-01.cli` and its siblings) carrying its AS number,

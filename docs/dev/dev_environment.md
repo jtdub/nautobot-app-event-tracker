@@ -149,7 +149,9 @@ broker that keeps them.
 
 #### The containerlab lab
 
-Opt-in, and the one thing here that needs containerlab, privileged Docker and about 8 GB of memory.
+Opt-in, and the one thing here that needs privileged Docker and about 8 GB of memory. containerlab
+itself is not installed — the tasks run it from its own image, which is also what makes the lab work
+on an Apple Silicon Mac, where there is no Linux kernel to install it against.
 `invoke lab-up` needs no configuration; set `lab: true` in `invoke.yml` to make the lab — broker,
 syslog bridge and a running consumer — part of the environment that plain `invoke start` brings up.
 [The lab guide](lab.md) is the long version.
@@ -157,6 +159,7 @@ syslog bridge and a running consumer — part of the environment that plain `inv
 ```
   lab-up           Deploy the SR Linux topology and start Nautobot against its broker.
   lab-down         Stop the stack and destroy the topology.
+  lab-inspect      What containerlab thinks is running.
   lab-populate     Mirror the topology into Nautobot: devices, interfaces, addresses, cables.
   lab-consumer     Run the consumer against the lab's broker; --dry-run decides without writing.
   lab-break        Cause an event on purpose: --event interface|bgp|unreachable|drift.

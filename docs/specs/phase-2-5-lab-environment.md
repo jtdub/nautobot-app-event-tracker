@@ -81,7 +81,9 @@ The lab guide gives the `docker exec … sr_cli` line for the first of these ver
 
 **Each node gets its own startup configuration** — `leaf-01.cli`, `leaf-02.cli`, `spine-01.cli` — rather than one shared by all three. They agree about where syslog goes and differ about everything else: the fabric addressing, the AS number, the router-id and the neighbours. A single shared file, which is where this started, gave every node the same router-id and no neighbours at all, so no session ever came up and the second row of the table above was a promise the lab could not keep.
 
-**Cost, stated plainly.** Each SR Linux node wants roughly 1 GB of memory and takes tens of seconds to boot; three of them plus Redpanda, Nautobot, PostgreSQL and Redis is an 8 GB machine minimum, comfortably 12. containerlab needs privileged Docker and manages network namespaces directly, so it does not run inside every sandbox — including, possibly, the one this spec was written in. A developer without the memory runs everything else in this repository exactly as before.
+**Cost, stated plainly.** Each SR Linux node wants roughly 1 GB of memory and takes tens of seconds to boot; three of them plus Redpanda, Nautobot, PostgreSQL and Redis is an 8 GB machine minimum, comfortably 12. containerlab manages network namespaces directly and so needs privileged Docker, which not every sandbox has — including, possibly, the one this spec was written in. A developer without the memory runs everything else in this repository exactly as before.
+
+**containerlab is run from its own image, not installed.** *Revised: an earlier draft told the developer to install it with the upstream script, which is a Linux instruction — containerlab needs a Linux kernel, so on a Mac there is nothing to install and `invoke lab-up` simply failed.* The kernel that matters there is the Docker VM's, and containerlab documents being run as a container on the daemon that hosts the nodes: `--privileged --network host --pid host`, the Docker socket, and the repository mounted at its own path so the topology file and the nodes' startup configurations are where the topology says they are. That works identically on Linux, where it also means every developer runs the same pinned version. The nodes themselves are native on Apple Silicon: SR Linux, Redpanda and Fluent Bit all publish `linux/arm64` images.
 
 ## 5. The broker and the bridge
 
@@ -121,6 +123,7 @@ Developers drive this development environment with `invoke`, and the lab is part
 | --- | --- |
 | `lab-up` | Deploy the topology, start the stack — broker, syslog bridge and consumer — wait for Nautobot, populate it from the topology |
 | `lab-down` | Stop the stack and destroy the topology, in that order, leaving the ordinary dev stack able to start |
+| `lab-inspect` | What containerlab thinks is running: the nodes, their kinds, their addresses |
 | `lab-populate` | Section 6 on its own, for when the topology is already up |
 | `lab-consumer` | `nautobot-server eventconsumer` against the lab configuration, in the foreground; `--dry-run` decides without writing |
 | `lab-break` | Cause one of the section 4 events on purpose: `--event interface\|bgp\|unreachable\|drift`, and `--restore` to put it back |
@@ -146,7 +149,7 @@ Developers drive this development environment with `invoke`, and the lab is part
 ## 9. Acceptance criteria
 
 1. **Test data.** `nautobot-server generate_nautobot_event_tracker_test_data` populates a database with tickets in every status, each with a trail built through the service layer; `--flush` removes exactly what it created and nothing else; the same `--seed` twice produces the same tickets. A test asserts the command writes no ticket whose status was assigned directly, by checking every ticket has a `created` update and a status trail consistent with the workflow graph.
-2. **The topology comes up.** `containerlab deploy` brings up four nodes, `containerlab inspect` reports them running, and `sr_cli "show network-instance default protocols bgp neighbor"` shows the fabric sessions established.
+2. **The topology comes up.** `invoke lab-up` brings up four nodes, `invoke lab-inspect` reports them running, and `sr_cli "show network-instance default protocols bgp neighbor"` shows the fabric sessions established — on an Apple Silicon Mac as well as on Linux.
 3. **Events reach the broker.** After shutting an interface, `rpk topic consume network.events` shows a message within thirty seconds.
 4. **Events become tickets.** With `nautobot-server eventconsumer` running against the lab configuration, the same break produces a ticket whose event type, severity and title are what the operator would expect, and whose `payload` holds the parsed message.
 5. **The field map matches reality.** No field in the lab's `field_map` resolves to `None` for a message the bridge actually produced. This is criterion 3 of the whole phase's purpose: if it fails, the Phase 2 defaults are wrong and this is how we found out.
