@@ -1,0 +1,35 @@
+---
+# containerlab, as a service you run rather than one that runs.
+#
+# It is never started by `invoke start`: the profile keeps it out of `up`, and `docker compose run`
+# turns the profile on for the one command it is given. `invoke lab-up`, `lab-down` and `lab-inspect`
+# are that command; `invoke exec --service containerlab --command "containerlab version"` is how to
+# reach it directly.
+#
+# Why a container rather than an installed binary: containerlab makes network namespaces and veth
+# pairs itself, so it needs a Linux kernel. On macOS the kernel that matters is the Docker VM's, and
+# this is how to reach it - which is what makes the lab work on Apple Silicon, where there is nothing
+# to install. On Linux it costs nothing and pins one version for everybody.
+services:
+  containerlab:
+    image: "ghcr.io/srl-labs/clab:0.78.2"
+    profiles:
+      - "containerlab"
+    # Its own documented flags for being run this way. The namespaces have to be the ones the nodes
+    # are created in - which is the Docker host, or on macOS the VM, not this container.
+    privileged: true
+    network_mode: "host"
+    pid: "host"
+    volumes:
+      # The nodes are containers on the same daemon; this is how it makes them.
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      # The repository at its own path, not at a tidier one. containerlab hands the nodes' startup
+      # configurations to the daemon as bind mounts, and the daemon resolves those paths itself: a
+      # topology read from /source would ask it to bind /source/development/containerlab/leaf-01.cli,
+      # which exists in here and nowhere else. `invoke` sets REPOSITORY; refusing to start without it
+      # is better than mounting something plausible and failing three steps later.
+      - "${REPOSITORY:?set it to the repository root, or use the invoke lab tasks, which do}:${REPOSITORY}"
+    working_dir: "${REPOSITORY}"
+    # `/var/run/netns` and `/lib/modules` are in containerlab's own example and are deliberately not
+    # here: they exist to let the host's `ip netns` see the lab, which nothing in this repository
+    # does, and on macOS Docker would create them empty on the Mac and shadow the VM's.

@@ -37,18 +37,15 @@ ORIGINAL_COMPOSE_FILES = [
 #: the broker but without the configuration comes up with no topics to subscribe to. Set it in
 #: `invoke.yml` as `lab: true`, or in the environment, or let the `lab-*` tasks set it for you.
 LAB_ENV_VAR = "EVENT_TRACKER_LAB"
+
+#: The broker and the syslog bridge, and containerlab itself. Both are added when the lab is on;
+#: the first is the one whose presence means Nautobot should be reading a broker rather than Redis.
 LAB_COMPOSE_FILE = "docker-compose.redpanda.yml"
+CONTAINERLAB_COMPOSE_FILE = "docker-compose.containerlab.yml"
+
 REPOSITORY = os.path.dirname(os.path.abspath(__file__))
 LAB_TOPOLOGY = os.path.join(REPOSITORY, "development", "containerlab", "topology.clab.yml")
 LAB_POPULATE_SCRIPT = "/source/development/containerlab/populate_nautobot.py"
-
-#: containerlab is run from its own image rather than from a binary on the PATH.
-#:
-#: It needs a Linux kernel - it makes network namespaces and veth pairs directly - so on macOS there
-#: is nothing to install: the kernel that matters is the one inside the Docker VM, and this is how to
-#: reach it. On Linux it costs nothing and means every developer runs the same version. Pinned for
-#: the same reason every other image here is.
-CONTAINERLAB_IMAGE = "ghcr.io/srl-labs/clab:0.78.2"
 #: containerlab prefixes every container it makes with `clab-<lab name>-`.
 LAB_CONTAINER_PREFIX = "clab-event-tracker-"
 
@@ -124,11 +121,11 @@ def _lab_is_enabled(context):
 
 
 def _compose_files(context):
-    """The compose files this invocation should use, with the lab's overlay if the lab is on."""
+    """The compose files this invocation should use, with the lab's if the lab is on."""
     files = list(context.nautobot_event_tracker.compose_files)
-    if _lab_is_enabled(context) and LAB_COMPOSE_FILE not in files:
-        files.append(LAB_COMPOSE_FILE)
-    return files
+    if not _lab_is_enabled(context):
+        return files
+    return files + [name for name in (LAB_COMPOSE_FILE, CONTAINERLAB_COMPOSE_FILE) if name not in files]
 
 
 def _ensure_lab_network(context):
@@ -234,6 +231,9 @@ def docker_compose(context, command, **kwargs):
         # Read by the lab overlay, which passes it on to the containers: it is what makes Nautobot
         # load the lab's ingestion configuration rather than an empty one.
         LAB_ENV_VAR: str(_lab_is_enabled(context)).lower(),
+        # Read by the containerlab service, which mounts the checkout at its own path so that the
+        # paths in the topology file mean the same thing to it and to the Docker daemon.
+        "REPOSITORY": REPOSITORY,
         **kwargs.pop("env", {}),
     }
     compose_command_tokens = [
@@ -1155,39 +1155,18 @@ def _require_docker(context):
 
 
 def containerlab(context, command, **kwargs):
-    """Run one containerlab command, from its own image.
+    """Run one containerlab command, as the compose service that defines how it is run.
 
-    Nothing to install, and the same version for everybody. The flags are containerlab's own
-    documented ones for running it in a container:
-
-      --privileged, --network host, --pid host   it makes network namespaces and veth pairs, and
-                                                 has to do it in the namespaces of the machine the
-                                                 nodes run on - which on macOS is the Docker VM,
-                                                 and is why this works there at all
-      docker.sock                                the nodes are containers on that same daemon
-      the repository, at its own path            so the topology file and the nodes' startup
-                                                 configurations are where the topology says, and
-                                                 the lab directory it writes lands in the checkout
-
-    `/var/run/netns` and `/lib/modules` are mounted when the machine running invoke has them, which
-    is to say on Linux. On macOS they would be created empty on the Mac and shadow the VM's.
+    The service is in `development/docker-compose.containerlab.yml`, which is where the flags and
+    mounts it needs are explained. It sits behind a profile so that `invoke start` never starts it;
+    `run` turns that profile on for the one command given to it.
     """
     _require_docker(context)
-
-    mounts = [f'-v "{REPOSITORY}:{REPOSITORY}"', "-v /var/run/docker.sock:/var/run/docker.sock"]
-    mounts += [f"-v {path}:{path}" for path in ("/var/run/netns", "/lib/modules") if os.path.isdir(path)]
-
-    return context.run(
-        " ".join(
-            [
-                "docker run --rm -t --privileged --network host --pid host",
-                *mounts,
-                f'-w "{REPOSITORY}"',
-                CONTAINERLAB_IMAGE,
-                "containerlab",
-                command,
-            ]
-        ),
+    # Its compose file comes with the lab's, and a containerlab command is a lab command.
+    _enable_lab()
+    return docker_compose(
+        context,
+        f"--profile containerlab run --rm containerlab containerlab {command}",
         **kwargs,
     )
 

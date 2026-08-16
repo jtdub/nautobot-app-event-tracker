@@ -26,12 +26,16 @@ a real SR Linux says any of what the field map expects, which is the whole of th
 | Docker | That is all. Docker Desktop, OrbStack, Colima or a Linux daemon |
 | Time | The nodes take tens of seconds each to boot |
 
-**containerlab is not installed; it is run from its own image.** It needs a Linux kernel — it makes
-network namespaces and veth pairs directly — so on macOS there is nothing to install anyway: the
-kernel that matters is the one inside the Docker VM, and `invoke lab-up` reaches it by running
-containerlab in a container on that daemon, with `--privileged --network host --pid host` and the
-Docker socket, which is containerlab's own documented way of being run this way. On Linux it costs
-nothing and means every developer runs the same version.
+**containerlab is not installed; it is a compose service.**
+`development/docker-compose.containerlab.yml` defines it, with the flags containerlab documents for
+being run this way — `privileged`, `network_mode: host`, `pid: host`, the Docker socket, and the
+checkout mounted at its own path. It sits behind a profile, so `invoke start` never starts it and
+`invoke lab-up` runs it one command at a time.
+
+That is not a packaging preference: containerlab makes network namespaces and veth pairs directly,
+so it needs a Linux kernel, and on macOS the kernel that matters is inside the Docker VM. There is
+nothing to install there, and this is how to reach it. On Linux it costs nothing and pins one
+version for everybody.
 
 **Apple Silicon works.** SR Linux publishes `linux/arm64` images, so the nodes run natively rather
 than under emulation. So do Redpanda and Fluent Bit.
@@ -68,9 +72,12 @@ nautobot_event_tracker:
 
 Then plain `invoke start`, `invoke logs`, `invoke exec` and `invoke stop` all include the broker, the
 bridge and the consumer, and Nautobot loads the lab's ingestion configuration. For one shell instead
-of for good, `export EVENT_TRACKER_LAB=true` does the same thing. Don't also add
-`docker-compose.redpanda.yml` to `compose_files`: the setting adds it, and the compose file on its
-own would give you a broker Nautobot has not been told about.
+of for good, `export EVENT_TRACKER_LAB=true` does the same thing.
+
+The setting adds the lab's two compose files — `docker-compose.redpanda.yml` and
+`docker-compose.containerlab.yml` — so naming them in `compose_files` as well is optional. Naming
+them *instead* is not enough: the compose files give you a broker, and the setting is what tells
+Nautobot to read it.
 
 Either works with or without the topology deployed — the management network the two share is
 created by whichever of them gets there first — but a broker with no devices sending to it is only
