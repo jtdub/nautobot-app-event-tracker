@@ -125,12 +125,40 @@ PLUGINS_CONFIG = {
 #
 # The topic configuration is the lab's either way, so what you learn about the field map with Redis
 # is true of the lab as well.
-sys.path.append(os.path.join(os.path.dirname(__file__), "containerlab"))
-from nautobot_config_lab import LAB_INGESTION  # noqa: E402  pylint: disable=wrong-import-position
 
-if is_truthy(os.getenv("EVENT_TRACKER_LAB", "false")):
+
+def _lab_ingestion():
+    """Load the lab's ingestion block, wherever this configuration file happens to be running from.
+
+    In the container this file is `/opt/nautobot/nautobot_config.py` and the repository is mounted
+    at `/source`; run natively, it is the file in `development/` with the lab's beside it. Looking
+    only next to this file was right in one of those and a crash in the other - and this file is
+    imported by every process in the stack, so it took all of them down at once.
+
+    Returns `None` when neither is there, which is a copy of this file somewhere of its own. Nothing
+    is configured then, rather than something invented.
+    """
+    import importlib.util  # pylint: disable=import-outside-toplevel
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    for directory in (os.path.join(here, "containerlab"), "/source/development/containerlab"):
+        path = os.path.join(directory, "nautobot_config_lab.py")
+        if not os.path.isfile(path):
+            continue
+        spec = importlib.util.spec_from_file_location("nautobot_config_lab", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.LAB_INGESTION
+    return None
+
+
+LAB_INGESTION = _lab_ingestion()
+
+# Where LAB_INGESTION is None nothing is configured, which is the right answer for a copy of this
+# file with no checkout behind it: the app is then installed and waiting to be pointed at a broker.
+if LAB_INGESTION is not None and is_truthy(os.getenv("EVENT_TRACKER_LAB", "false")):
     PLUGINS_CONFIG["nautobot_event_tracker"]["ingestion"] = LAB_INGESTION
-else:
+elif LAB_INGESTION is not None:
     PLUGINS_CONFIG["nautobot_event_tracker"]["ingestion"] = {
         "consumer": "redis",
         "consumer_name": "development",
