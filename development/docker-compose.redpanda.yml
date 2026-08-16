@@ -108,8 +108,11 @@ services:
       - "8090:8080"
 
 networks:
-  # Created by containerlab from topology.clab.yml. Declared external so that compose attaches to
-  # the devices' network rather than making a second one with the same name.
+  # The network the devices are on. External so that compose attaches to that one rather than making
+  # a second of its own - which is also why it cannot be created here: compose refuses to adopt a
+  # network it did not label, and containerlab's is exactly that. `tasks.py` creates it before
+  # starting anything if neither has yet, so `invoke start` and `invoke lab-up` work in either order.
+  # Reach for `docker compose` directly and you have to create it yourself; see docs/dev/lab.md.
   event-tracker-mgmt:
     external: true
     name: "event-tracker-mgmt"

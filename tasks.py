@@ -43,6 +43,12 @@ LAB_POPULATE_SCRIPT = "/source/development/containerlab/populate_nautobot.py"
 #: containerlab prefixes every container it makes with `clab-<lab name>-`.
 LAB_CONTAINER_PREFIX = "clab-event-tracker-"
 
+#: The management network the devices, the syslog bridge and the broker all sit on. Declared in
+#: `topology.clab.yml` and, as an external network, in the compose overlay - so whichever of the two
+#: runs first has to make it. See `_ensure_lab_network`.
+LAB_NETWORK = "event-tracker-mgmt"
+LAB_NETWORK_SUBNET = "172.30.30.0/24"
+
 #: The messages `send-test-event` can publish. The list lives in `development/send_test_event.py`,
 #: which is where the messages themselves are; this is only what `--help` prints.
 TEST_EVENTS = ("bgp", "cpu", "drift", "interface", "optical", "unknown", "unreachable")
@@ -116,6 +122,46 @@ def _compose_files(context):
     return files
 
 
+def _ensure_lab_network(context):
+    """Create the lab's management network, if neither compose nor containerlab has yet.
+
+    The broker and the syslog bridge have to sit on the network the devices are on, so the overlay
+    declares it external - and an external network that does not exist yet stops compose before it
+    starts anything, with "network event-tracker-mgmt declared as external, but could not be found".
+    That is a fair description of the state and a poor way to find out that the topology comes
+    first, especially since it need not: making the network here means either order works.
+    containerlab uses a management network it finds rather than insisting on making its own.
+    """
+    if context.run(f"docker network inspect {LAB_NETWORK}", hide=True, warn=True).ok:
+        return
+
+    print(f"Creating the lab's management network {LAB_NETWORK} ({LAB_NETWORK_SUBNET})...")
+    context.run(f"docker network create --subnet {LAB_NETWORK_SUBNET} {LAB_NETWORK}", hide=True)
+
+
+def _starts_containers(command):
+    """Whether this compose command would bring something up, and so needs the network to exist."""
+    return bool({"up", "run", "start"} & set(command.split()))
+
+
+def _warn_about_a_broker_nautobot_will_not_read(context):
+    """Say so when the lab's broker is starting but Nautobot has not been told to use it.
+
+    `compose_files` naming the overlay starts Redpanda, the syslog bridge and the consumer; only
+    `lab: true` also makes Nautobot load the lab's ingestion configuration. With one and not the
+    other, everything starts, nothing errors, and the consumer sits reading the development Redis
+    while messages pile up unread on a broker three feet away.
+    """
+    if _lab_is_enabled(context):
+        return
+
+    print(
+        f"Note: {LAB_COMPOSE_FILE} is in compose_files, but `lab` is false, so Nautobot will read\n"
+        "      the development Redis rather than the broker this starts. Set `lab: true` in\n"
+        "      invoke.yml - which adds the compose file too, so you can drop it from compose_files."
+    )
+
+
 def _await_healthy_service(context, service):
     container_id = docker_compose(context, f"ps -q -- {service}", pty=False, echo=False, hide=True).stdout.strip()
     _await_healthy_container(context, container_id)
@@ -163,6 +209,13 @@ def docker_compose(context, command, **kwargs):
         **kwargs: Passed through to the context.run() call.
     """
     _ensure_creds_env_file(context)
+    compose_files = _compose_files(context)
+    # Keyed on the overlay being in use rather than on `lab`, because `compose_files` can name it
+    # directly - and then the network is needed while `lab` is still false.
+    if LAB_COMPOSE_FILE in compose_files and _starts_containers(command):
+        _ensure_lab_network(context)
+        _warn_about_a_broker_nautobot_will_not_read(context)
+
     build_env = {
         # Note: 'docker compose logs' will stop following after 60 seconds by default,
         # so we are overriding that by setting this environment variable.
@@ -180,7 +233,7 @@ def docker_compose(context, command, **kwargs):
         f'--project-directory "{context.nautobot_event_tracker.compose_dir}"',
     ]
 
-    for compose_file in _compose_files(context):
+    for compose_file in compose_files:
         compose_file_path = os.path.join(context.nautobot_event_tracker.compose_dir, compose_file)
         compose_command_tokens.append(f' -f "{compose_file_path}"')
 
@@ -1139,10 +1192,12 @@ def lab_up(context, populate=True, test_data=False):
 def lab_down(context, volumes=False):
     """Destroy the containerlab topology and stop the stack it was talking to."""
     _enable_lab()
-    docker_compose(context, f"down --remove-orphans {'--volumes' if volumes else ''}")
-    # After compose, not before: the overlay's containers sit on containerlab's management network,
-    # and containerlab cannot remove a network something is still attached to.
+    docker_compose(context, f"down --remove-orphans {'--volumes' if volumes else ''}", warn=True)
+    # After compose, not before: the nodes are on the same network as the broker and the bridge,
+    # and nothing can remove a network something is still attached to.
     context.run(f"sudo containerlab destroy --cleanup --topo {LAB_TOPOLOGY}", pty=True, warn=True)
+    # Left behind by whichever of the two did not create it; harmless, but it is ours to clean up.
+    context.run(f"docker network rm {LAB_NETWORK}", hide=True, warn=True)
 
 
 @task

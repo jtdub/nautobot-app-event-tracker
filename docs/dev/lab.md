@@ -59,9 +59,13 @@ nautobot_event_tracker:
 
 Then plain `invoke start`, `invoke logs`, `invoke exec` and `invoke stop` all include the broker, the
 bridge and the consumer, and Nautobot loads the lab's ingestion configuration. For one shell instead
-of for good, `export EVENT_TRACKER_LAB=true` does the same thing. Either way, deploy the topology
-first — `invoke lab-up` does that, and compose will not start a service whose external network does
-not exist yet.
+of for good, `export EVENT_TRACKER_LAB=true` does the same thing. Don't also add
+`docker-compose.redpanda.yml` to `compose_files`: the setting adds it, and the compose file on its
+own would give you a broker Nautobot has not been told about.
+
+Either works with or without the topology deployed — the management network the two share is
+created by whichever of them gets there first — but a broker with no devices sending to it is only
+useful with `invoke send-test-event`.
 
 **The steps, if one of them fails.** `lab-up` is these in order, and each is a task of its own:
 
@@ -169,9 +173,15 @@ distinguishes them rather than removing `interface`, which brings back the sympt
 Fluent Bit logging (`invoke logs -s fluent-bit`); does the device have the remote server configured
 (`docker exec -it clab-event-tracker-leaf-01 sr_cli "info / system logging"`).
 
-**The consumer restarts saying no topics are configured.** Nautobot came up without
-`EVENT_TRACKER_LAB`, so it loaded an empty ingestion configuration — which happens if the stack was
-already running before `invoke lab-up`. `invoke lab-down && invoke lab-up` fixes it.
+**The consumer is reading Redis rather than the broker.** Nautobot came up without
+`EVENT_TRACKER_LAB`, so it loaded the ordinary development ingestion configuration — which happens
+if the stack was already running before `invoke lab-up`, or if `docker-compose.redpanda.yml` is in
+your `compose_files` but `lab: true` is not set. `invoke lab-down && invoke lab-up` fixes it.
+
+**`network event-tracker-mgmt declared as external, but could not be found`.** Something ran
+`docker compose` directly rather than through `invoke`, before either containerlab or the tasks had
+created that network. `docker network create --subnet 172.30.30.0/24 event-tracker-mgmt`, or just
+use `invoke start`, which does it for you.
 
 ## Tearing it down
 

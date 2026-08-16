@@ -1,1 +1,2 @@
 Corrected the lab's syslog severity map, which ranked syslog `notice` above syslog `warning`, and its message classifier, which filed BGP session-down events as interface-down events.
+`invoke start` no longer fails with "network event-tracker-mgmt declared as external, but could not be found": the tasks create the lab's management network when neither compose nor containerlab has, so the stack and the topology can be brought up in either order.
