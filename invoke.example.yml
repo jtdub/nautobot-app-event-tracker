@@ -15,9 +15,12 @@ nautobot_event_tracker:
   # The containerlab lab: a three-node SR Linux fabric whose logs are real, a Redpanda broker, the
   # syslog bridge between them, and a running event consumer. Turning this on adds all four to the
   # ordinary development stack, so `invoke start` brings up a Nautobot that is consuming events and
-  # `invoke logs -s consumer` shows what it made of them. Do not add the broker's compose file to
-  # `compose_files` as well - this setting adds it, and it is also what makes Nautobot read the
-  # lab's ingestion configuration, which the compose file alone would not.
+  # `invoke logs -s consumer` shows what it made of them.
+  #
+  # This setting adds `docker-compose.redpanda.yml` by itself, so the entry above is not needed -
+  # naming it there is harmless, and on its own is not enough: this setting is also what makes
+  # Nautobot read the lab's ingestion configuration rather than the development one. The compose
+  # file without it gives you a broker nobody is listening to.
   #
   # `invoke start` works with or without the topology deployed; `invoke lab-up` deploys it and
   # starts everything in one go, and turns this on for its own run whatever this file says. So it is
