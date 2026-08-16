@@ -14,9 +14,13 @@ services:
     healthcheck:
       interval: "30s"
       timeout: "10s"
-      start_period: "60s"
+      # The entrypoint migrates before runserver ever binds the port, so answering HTTP *is* the
+      # "migrations are done" signal - and everything gating on this health (worker, beat, the
+      # lab's consumer and populate step) needs exactly that. A fresh database is many minutes of
+      # migrations, hence the long start_period; failures during it do not count against health.
+      start_period: "30m"
       retries: 3
-      test: ["CMD", "true"]  # Due to layering, disable: true won't work. Instead, change the test
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health/"]  # Due to layering, disable: true won't work. Instead, change the test
   docs:
     # Note: explicitly enabling --livereload was added as a workaround
     # and can be removed if/when mkdocs is updated.

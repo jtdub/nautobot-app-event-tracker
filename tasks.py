@@ -16,6 +16,7 @@ import concurrent.futures
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -176,13 +177,17 @@ def _await_healthy_service(context, service):
 def _await_healthy_container(context, container_id):
     while True:
         result = context.run(
-            "docker inspect --format='{{.State.Health.Status}}' " + container_id,
+            "docker inspect --format='{{.State.Status}} {{.State.Health.Status}}' " + container_id,
             pty=False,
             echo=False,
             hide=True,
         )
-        if result.stdout.strip() == "healthy":
+        state, _, health = result.stdout.strip().partition(" ")
+        if health == "healthy":
             break
+        # A container that stopped will never become healthy; its logs say why it stopped.
+        if state not in ("created", "restarting", "running"):
+            raise Exit(f"Container `{container_id}` is {state}, and cannot become healthy.", code=1)
         print(f"Waiting for `{container_id}` container to become healthy ...")
         sleep(1)
 
@@ -1168,6 +1173,16 @@ def _lab_nodes(context):
     return sorted(name for name in result.stdout.split() if name.startswith(LAB_CONTAINER_PREFIX))
 
 
+def _sr_cli(context, container, set_command):
+    """Apply one configuration command on one SR Linux node, committed.
+
+    Through stdin rather than as arguments: sr_cli reads its arguments as the tokens of a single
+    command, so an argument of "enter candidate" is a parsing error, not a mode change.
+    """
+    script = shlex.quote("\n".join(("enter candidate", set_command, "commit now")))
+    context.run(f"printf '%s\\n' {script} | docker exec -i {container} sr_cli -ed")
+
+
 def containerlab(context, command, **kwargs):
     """Run one containerlab command, as the compose service that defines how it is run.
 
@@ -1201,6 +1216,9 @@ def lab_up(context, populate=True, test_data=False):
     containerlab(context, f'deploy --reconfigure --topo "{LAB_TOPOLOGY}"', pty=True)
 
     start(context)
+    # Healthy means the entrypoint's migrations are done too - the dev healthcheck is an HTTP
+    # probe, and the entrypoint only starts the server after `post_upgrade`. On a fresh database
+    # this wait is the migrations, so it is minutes, not seconds.
     _await_healthy_service(context, "nautobot")
 
     if populate:
@@ -1298,22 +1316,14 @@ def lab_break(context, event="interface", device="leaf-01", interface="ethernet-
         # A shut interface takes the link down and, with it, the BGP session that ran over it -
         # which is why one break produces two kinds of event and both are worth watching.
         state = "enable" if restore else "disable"
-        context.run(
-            f'docker exec -i {container} sr_cli "enter candidate" '
-            f'"set / interface {interface} admin-state {state}" "commit now"',
-            pty=True,
-        )
+        _sr_cli(context, container, f"set / interface {interface} admin-state {state}")
     elif event == "unreachable":
         context.run(f"docker {'start' if restore else 'stop'} {container}", pty=True)
     elif event == "drift":
         # Any commit is a configuration change the device logs; the description is the smallest
         # one that changes nothing else.
         text = "" if restore else "set by invoke lab-break"
-        context.run(
-            f'docker exec -i {container} sr_cli "enter candidate" '
-            f'"set / interface {interface} description \\"{text}\\"" "commit now"',
-            pty=True,
-        )
+        _sr_cli(context, container, f'set / interface {interface} description "{text}"')
     else:
         raise Exit(f"Unknown event '{event}'. Choose interface, bgp, unreachable or drift.", code=1)
 

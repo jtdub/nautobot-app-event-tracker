@@ -1,9 +1,13 @@
-// spine-01: AS 65000, peering with both leaves.
-//
-// See leaf-01.cli for why the addressing is here and why nothing is advertised.
+# spine-01: AS 65000, peering with both leaves.
+#
+# See leaf-01.cli for why the addressing is here and why nothing is advertised.
 
 set / system logging remote-server 172.30.30.100 remote-port 5140 transport udp
-set / system logging remote-server 172.30.30.100 subsystem local priority-severity 0 6
+set / system logging network-instance mgmt
+set / system logging remote-server 172.30.30.100 subsystem bgp priority match-above informational
+set / system logging remote-server 172.30.30.100 subsystem chassis priority match-above informational
+set / system logging remote-server 172.30.30.100 subsystem linux priority match-above informational
+set / system logging remote-server 172.30.30.100 subsystem netinst priority match-above informational
 
 set / interface ethernet-1/1 admin-state enable
 set / interface ethernet-1/1 subinterface 0 admin-state enable
@@ -32,4 +36,3 @@ set / network-instance default protocols bgp neighbor 10.1.1.0 peer-as 65001
 set / network-instance default protocols bgp neighbor 10.1.2.0 peer-group fabric
 set / network-instance default protocols bgp neighbor 10.1.2.0 peer-as 65002
 
-commit save
