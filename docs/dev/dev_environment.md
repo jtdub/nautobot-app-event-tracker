@@ -116,10 +116,55 @@ Each command can be executed with `invoke <command>`. All commands support the a
 #### Utility
 
 ```
-  cli              Launch a bash shell inside the running Nautobot container.
-  create-user      Create a new user in django (default: admin), will prompt for password.
-  makemigrations   Run Make Migration in Django.
-  nbshell          Launch a nbshell session.
+  cli                  Launch a bash shell inside the running Nautobot container.
+  create-user          Create a new user in django (default: admin), will prompt for password.
+  makemigrations       Run Make Migration in Django.
+  nbshell              Launch a nbshell session.
+  generate-test-data   Fill the database with demo tickets, and the devices they are about.
+  eventconsumer        Run the event consumer in the foreground, against the configured broker.
+  send-test-event      Publish an event onto that broker, so a ticket appears.
+```
+
+#### Watching an event become a ticket
+
+The development stack consumes from the Redis it already runs, so this needs nothing else
+installed — no containerlab, no Kafka, no 8 GB of memory:
+
+```bash
+➜ invoke start
+➜ invoke eventconsumer          # in one terminal, where you can watch it
+➜ invoke send-test-event        # in another
+```
+
+A ticket appears under **Apps → Event Tracker → Tickets**, titled with the message that was sent.
+`invoke send-test-event --count 3` sends the same event three times: you should get **one** ticket
+whose event count is three, which is the recurrence rule working. `--event` chooses a different
+message — `bgp`, `unreachable`, `optical`, `cpu`, `drift`, `unknown` — and `--host` and `--interface`
+choose which device it is about.
+
+Redis pub/sub keeps nothing: an event published while the consumer is not running is gone, not
+queued. That is the difference between the development broker and the Kafka the reference
+deployment uses, and it is why [the lab](lab.md) exists — real messages from real devices over a
+broker that keeps them.
+
+#### The containerlab lab
+
+Opt-in, and the one thing here that needs privileged Docker and about 8 GB of memory. containerlab
+itself is not installed — the tasks run it from its own image, which is also what makes the lab work
+on an Apple Silicon Mac, where there is no Linux kernel to install it against.
+`invoke lab-up` needs no configuration; set `lab: true` in `invoke.yml` to make the lab — broker,
+syslog bridge and a running consumer — part of the environment that plain `invoke start` brings up.
+[The lab guide](lab.md) is the long version.
+
+```
+  lab-up           Deploy the SR Linux topology and start Nautobot against its broker.
+  lab-down         Stop the stack and destroy the topology.
+  lab-inspect      What containerlab thinks is running.
+  lab-populate     Mirror the topology into Nautobot: devices, interfaces, addresses, cables.
+  lab-consumer     Run the consumer against the lab's broker; --dry-run decides without writing.
+  lab-break        Cause an event on purpose: --event interface|bgp|unreachable|drift.
+  lab-events       Read the raw messages the syslog bridge put on the broker.
+  lab-console      Start the Redpanda console at http://localhost:8090.
 ```
 
 #### Testing

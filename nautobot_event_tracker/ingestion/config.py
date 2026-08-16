@@ -127,6 +127,17 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
         """The topics to subscribe to."""
         return tuple(self.topics)
 
+    @property
+    def consumer_settings(self):
+        """The broker block belonging to the configured consumer - `kafka` or `redis`.
+
+        Which block that is, is the consumer class's own answer (`settings_key`), so a third broker
+        needs nothing here.
+        """
+        from nautobot_event_tracker.ingestion.consumers import CONSUMERS  # pylint: disable=import-outside-toplevel
+
+        return getattr(self, CONSUMERS[self.consumer].settings_key, {})
+
 
 def get_settings():
     """Return the raw `ingestion` block from `PLUGINS_CONFIG`, with defaults filled in.

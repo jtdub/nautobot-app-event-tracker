@@ -1,0 +1,1 @@
+`generate_nautobot_event_tracker_test_data` now attaches each ticket to the device its title names, rather than to an arbitrary attachable object, and `--flush --count 0` deletes the generated data without regenerating it.

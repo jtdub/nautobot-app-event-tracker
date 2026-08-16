@@ -1,0 +1,118 @@
+---
+# The lab's broker and syslog bridge, layered on the ordinary development stack the way the redis
+# overlay is. Nothing here starts unless you ask for it: add this file to `compose_files` in your
+# `invoke.yml`, as docs/dev/lab.md describes, and leave it out to get the ordinary stack back.
+#
+# Redpanda rather than Kafka and ZooKeeper: one container, a few hundred megabytes, no controller to
+# configure, and it speaks the Kafka protocol - `confluent-kafka` cannot tell the difference, which
+# is the entire point. The reference deployment in ADR 0004 is still Kafka; this is the development
+# stand-in for it.
+services:
+  # `EVENT_TRACKER_LAB=true invoke start` sets the variable in the shell running compose, and
+  # compose passes nothing to a container it was not told to pass. Without these two blocks the
+  # stack comes up with an empty ingestion configuration and `eventconsumer` exits saying no topics
+  # are configured, which is a long way from the cause.
+  nautobot:
+    environment:
+      EVENT_TRACKER_LAB: "${EVENT_TRACKER_LAB:-false}"
+
+  worker:
+    environment:
+      EVENT_TRACKER_LAB: "${EVENT_TRACKER_LAB:-false}"
+
+  # The consumer, running the way it runs in production: its own process, alongside Nautobot rather
+  # than inside it (ADR 0005). Bringing the lab up therefore gives you a Nautobot that is already
+  # consuming - `invoke logs -s consumer` is what it made of each message - and `invoke lab-consumer`
+  # is for when you want it in the foreground or with `--dry-run` instead.
+  #
+  # Spelled out rather than sharing the base file's YAML anchors: anchors do not cross compose files.
+  consumer:
+    image: "nautobot-event-tracker/nautobot:${NAUTOBOT_VER}-py${PYTHON_VER}"
+    # An entrypoint, not a command: the image's own entrypoint runs migrations, and the nautobot
+    # service has already done that. Two processes migrating the same database is a race.
+    entrypoint:
+      - "sh"
+      - "-c"
+      - "nautobot-server eventconsumer"
+    env_file:
+      - "development.env"
+      - "creds.env"
+    environment:
+      EVENT_TRACKER_LAB: "${EVENT_TRACKER_LAB:-false}"
+    depends_on:
+      nautobot:
+        condition: "service_healthy"
+      redpanda:
+        condition: "service_healthy"
+    volumes:
+      - "./nautobot_config.py:/opt/nautobot/nautobot_config.py"
+      - "../:/source"
+    # It exits rather than guessing when its configuration is wrong, and the fix is usually a file
+    # in this directory - so let it come back once that file is right, without a `docker compose up`.
+    restart: "on-failure"
+    healthcheck:
+      disable: true
+    tty: true
+
+  redpanda:
+    image: "redpandadata/redpanda:v24.2.7"
+    command:
+      - "redpanda"
+      - "start"
+      - "--mode=dev-container"
+      - "--smp=1"
+      - "--memory=512M"
+      - "--reserve-memory=0M"
+      - "--overprovisioned"
+      - "--kafka-addr=PLAINTEXT://0.0.0.0:9092"
+      # Advertised as the service name, because the consumer connects from inside the compose
+      # network and the bridge does too.
+      - "--advertise-kafka-addr=PLAINTEXT://redpanda:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: "5s"
+      timeout: "5s"
+      retries: 12
+    networks:
+      default: {}
+      # The bridge and the devices share the management network containerlab creates.
+      event-tracker-mgmt: {}
+
+  fluent-bit:
+    image: "fluent/fluent-bit:3.1"
+    depends_on:
+      redpanda:
+        condition: "service_healthy"
+    volumes:
+      - "./containerlab/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro"
+      - "./containerlab/parsers.conf:/fluent-bit/etc/parsers.conf:ro"
+      - "./containerlab/classify.lua:/fluent-bit/etc/classify.lua:ro"
+    networks:
+      default: {}
+      event-tracker-mgmt:
+        # The address every device's startup configuration exports syslog to.
+        ipv4_address: "172.30.30.100"
+
+  # Worth a great deal the first time the field map does not match, and nothing afterwards. Start it
+  # with `docker compose ... --profile console up -d`.
+  redpanda-console:
+    image: "redpandadata/console:v2.7.2"
+    profiles:
+      - "console"
+    depends_on:
+      redpanda:
+        condition: "service_healthy"
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+    ports:
+      - "8090:8080"
+
+networks:
+  # The network the devices are on. External so that compose attaches to that one rather than making
+  # a second of its own - which is also why it cannot be created here: compose refuses to adopt a
+  # network it did not label, and containerlab's is exactly that. `tasks.py` creates it before
+  # starting anything if neither has yet, so `invoke start` and `invoke lab-up` work in either order.
+  # Reach for `docker compose` directly and you have to create it yourself; see docs/dev/lab.md.
+  event-tracker-mgmt:
+    external: true
+    name: "event-tracker-mgmt"

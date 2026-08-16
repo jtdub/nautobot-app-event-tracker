@@ -17,7 +17,8 @@ from django.utils import timezone
 from nautobot.dcim.models import Location, LocationType
 from nautobot.extras.models import Status
 
-from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker import dcim_fixtures
+from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices
 from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
 from nautobot_event_tracker.models import EventType, IngestionStats
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -59,6 +60,22 @@ def create_location(name="Test Location"):
     return location
 
 
+def create_device(name="somebody-elses-device"):
+    """A device this app did not create, for the tests that must not touch one.
+
+    Built with the same helpers the test data command uses, so that a change to what a Device
+    requires is made in one place - but under different names, because the whole point of this
+    fixture is to be somebody else's.
+    """
+    device, _ = dcim_fixtures.ensure_device(
+        name,
+        location=dcim_fixtures.ensure_location(location_type_name="Test Site", location_name="Test Device Location"),
+        device_type=dcim_fixtures.ensure_device_type(manufacturer_name="Test Manufacturer", model_name="Test Model"),
+        role=dcim_fixtures.ensure_role(role_name="Test Device Role"),
+    )
+    return device
+
+
 def create_ticket(user=None, event_type=None, **kwargs):
     """Create one ticket through the service layer."""
     if event_type is None:
@@ -74,30 +91,18 @@ def create_ticket(user=None, event_type=None, **kwargs):
     )
 
 
-#: Shortest path from `new` to each status, as a list of transitions to walk.
-PATHS_TO_STATUS = {
-    TicketStatusChoices.NEW: [],
-    TicketStatusChoices.TRIAGED: [TicketStatusChoices.TRIAGED],
-    TicketStatusChoices.IN_PROGRESS: [TicketStatusChoices.TRIAGED, TicketStatusChoices.IN_PROGRESS],
-    TicketStatusChoices.SUPPRESSED: [TicketStatusChoices.SUPPRESSED],
-    TicketStatusChoices.RESOLVED: [TicketStatusChoices.TRIAGED, TicketStatusChoices.RESOLVED],
-    TicketStatusChoices.CLOSED: [TicketStatusChoices.CLOSED],
-}
-
-
 def create_ticket_in_status(status, user=None, **kwargs):
     """Create a ticket and walk the graph until it reaches `status`."""
     if user is None:
         user = create_user()
     ticket = create_ticket(user=user, **kwargs)
-    for step in PATHS_TO_STATUS[status]:
-        ticket_service.transition(
-            ticket=ticket,
-            to_status=step,
-            source=TicketSourceChoices.HUMAN,
-            user=user,
-            resolution="Fixed in tests." if step == TicketStatusChoices.RESOLVED else "",
-        )
+    ticket_service.walk_to_status(
+        ticket=ticket,
+        to_status=status,
+        source=TicketSourceChoices.HUMAN,
+        user=user,
+        resolution="Fixed in tests.",
+    )
     ticket.refresh_from_db()
     return ticket
 

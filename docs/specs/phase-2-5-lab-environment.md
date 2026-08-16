@@ -38,8 +38,11 @@ nautobot-server generate_nautobot_event_tracker_test_data [--flush] [--seed SEED
 - **Every ticket is built through the service layer**, exactly as the test fixtures are. A command that assigned `status` directly would be the first violation of the rule the app exists to enforce, and it would sit in the app package where an operator might read it as an example.
 - **Tickets in a terminal state get there by walking the graph**, so their trails read like a ticket somebody actually worked.
 - **Deterministic.** `--seed` defaults to a constant, so two developers comparing screenshots see the same data. Randomness comes from a seeded `random.Random`, never the module-level functions.
-- **Attachments use whatever objects the database already holds** — those from Nautobot's own `generate_test_data`, or from the lab population script in section 6. It creates no DCIM objects of its own; inventing a `Device` in a ticketing app's test-data command is how a demo database ends up with devices nobody can explain.
-- **`--flush` deletes only what it created**, identified by a tag applied to every ticket it makes, and never touches tickets a person opened.
+- **It creates the devices its tickets are about.** *Revised: an earlier draft refused to, arguing that a ticketing app inventing DCIM objects leaves a demo database full of devices nobody can explain. That is what `generate_test_data` is for, and Nautobot's own populates a whole demo estate; the objection is answered by tagging rather than by abstaining.* Everything it creates carries `event-tracker-test-data`, so it is explicable at a glance and `--flush` removes it. Where the database already holds a device of the same name — the lab's `leaf-01`, after section 6 has run — that one is used and left untagged, so a flush cannot delete it.
+- **The estate it creates is the lab's fabric, node for node.** The same three devices, the same interface names, the same management and fabric addressing, the same links as cables. *An earlier draft invented a separate estate — `edge-rtr-01`, `core-sw-01`, Cisco-shaped interface names, addresses out of TEST-NET-1 — which shared three device names with the lab and agreed with it about nothing else. Running both left `leaf-01` holding whichever interfaces were created first, and tickets titled `Gi0/0/1 is down on leaf-01`, naming an interface the device you can log in to has never had.* Copying the lab's fabric means a ticket is about a device you can go and break, on an interface it really has, whether or not you have ever run the lab.
+- **The two are held together by a test.** `test_lab_configuration.py` checks the command's fabric against `topology.clab.yml` and the nodes' own `.cli` files: the device names, each device's interfaces, the addresses on them, the management addresses the topology pins, and the links. They cannot drift apart quietly.
+- **Every ticket names an interface its device has.** The title's interface is drawn from that host's own list rather than from the fabric's, so the first thing a reader clicks is not a dead end.
+- **`--flush` deletes only what it created**, identified by a tag applied to every ticket, device, cable and address it makes, and never touches a ticket a person opened or a device the lab populated. Tickets are deleted before devices, so an attachment never briefly points at something gone. The location, device type, manufacturer and role are left behind as empty scaffolding, since somebody may have filed their own objects under them.
 
 **What it does not create.** No `IngestionStats` rows: those are a record of a consumer having run, and fabricating them would put numbers on the stats page that never corresponded to a message. A developer who wants stats runs the lab.
 
@@ -74,9 +77,13 @@ Three `nokia_srlinux` nodes and one Alpine client. The image is `ghcr.io/nokia/s
 | `docker stop clab-…-leaf-02` | peer unreachable, session down | Device Unreachable |
 | Change a configuration and commit | configuration commit messages | Configuration Drift |
 
-An `invoke lab-break interface` task performs the first of these, so a developer can see a ticket appear without learning SR Linux CLI first. That task is the demo.
+The lab guide gives the `docker exec … sr_cli` line for the first of these verbatim, so a developer can see a ticket appear without learning SR Linux CLI first. That line is the demo.
 
-**Cost, stated plainly.** Each SR Linux node wants roughly 1 GB of memory and takes tens of seconds to boot; three of them plus Redpanda, Nautobot, PostgreSQL and Redis is an 8 GB machine minimum, comfortably 12. containerlab needs privileged Docker and manages network namespaces directly, so it does not run inside every sandbox — including, possibly, the one this spec was written in. A developer without the memory runs everything else in this repository exactly as before.
+**Each node gets its own startup configuration** — `leaf-01.cli`, `leaf-02.cli`, `spine-01.cli` — rather than one shared by all three. They agree about where syslog goes and differ about everything else: the fabric addressing, the AS number, the router-id and the neighbours. A single shared file, which is where this started, gave every node the same router-id and no neighbours at all, so no session ever came up and the second row of the table above was a promise the lab could not keep.
+
+**Cost, stated plainly.** Each SR Linux node wants roughly 1 GB of memory and takes tens of seconds to boot; three of them plus Redpanda, Nautobot, PostgreSQL and Redis is an 8 GB machine minimum, comfortably 12. containerlab manages network namespaces directly and so needs privileged Docker, which not every sandbox has — including, possibly, the one this spec was written in. A developer without the memory runs everything else in this repository exactly as before.
+
+**containerlab is a compose service, not an installed binary.** *Revised: an earlier draft told the developer to install it with the upstream script, which is a Linux instruction — containerlab needs a Linux kernel, so on a Mac there is nothing to install and `invoke lab-up` simply failed.* The kernel that matters there is the Docker VM's, and containerlab documents being run as a container on the daemon that hosts the nodes. `development/docker-compose.containerlab.yml` is that, as configuration rather than as flags buried in a task: `privileged`, `network_mode: host`, `pid: host`, the Docker socket, and the repository mounted at its own path — its own, because containerlab hands the nodes' startup configurations to the daemon as bind mounts and the daemon resolves those paths itself. A profile keeps it out of `invoke start`; the lab tasks `run` it one command at a time. That works identically on Linux, where it also pins one version for everybody. The nodes themselves are native on Apple Silicon: SR Linux, Redpanda and Fluent Bit all publish `linux/arm64` images.
 
 ## 5. The broker and the bridge
 
@@ -96,40 +103,54 @@ A `redpanda console` container is included and disabled by default: seeing the r
 
 ## 6. Populating Nautobot from the topology
 
-`development/containerlab/populate_nautobot.py`, run by `invoke lab-populate`.
+`development/containerlab/populate_nautobot.py`, run by path — the lab guide gives both the in-container and out-of-container forms.
 
-It reads the topology file and `containerlab inspect --format json`, and creates: a Location for the lab, a Manufacturer and DeviceType for SR Linux, a Role, the Devices under their clab names, their Interfaces from the topology's links, and the management IPs containerlab assigned. Every object is created with `get_or_create`, so running it twice changes nothing.
+It reads the topology file and creates: a Location for the lab, a Manufacturer and DeviceType for SR Linux, a Role, the Devices under the names they use in their own log messages, their Interfaces from the topology's links, the management addresses the topology pins, the fabric addresses, and a Cable for every link between two devices. Every object is created with `get_or_create`, so running it twice changes nothing. The topology pins every management address rather than letting containerlab choose one, which is why the script never has to ask a running lab what it assigned.
 
-**It is a script under `development/`, not a management command.** A management command in the app package ships in the wheel, and a command that creates DCIM objects is not something an operator of a ticketing app should find installed. The cost is that it runs through `nautobot-server nbshell` rather than as a first-class command, which for a development script is a fair price. See 10.3.
+**The fabric addresses are read out of the nodes' own startup configurations**, not written down a second time in the script. Those `.cli` files are what the devices actually run; a plan kept alongside them is a plan that can disagree with the device, and an interface whose address in Nautobot is not the address on the wire is worse than an interface with no address at all.
+
+**It is a script under `development/`, not a management command.** A script whose only subject is one particular containerlab topology is not something an operator of a ticketing app should find installed. What is *general* about it — "a Device and everything a Device requires" — is not lab knowledge at all, and lives in `nautobot_event_tracker/dcim_fixtures.py`, which the test data command, the test fixtures and this script all use. That chain is six `get_or_create` calls in a particular order, and Nautobot has tightened what a Device requires before; written out three times, the next tightening is found by whoever runs the lab, while they are demonstrating it. See 10.3.
 
 The device names in Nautobot match the hostnames the devices put in their syslog messages. That is the whole reason to bother: it is what makes the Phase 4 enrichment resolver's job real rather than hypothetical, and until then it is what lets a person reading a ticket search for the device by name and find it.
 
 ## 7. Invoke tasks
 
-Added to `tasks.py`, in their own section, each one refusing to run when containerlab is absent rather than failing halfway:
+Developers drive this development environment with `invoke`, and the lab is part of it. A step that exists only as a shell line in a document is a step somebody has to find, read and get right, and there is no reason for the lab to be the one part of the repository that works that way.
+
+*A draft of this section had no tasks at all, on the grounds that each would be a shell line wrapped in Python. That argument was wrong about who pays: the wrapper is written once and read never, and the shell line is read every time.*
 
 | Task | Does |
 | --- | --- |
-| `lab-up` | Start the compose stack with the Redpanda overlay, deploy the topology, wait for the nodes, populate Nautobot |
-| `lab-down` | Destroy the topology and stop the overlay, leaving the ordinary dev stack alone |
-| `lab-populate` | Section 6, on its own, for when the topology is already up |
-| `lab-consumer` | Run `nautobot-server eventconsumer` against the lab configuration in the foreground |
-| `lab-break <event>` | Cause one of the section 4 events on purpose |
-| `lab-events` | Tail the `network.events` topic, so a developer can see what the bridge actually produced |
+| `lab-up` | Deploy the topology, start the stack — broker, syslog bridge and consumer — wait for Nautobot, populate it from the topology |
+| `lab-down` | Stop the stack and destroy the topology, in that order, leaving the ordinary dev stack able to start |
+| `lab-inspect` | What containerlab thinks is running: the nodes, their kinds, their addresses |
+| `lab-populate` | Section 6 on its own, for when the topology is already up |
+| `lab-consumer` | `nautobot-server eventconsumer` against the lab configuration, in the foreground; `--dry-run` decides without writing |
+| `lab-break` | Cause one of the section 4 events on purpose: `--event interface\|bgp\|unreachable\|drift`, and `--restore` to put it back |
+| `lab-events` | Read the raw messages on `network.events`, so a developer can see what the bridge actually produced |
+| `lab-console` | Start the Redpanda console for reading the topic in a browser |
 
-`lab-up` prints, at the end, the two things a person needs next: the Nautobot URL and the `invoke lab-break interface` line.
+`eventconsumer` and `send-test-event` are tasks in their own right, outside the lab section, because what they drive is Phase 2's rather than the lab's.
+
+**The ordinary stack consumes too.** `invoke eventconsumer` on a plain `invoke start` used to fail with "no topics are configured", which is a correct error and a poor answer: the development stack already runs a Redis, and the Redis consumer exists precisely for this. It is now configured against it, reading the *lab's* topic configuration — same field map, same severity map, same dedup template — so `invoke start`, `invoke eventconsumer`, `invoke send-test-event` demonstrates the whole of Phase 2 on any machine, and what a developer learns about the field map there is true of the lab as well. Redis pub/sub keeps nothing, which is the honest difference from Kafka and the reason the lab is still worth its 8 GB.
+
+`lab-up` prints, at the end, what to do next: the Nautobot URL, the command that causes an event, and the one that tears it all down. `lab-break` prints its own `sr_cli` line as it runs it, so a developer learns the command rather than being kept away from it.
+
+**One switch, three ways to throw it.** The lab's compose overlay is added by `tasks.py` itself rather than by a `compose_files` entry, because the same decision also settles whether Nautobot loads the lab's ingestion configuration, and the two must agree: a stack started with the broker but without the configuration comes up with no topics to subscribe to. `lab: true` in `invoke.yml` — documented in `invoke.example.yml` — makes the lab the environment `invoke start` brings up, for somebody who works on ingestion. `EVENT_TRACKER_LAB=true` does it for one shell. The `lab-*` tasks set that variable for their own process, so `invoke lab-up` works with no configuration at all.
+
+**The consumer runs as a service.** With the lab up, `invoke start` brings up Nautobot, the broker, the bridge *and* `nautobot-server eventconsumer` — its own process alongside Nautobot, which is how [ADR 0005](../decisions/0005-standalone-consumer-process.md) says it runs in production, so the development environment demonstrates the deployment rather than a simplification of it. `invoke logs -s consumer` is what it made of each message. `lab-consumer` is for watching it decide in the foreground, or for `--dry-run`; it stops the service for the duration, because two consumers in one group split the partitions and on a one-partition topic the one being watched would see nothing.
 
 ## 8. CI
 
-**None of this runs in the pull-request gate.** containerlab needs privileged Docker, the nodes need gigabytes, and boot takes minutes; putting that in front of every pull request buys a signal the unit tests already give and costs flakiness that has nothing to do with the change under review.
+**None of this runs anywhere in CI, on any trigger.** containerlab needs privileged Docker, the nodes need gigabytes, and boot takes minutes.
 
-What does go in CI is one workflow, `lab.yml`, triggered manually (`workflow_dispatch`) and nightly on the default branch, which brings the lab up, runs the section 9 acceptance script, and uploads the consumer log and the resulting ticket list as artifacts. When it fails, it fails on a schedule with a person's attention available, not on a contributor's pull request.
+*Revised: this section proposed a `lab.yml` workflow, manual and nightly on the default branch, uploading the consumer log and ticket list as artifacts.* There is no such workflow. A nightly job is a build that fails while nobody is looking at it and is read, if at all, days later; the pull-request gate already covers everything in this phase that can be checked without a device — including `test_lab_configuration.py`, which holds the lab's field map to the shape its bridge is written to produce. What the lab proves beyond that is proved by a person running it deliberately, which is the only time its answer is worth anything.
 
 ## 9. Acceptance criteria
 
 1. **Test data.** `nautobot-server generate_nautobot_event_tracker_test_data` populates a database with tickets in every status, each with a trail built through the service layer; `--flush` removes exactly what it created and nothing else; the same `--seed` twice produces the same tickets. A test asserts the command writes no ticket whose status was assigned directly, by checking every ticket has a `created` update and a status trail consistent with the workflow graph.
-2. **The topology comes up.** `invoke lab-up` deploys four nodes, and `containerlab inspect` reports them running.
-3. **Events reach the broker.** After `invoke lab-break interface`, `invoke lab-events` shows a message on `network.events` within thirty seconds.
+2. **The topology comes up.** `invoke lab-up` brings up four nodes, `invoke lab-inspect` reports them running, and `sr_cli "show network-instance default protocols bgp neighbor"` shows the fabric sessions established — on an Apple Silicon Mac as well as on Linux.
+3. **Events reach the broker.** After shutting an interface, `rpk topic consume network.events` shows a message within thirty seconds.
 4. **Events become tickets.** With `nautobot-server eventconsumer` running against the lab configuration, the same break produces a ticket whose event type, severity and title are what the operator would expect, and whose `payload` holds the parsed message.
 5. **The field map matches reality.** No field in the lab's `field_map` resolves to `None` for a message the bridge actually produced. This is criterion 3 of the whole phase's purpose: if it fails, the Phase 2 defaults are wrong and this is how we found out.
 6. **Recurrence works on real traffic.** Flapping an interface repeatedly produces one ticket with a rising event count, not many tickets — the S5 rule, tested against a device rather than a fixture.
@@ -142,10 +163,10 @@ What does go in CI is one workflow, `lab.yml`, triggered manually (`workflow_dis
 
 **10.2 SR Linux specifically.** It is free, publicly pullable, and produces genuinely representative logs. It is also one vendor, and a field map tuned to it may fit nothing else. *Proposed reading:* start with SR Linux because it is the one that costs nothing to run, and treat the Fluent Bit parser as the seam where a second vendor would be added. A lab with FRR alongside it would be cheaper and less representative; a lab with a licensed image would be neither.
 
-**10.3 The population script is not a management command.** *Proposed reading:* keep it out of the app package for the reason in section 6. *Cost:* it is invoked more awkwardly, and it cannot be tested by the app's test suite the way a command could. If you would rather have a command guarded by a `DEBUG`-only check, that is a defensible alternative and it changes section 6.
+**10.3 The population script is not a management command.** *Proposed reading:* keep it out of the app package for the reason in section 6. *Cost:* it is invoked more awkwardly, and it cannot be tested by the app's test suite the way a command could. *Settled, partly:* the half of it that is not lab knowledge — making a Device and everything a Device requires — did move into the package, as `dcim_fixtures`, because the test data command needed exactly the same thing. What stayed outside is the topology, its interface naming and its addresses, which is the half nobody would want installed.
 
 **10.4 Fluent Bit as the bridge.** Alternatives are a syslog-ng container with a Kafka destination, or having SR Linux export gNMI to a collector instead of syslog. *Proposed reading:* Fluent Bit, because it is one small container doing exactly one job and its parser is a file a person can read. gNMI would be more modern and would produce structured data with no parser at all, which is worth revisiting if the syslog parser turns out to be the fragile part.
 
-**10.5 Redpanda in development, Kafka in the ADR.** *Proposed reading:* fine, and say so in the lab guide. The consumer talks the Kafka protocol either way, and a development stack that boots in seconds is worth more than fidelity to a deployment nobody is running here. The nightly CI job is the place to swap in real Kafka if the difference ever matters.
+**10.5 Redpanda in development, Kafka in the ADR.** *Proposed reading:* fine, and say so in the lab guide. The consumer talks the Kafka protocol either way, and a development stack that boots in seconds is worth more than fidelity to a deployment nobody is running here. Swapping in real Kafka is an edit to one compose file on the day the difference matters.
 
 **10.6 The phase number.** This is "2.5" because it depends on Phase 2's consumer existing and blocks nothing in Phase 3. *Proposed reading:* keep the number; it is honest about being a detour. If it should instead be part of Phase 2's own scope, it merges cleanly — the deliverables do not change, only which spec they live in.

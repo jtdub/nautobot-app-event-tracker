@@ -5,3 +5,39 @@ nautobot_event_tracker:
   # local: false
   # ephemeral_ports: false
   # compose_dir: "/full/path/to/nautobot-app-event-tracker/development"
+  compose_files:
+    - "docker-compose.base.yml"
+    - "docker-compose.redis.yml"
+    - "docker-compose.dev.yml"
+    - "docker-compose.postgres.yml"
+    # The lab's two: the broker with its syslog bridge and consumer, and containerlab itself, which
+    # is a service the lab tasks run rather than one that runs. `lab: true` below adds both, so
+    # these lines are optional - and on their own they are not enough, since the setting is also
+    # what points Nautobot at the broker.
+    - "docker-compose.redpanda.yml"
+    - "docker-compose.containerlab.yml"
+
+  # The containerlab lab: a three-node SR Linux fabric whose logs are real, a Redpanda broker, the
+  # syslog bridge between them, and a running event consumer. Turning this on adds all four to the
+  # ordinary development stack, so `invoke start` brings up a Nautobot that is consuming events and
+  # `invoke logs -s consumer` shows what it made of them.
+  #
+  # This setting adds both of the lab's compose files by itself, so the entries above are not needed
+  # - naming them there is harmless, and on their own they are not enough: this setting is also what
+  # makes Nautobot read the lab's ingestion configuration rather than the development one. The
+  # compose files without it give you a broker nobody is listening to.
+  #
+  # containerlab itself is one of those files rather than something to install: it needs a Linux
+  # kernel, so on macOS there is nothing to install and the kernel that matters is the Docker VM's.
+  #
+  # `invoke start` works with or without the topology deployed; `invoke lab-up` deploys it and
+  # starts everything in one go, and turns this on for its own run whatever this file says. So it is
+  # only worth setting if you work on ingestion often enough to want the lab to be your normal
+  # environment.
+  #
+  # It costs about 8 GB of memory and needs containerlab and privileged Docker. Leave it off - or
+  # leave this file alone entirely - and nothing here behaves any differently than it always has:
+  # the development stack consumes from its own Redis, and `invoke send-test-event` publishes to it.
+  #
+  # See docs/dev/lab.md.
+  lab: true
