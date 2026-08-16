@@ -116,10 +116,27 @@ Each command can be executed with `invoke <command>`. All commands support the a
 #### Utility
 
 ```
-  cli              Launch a bash shell inside the running Nautobot container.
-  create-user      Create a new user in django (default: admin), will prompt for password.
-  makemigrations   Run Make Migration in Django.
-  nbshell          Launch a nbshell session.
+  cli                  Launch a bash shell inside the running Nautobot container.
+  create-user          Create a new user in django (default: admin), will prompt for password.
+  makemigrations       Run Make Migration in Django.
+  nbshell              Launch a nbshell session.
+  generate-test-data   Fill the database with demo tickets, and the devices they are about.
+  eventconsumer        Run the event consumer in the foreground, against the configured broker.
+```
+
+#### The containerlab lab
+
+Opt-in, and the one thing here that needs containerlab, privileged Docker and about 8 GB of memory.
+[The lab guide](lab.md) is the long version.
+
+```
+  lab-up           Deploy the SR Linux topology and start Nautobot against its broker.
+  lab-down         Stop the stack and destroy the topology.
+  lab-populate     Mirror the topology into Nautobot: devices, interfaces, addresses, cables.
+  lab-consumer     Run the consumer against the lab's broker; --dry-run decides without writing.
+  lab-break        Cause an event on purpose: --event interface|bgp|unreachable|drift.
+  lab-events       Read the raw messages the syslog bridge put on the broker.
+  lab-console      Start the Redpanda console at http://localhost:8090.
 ```
 
 #### Testing

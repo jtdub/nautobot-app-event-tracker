@@ -12,9 +12,10 @@ the dependency runs that way round.
 """
 
 from django.contrib.contenttypes.models import ContentType
-from nautobot.apps.choices import InterfaceTypeChoices
-from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
+from nautobot.apps.choices import InterfaceTypeChoices, PrefixTypeChoices
+from nautobot.dcim.models import Cable, Device, DeviceType, Interface, Location, LocationType, Manufacturer
 from nautobot.extras.models import Role, Status
+from nautobot.ipam.models import IPAddress, Namespace, Prefix
 
 
 def default_status(model):
@@ -83,3 +84,58 @@ def ensure_interface(*, device, name, status=None, mgmt_only=False):
         },
     )
     return interface
+
+
+def ensure_prefix(prefix, *, namespace_name="Global"):
+    """The prefix an address is filed under. Nautobot requires one before it will hold the address."""
+    namespace, _ = Namespace.objects.get_or_create(name=namespace_name)
+    prefix, _ = Prefix.objects.get_or_create(
+        prefix=prefix,
+        namespace=namespace,
+        defaults={"status": default_status(Prefix), "type": PrefixTypeChoices.TYPE_NETWORK},
+    )
+    return prefix
+
+
+def ensure_address(address, *, interface, prefix, status=None, primary=False):
+    """One address, on one interface, optionally the device's primary.
+
+    A device whose interfaces hold no addresses is a device nobody can reach from Nautobot, and a
+    ticket about it cannot answer the first question anybody asks: what is its IP.
+    """
+    ip_address, _ = IPAddress.objects.get_or_create(
+        address=address,
+        parent=prefix,
+        defaults={"status": status if status is not None else default_status(IPAddress)},
+    )
+    interface.ip_addresses.add(ip_address)
+
+    device = interface.device
+    if primary and device.primary_ip4 != ip_address:
+        device.primary_ip4 = ip_address
+        device.validated_save()
+    return ip_address
+
+
+def ensure_cable(interface_a, interface_b, status=None):
+    """The cable between two interfaces, if neither is already cabled.
+
+    Returns the cable, or `None` when either end is already occupied - which is what a second run
+    finds, and also what somebody else's cable looks like. Neither is ours to replace.
+    """
+    if interface_a.cable is not None or interface_b.cable is not None:
+        return None
+
+    cable = Cable(
+        termination_a=interface_a,
+        termination_b=interface_b,
+        status=status if status is not None else _cable_status(),
+    )
+    cable.validated_save()
+    return cable
+
+
+def _cable_status():
+    """`Connected`, or whatever the installation calls a cable that is in service."""
+    statuses = Status.objects.get_for_model(Cable)
+    return statuses.filter(name="Connected").first() or statuses.first()

@@ -14,7 +14,8 @@ from io import StringIO
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
-from nautobot.dcim.models import Device, Interface
+from nautobot.dcim.models import Cable, Device, Interface
+from nautobot.ipam.models import IPAddress
 
 from nautobot_event_tracker.choices import TicketStatusChoices, UpdateTypeChoices
 from nautobot_event_tracker.management.commands.generate_nautobot_event_tracker_test_data import (
@@ -66,12 +67,28 @@ class TestOneSmallRun(TestCase):
         self.assertEqual(sorted(Device.objects.values_list("name", flat=True)), sorted(HOSTS))
 
     def test_the_devices_have_interfaces(self):
-        """A ticket about an interface should be able to point at one."""
-        self.assertEqual(Interface.objects.filter(device__name=HOSTS[0]).count(), len(INTERFACES))
+        """A ticket about an interface should be able to point at one, plus a management port."""
+        self.assertEqual(Interface.objects.filter(device__name=HOSTS[0]).count(), len(INTERFACES) + 1)
 
     def test_it_tags_what_it_created(self):
         """The tag is what makes the estate explicable, and removable."""
         self.assertEqual(Device.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
+
+    def test_every_device_has_a_primary_address(self):
+        """The first thing anybody asks about a device in a ticket is what its IP is."""
+        for device in Device.objects.all():
+            self.assertIsNotNone(device.primary_ip4, f"{device} has no primary address")
+
+    def test_the_devices_are_cabled_to_each_other(self):
+        """A device connected to nothing is a device the topology view cannot draw."""
+        cabled = {(cable.termination_a.device.name, cable.termination_b.device.name) for cable in Cable.objects.all()}
+        self.assertEqual(len(cabled), len(HOSTS) - 1)
+        for left, right in cabled:
+            self.assertNotEqual(left, right, "a device is cabled to itself")
+
+    def test_the_addresses_carry_the_tag(self):
+        """Or `--flush` would leave the demo addresses behind and the next run would collide."""
+        self.assertEqual(IPAddress.objects.filter(tags__name=TEST_DATA_TAG).count(), len(HOSTS))
 
 
 class TestTheDefaultRun(TestCase):
@@ -180,6 +197,15 @@ class TestFlush(TestCase):
         generate(count=8)
         self.assertIn("Deleted 8", generate(flush=True, count=4))
 
+    def test_count_zero_leaves_the_database_clean(self):
+        """The one way to undo a run: no tickets to be about, so no estate either."""
+        generate(count=8)
+        generate(flush=True, count=0)
+        self.assertEqual(EventTicket.objects.count(), 0)
+        self.assertEqual(Device.objects.count(), 0)
+        self.assertEqual(IPAddress.objects.filter(tags__name=TEST_DATA_TAG).count(), 0)
+        self.assertEqual(Cable.objects.count(), 0)
+
 
 class TestADeviceSomebodyElseMade(TestCase):
     """After the lab has been populated, `leaf-01` is the real thing and stays that way."""
@@ -202,6 +228,15 @@ class TestADeviceSomebodyElseMade(TestCase):
     def test_it_creates_no_interfaces_on_it(self):
         """Its interfaces are the lab's business; this command's names would be fiction on it."""
         self.assertFalse(Interface.objects.filter(device=self.existing, name__in=INTERFACES).exists())
+
+    def test_it_cables_nothing_to_it(self):
+        """A cable on somebody else's interface is a change to their inventory, not ours."""
+        self.assertFalse(Cable.objects.filter(terminations__interface__device=self.existing).exists())
+
+    def test_it_gives_it_no_address(self):
+        """Its addressing is the lab's business too, and its primary IP is already right."""
+        self.existing.refresh_from_db()
+        self.assertIsNone(self.existing.primary_ip4)
 
 
 class TestRunningTwice(TestCase):

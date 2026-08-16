@@ -32,90 +32,60 @@ link-down and BGP-down events; you lose only the multi-path story.
 
 ## Bringing it up
 
-**1. Add the broker overlay to your `invoke.yml`.** The lab's broker and syslog bridge are a compose
-overlay, layered the way the redis one is:
-
-```yaml
----
-nautobot_event_tracker:
-  nautobot_ver: "3.2.0"
-  python_ver: "3.12"
-  compose_files:
-    - "docker-compose.base.yml"
-    - "docker-compose.redis.yml"
-    - "docker-compose.postgres.yml"
-    - "docker-compose.dev.yml"
-    - "docker-compose.redpanda.yml"
+```shell
+invoke lab-up
 ```
 
-**2. Deploy the topology first.** The overlay attaches to the management network containerlab
-creates, so the lab has to exist before the stack starts:
+That is the whole thing. It deploys the topology, starts the development stack with the lab's broker
+and its ingestion configuration, waits for Nautobot, and mirrors the topology into it — so the
+devices named in the tickets are devices you can click on. Add `--test-data` to fill the ticket list
+at the same time.
+
+There is no `invoke.yml` to edit: `EVENT_TRACKER_LAB` is what adds the broker's compose overlay and
+what makes Nautobot load the lab's ingestion configuration, and the lab tasks set it themselves. If
+you would rather run the ordinary tasks against the lab — `invoke logs`, `invoke exec` — export it
+in your shell and they will agree:
 
 ```shell
-sudo containerlab deploy --topo development/containerlab/topology.clab.yml
+export EVENT_TRACKER_LAB=true
 ```
 
-**3. Start Nautobot with the lab's ingestion configuration.** `EVENT_TRACKER_LAB` is what points the
-consumer at Redpanda and describes the payloads the bridge produces; without it the development
-stack behaves exactly as it always has.
+**The steps, if one of them fails.** `lab-up` is these in order, and each is a task of its own:
 
-```shell
-EVENT_TRACKER_LAB=true invoke start
-```
+| | |
+| --- | --- |
+| `invoke lab-populate` | Mirror the topology into Nautobot: a Location, a Nokia SR Linux device type, one device per node under the name it uses in its own log messages, the interfaces its links describe, their addresses — management and fabric — and a cable for every link. Idempotent; run it again after redeploying |
+| `invoke generate-test-data` | Fifty tickets across every status, each with a trail and attached to the device its title names, on a small demo estate of its own |
+| `invoke lab-consumer` | The consumer, in the foreground where you can watch it |
 
-**4. Mirror the topology into Nautobot**, so the devices in the tickets are devices you can click
-on:
-
-```shell
-invoke exec --command "python /source/development/containerlab/populate_nautobot.py"
-```
-
-or, outside the container:
-
-```shell
-NAUTOBOT_CONFIG=development/nautobot_config.py python development/containerlab/populate_nautobot.py
-```
-
-It is idempotent — run it again after redeploying the lab and nothing changes. It creates a
-Location, a Nokia SR Linux device type, one device per node under the name that device uses in its
-own log messages, the interfaces its links describe, and the management addresses the topology pins.
-
-**5. Optionally, fill the ticket list**, so there is something to look at before you have broken
-anything:
-
-```shell
-invoke generate-test-data
-```
-
-Fifty tickets across every status, each with a trail and attached to the device its title names. It
-creates its own demo devices too, but having populated Nautobot from the topology in step 4 it will
-use those instead where the names match — so `leaf-01` in a ticket is the `leaf-01` you can shut an
-interface on.
+`generate-test-data` creates its own demo devices, but where a name matches one the lab populated it
+uses that device instead — so `leaf-01` in a ticket is the `leaf-01` you can shut an interface on,
+and the lab's devices are never tagged, cabled or deleted by it.
 
 `invoke generate-test-data --flush` deletes everything a previous run made and then generates a
 fresh set — that is how to re-run it without ending up with a hundred tickets. To clean up instead
 of regenerating, `invoke generate-test-data --flush --count 0` deletes them and makes nothing.
 Either way, a ticket or a device you made yourself is untagged and is left alone.
 
-**6. Run the consumer**, in the foreground where you can watch it:
-
-```shell
-invoke exec --command "nautobot-server eventconsumer"
-```
-
 ## Making something happen
 
-Shut an interface on a leaf:
-
 ```shell
-docker exec -it clab-event-tracker-leaf-01 sr_cli \
-  "enter candidate" \
-  "set / interface ethernet-1/1 admin-state disable" \
-  "commit now"
+invoke lab-break
 ```
 
-Within a second or two the consumer logs a message and a ticket appears under **Apps → Event Tracker
-→ Tickets**, titled with what the device actually said. Bring it back with `admin-state enable`.
+Which shuts `ethernet-1/1` on `leaf-01`, printing the `sr_cli` line it runs — worth reading, because
+it is how you cause the next one without asking. Within a second or two the consumer logs a message
+and a ticket appears under **Apps → Event Tracker → Tickets**, titled with what the device actually
+said. `invoke lab-break --restore` puts it back.
+
+| What you run | What you get |
+| --- | --- |
+| `invoke lab-break` | **Interface Down**, and once BGP is up, **BGP Session Down** with it |
+| `invoke lab-break --event bgp --device spine-01` | **BGP Session Down** from the other end |
+| `invoke lab-break --event unreachable --device leaf-02` | **Device Unreachable** on its neighbours |
+| `invoke lab-break --event drift` | **Configuration Drift** |
+
+`--device` and `--interface` choose where; every one of them takes `--restore`.
 
 The BGP events need the fabric sessions to be up, which takes a minute or so after the nodes boot.
 Each node has its own startup configuration (`leaf-01.cli` and its siblings) carrying its AS number,
@@ -126,15 +96,6 @@ docker exec -it clab-event-tracker-leaf-01 sr_cli \
   "show network-instance default protocols bgp neighbor"
 ```
 
-Other events worth causing, all of which the seeded event catalogue has a type for:
-
-| What you do | What you get |
-| --- | --- |
-| Shut an interface, as above | **Interface Down** |
-| Shut the peer's side of a link | **BGP Session Down** |
-| `docker stop clab-event-tracker-leaf-02` | **Device Unreachable** on its neighbours |
-| Any `commit now` on a device | **Configuration Drift** |
-
 Flap the same interface a few times: you should get **one** ticket with a rising event count, not
 one per flap. That is rule S5 working against a real device rather than a fixture.
 
@@ -142,27 +103,15 @@ one per flap. That is rule S5 working against a real device rather than a fixtur
 
 - **Apps → Event Tracker → Ingestion Stats** — what the consumer received, opened, joined,
   suppressed and dropped, and which rule dropped it.
-- The raw messages on the broker, when the field map does not match and you need to see why:
-
-  ```shell
-  docker compose --project-name nautobot-event-tracker \
-    --project-directory development \
-    -f development/docker-compose.redpanda.yml --profile console up -d redpanda-console
-  ```
-
-  Then open <http://localhost:8090> and read the `network.events` topic. Worth a great deal the first
-  time something does not line up, and nothing afterwards.
-
-- Or from the command line:
-
-  ```shell
-  docker exec -it nautobot-event-tracker-redpanda-1 rpk topic consume network.events --num 5
-  ```
+- `invoke lab-events` — the raw messages on the broker, for when the field map does not match and
+  you need to see what the bridge really sent. `--follow` keeps reading as they arrive.
+- `invoke lab-console` — the same thing in a browser at <http://localhost:8090>. Worth a great deal
+  the first time something does not line up, and nothing afterwards.
 
 ## Tuning the filters against real traffic
 
 ```shell
-invoke exec --command "nautobot-server eventconsumer --dry-run"
+invoke lab-consumer --dry-run
 ```
 
 Every message is decided and reported, and nothing is written or acknowledged — so the consumer
@@ -200,18 +149,25 @@ therefore joins a single ticket. If you want them apart, give the template a fie
 distinguishes them rather than removing `interface`, which brings back the symptom above.
 
 **Nothing arrives at all.** Check in order: is the consumer running; does **Ingestion Stats** show
-anything received; does the console show messages on the topic; is Fluent Bit logging
-(`docker logs nautobot-event-tracker-fluent-bit-1`); does the device have the remote server
+anything received; does `invoke lab-events` show messages on the topic; is Fluent Bit logging
+(`EVENT_TRACKER_LAB=true invoke logs -s fluent-bit`); does the device have the remote server
 configured (`docker exec -it clab-event-tracker-leaf-01 sr_cli "info / system logging"`).
+
+**The stack starts but the consumer says no topics are configured.** Nautobot came up without
+`EVENT_TRACKER_LAB`, so it loaded an empty ingestion configuration — which happens if the stack was
+already running before `invoke lab-up`. `invoke lab-down && invoke lab-up` fixes it.
 
 ## Tearing it down
 
 ```shell
-invoke stop
-sudo containerlab destroy --topo development/containerlab/topology.clab.yml --cleanup
+invoke lab-down
 ```
 
-The devices Nautobot holds are not removed with the lab — they are ordinary DCIM objects, and the
+Which stops the stack and then destroys the topology, in that order — compose's containers sit on
+containerlab's management network, and containerlab cannot remove a network something is still
+attached to. Add `--volumes` to discard the database with it.
+
+Without `--volumes`, the devices Nautobot holds survive: they are ordinary DCIM objects, and the
 tickets that point at them stay meaningful. Delete them by hand if you want the database clean.
 
 ## What this lab does not do

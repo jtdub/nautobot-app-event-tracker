@@ -32,6 +32,16 @@ ORIGINAL_COMPOSE_FILES = [
     "docker-compose.dev.yml",
 ]
 
+#: The containerlab lab. Set in the environment rather than in `invoke.yml`: it decides both which
+#: compose files are used and whether Nautobot loads the lab's ingestion configuration, and one
+#: switch for both is one thing to remember. `invoke lab-up` sets it for you.
+LAB_ENV_VAR = "EVENT_TRACKER_LAB"
+LAB_COMPOSE_FILE = "docker-compose.redpanda.yml"
+LAB_TOPOLOGY = os.path.join(os.path.dirname(__file__), "development", "containerlab", "topology.clab.yml")
+LAB_POPULATE_SCRIPT = "/source/development/containerlab/populate_nautobot.py"
+#: containerlab prefixes every container it makes with `clab-<lab name>-`.
+LAB_CONTAINER_PREFIX = "clab-event-tracker-"
+
 
 def is_truthy(arg):
     """Convert "truthy" strings into Booleans.
@@ -75,7 +85,27 @@ namespace.configure(
 
 
 def _is_compose_included(context, name):
-    return f"docker-compose.{name}.yml" in context.nautobot_event_tracker.compose_files
+    return f"docker-compose.{name}.yml" in _compose_files(context)
+
+
+def _lab_is_enabled():
+    """Whether the containerlab lab's broker and bridge belong in this compose invocation.
+
+    Driven by the environment rather than by `invoke.yml`, so that `invoke lab-up` can turn it on
+    for the process it runs in and every later `invoke logs`, `invoke exec` or `invoke stop` in a
+    shell that exports it agrees. Editing `invoke.yml` to run the lab and editing it back afterwards
+    is a step to forget, and forgetting it means compose looks for a network containerlab has
+    destroyed.
+    """
+    return is_truthy(os.getenv(LAB_ENV_VAR, "false"))
+
+
+def _compose_files(context):
+    """The compose files this invocation should use, with the lab's overlay if the lab is on."""
+    files = list(context.nautobot_event_tracker.compose_files)
+    if _lab_is_enabled() and LAB_COMPOSE_FILE not in files:
+        files.append(LAB_COMPOSE_FILE)
+    return files
 
 
 def _await_healthy_service(context, service):
@@ -131,6 +161,9 @@ def docker_compose(context, command, **kwargs):
         "COMPOSE_HTTP_TIMEOUT": context.nautobot_event_tracker.compose_http_timeout,
         "NAUTOBOT_VER": context.nautobot_event_tracker.nautobot_ver,
         "PYTHON_VER": context.nautobot_event_tracker.python_ver,
+        # Read by the lab overlay, which passes it on to the containers: it is what makes Nautobot
+        # load the lab's ingestion configuration rather than an empty one.
+        LAB_ENV_VAR: str(_lab_is_enabled()).lower(),
         **kwargs.pop("env", {}),
     }
     compose_command_tokens = [
@@ -139,7 +172,7 @@ def docker_compose(context, command, **kwargs):
         f'--project-directory "{context.nautobot_event_tracker.compose_dir}"',
     ]
 
-    for compose_file in context.nautobot_event_tracker.compose_files:
+    for compose_file in _compose_files(context):
         compose_file_path = os.path.join(context.nautobot_event_tracker.compose_dir, compose_file)
         compose_command_tokens.append(f' -f "{compose_file_path}"')
 
@@ -989,6 +1022,161 @@ def generate_test_data(context, flush=False, seed=None, count=None):
     if count is not None:
         command += f" --count {count}"
     run_command(context, command)
+
+
+@task(
+    help={
+        "dry_run": "decide and report every message without writing a ticket or acknowledging it.",
+        "topic": "consume only this topic; repeatable. Defaults to every configured topic.",
+    },
+    iterable=["topic"],
+)
+def eventconsumer(context, dry_run=False, topic=None):
+    """Run the event consumer in the foreground, against whatever broker is configured."""
+    command = "nautobot-server eventconsumer"
+    if dry_run:
+        command += " --dry-run"
+    for name in topic or []:
+        command += f" --topic {name}"
+    run_command(context, command)
+
+
+# ------------------------------------------------------------------------------
+# THE CONTAINERLAB LAB
+#
+# Everything here is opt-in and needs containerlab, privileged Docker and about 8 GB of memory.
+# `invoke lab-up` is the whole sequence; the rest are the individual steps, for when something has
+# gone wrong in the middle of it. See docs/dev/lab.md.
+# ------------------------------------------------------------------------------
+def _enable_lab():
+    """Turn the lab on for this invoke process, so compose picks up the overlay and the config."""
+    os.environ[LAB_ENV_VAR] = "true"
+
+
+def _require_containerlab(context):
+    """Stop before anything is started if containerlab is not installed."""
+    if not shutil.which("containerlab") and not shutil.which("clab"):
+        raise Exit(
+            "containerlab is not installed, and the lab is the one thing in this repository that "
+            "needs it. Install it with:\n"
+            '    bash -c "$(curl -sL https://get.containerlab.dev)"\n'
+            "Nothing else in this repository requires it; see docs/dev/lab.md.",
+            code=1,
+        )
+    if context.run("docker info", hide=True, warn=True).failed:
+        raise Exit("Docker is not answering. containerlab needs it, and needs it privileged.", code=1)
+
+
+@task(
+    help={
+        "populate": "mirror the topology into Nautobot once it is up (default: True).",
+        "test_data": "also fill the ticket list with generated demo tickets (default: False).",
+    }
+)
+def lab_up(context, populate=True, test_data=False):
+    """Deploy the containerlab topology and start Nautobot against its broker."""
+    _require_containerlab(context)
+    _enable_lab()
+
+    # The topology first: the compose overlay attaches to the management network containerlab
+    # creates, and compose will not start a service whose external network does not exist.
+    print("Deploying the containerlab topology (the nodes take tens of seconds each to boot)...")
+    context.run(f"sudo containerlab deploy --reconfigure --topo {LAB_TOPOLOGY}", pty=True)
+
+    start(context)
+    _await_healthy_service(context, "nautobot")
+
+    if populate:
+        lab_populate(context)
+    if test_data:
+        generate_test_data(context)
+
+    print(
+        "\nThe lab is up.\n"
+        "  Nautobot        http://localhost:8080\n"
+        "  Consumer        invoke lab-consumer\n"
+        "  Cause an event  invoke lab-break\n"
+        "  What arrived    invoke lab-events\n"
+        "  Tear it down    invoke lab-down\n"
+    )
+
+
+@task(help={"volumes": "also remove the compose volumes, discarding the database (default: False)."})
+def lab_down(context, volumes=False):
+    """Destroy the containerlab topology and stop the stack it was talking to."""
+    _enable_lab()
+    docker_compose(context, f"down --remove-orphans {'--volumes' if volumes else ''}")
+    # After compose, not before: the overlay's containers sit on containerlab's management network,
+    # and containerlab cannot remove a network something is still attached to.
+    context.run(f"sudo containerlab destroy --cleanup --topo {LAB_TOPOLOGY}", pty=True, warn=True)
+
+
+@task
+def lab_populate(context):
+    """Mirror the containerlab topology into Nautobot as devices, interfaces, addresses and cables."""
+    _enable_lab()
+    run_command(context, f"python {LAB_POPULATE_SCRIPT}")
+
+
+@task(help={"dry_run": "decide and report every message without writing a ticket or acknowledging it."})
+def lab_consumer(context, dry_run=False):
+    """Run the event consumer against the lab's broker, in the foreground."""
+    _enable_lab()
+    eventconsumer(context, dry_run=dry_run)
+
+
+@task(
+    help={
+        "event": "which event to cause: interface, bgp, unreachable or drift.",
+        "device": "the node to cause it on (default: leaf-01).",
+        "interface": "the interface to shut, for the interface and bgp events.",
+        "restore": "put it back instead of breaking it.",
+    }
+)
+def lab_break(context, event="interface", device="leaf-01", interface="ethernet-1/1", restore=False):
+    """Cause one of the lab's events on purpose, so a ticket appears."""
+    _require_containerlab(context)
+    container = f"{LAB_CONTAINER_PREFIX}{device}"
+
+    if event in ("interface", "bgp"):
+        # A shut interface takes the link down and, with it, the BGP session that ran over it -
+        # which is why one break produces two kinds of event and both are worth watching.
+        state = "enable" if restore else "disable"
+        context.run(
+            f'docker exec -i {container} sr_cli "enter candidate" '
+            f'"set / interface {interface} admin-state {state}" "commit now"',
+            pty=True,
+        )
+    elif event == "unreachable":
+        context.run(f"docker {'start' if restore else 'stop'} {container}", pty=True)
+    elif event == "drift":
+        # Any commit is a configuration change the device logs; the description is the smallest
+        # one that changes nothing else.
+        text = "" if restore else "set by invoke lab-break"
+        context.run(
+            f'docker exec -i {container} sr_cli "enter candidate" '
+            f'"set / interface {interface} description \\"{text}\\"" "commit now"',
+            pty=True,
+        )
+    else:
+        raise Exit(f"Unknown event '{event}'. Choose interface, bgp, unreachable or drift.", code=1)
+
+
+@task(help={"count": "how many messages to read (default: 5).", "follow": "keep reading as they arrive."})
+def lab_events(context, count=5, follow=False):
+    """Read the raw messages the syslog bridge put on the broker."""
+    _enable_lab()
+    command = "rpk topic consume network.events"
+    command += " --offset end" if follow else f" --num {count}"
+    docker_compose(context, f"exec -- redpanda {command}", pty=True)
+
+
+@task
+def lab_console(context):
+    """Start the Redpanda console at http://localhost:8090, for reading the topic in a browser."""
+    _enable_lab()
+    docker_compose(context, "--profile console up --detach redpanda-console")
+    print("Redpanda console: http://localhost:8090")
 
 
 @task(

@@ -39,7 +39,8 @@ nautobot-server generate_nautobot_event_tracker_test_data [--flush] [--seed SEED
 - **Tickets in a terminal state get there by walking the graph**, so their trails read like a ticket somebody actually worked.
 - **Deterministic.** `--seed` defaults to a constant, so two developers comparing screenshots see the same data. Randomness comes from a seeded `random.Random`, never the module-level functions.
 - **It creates the devices its tickets are about.** *Revised: an earlier draft refused to, arguing that a ticketing app inventing DCIM objects leaves a demo database full of devices nobody can explain. That is what `generate_test_data` is for, and Nautobot's own populates a whole demo estate; the objection is answered by tagging rather than by abstaining.* Everything it creates carries `event-tracker-test-data`, so it is explicable at a glance and `--flush` removes it. Where the database already holds a device of the same name — the lab's `leaf-01`, after section 6 has run — that one is used and left untagged, so a flush cannot delete it.
-- **`--flush` deletes only what it created**, identified by a tag applied to every ticket and device it makes, and never touches a ticket a person opened or a device the lab populated. Tickets are deleted before devices, so an attachment never briefly points at something gone. The location, device type, manufacturer and role are left behind as empty scaffolding, since somebody may have filed their own objects under them.
+- **The devices it creates have addresses and cables.** Each gets a management interface with an address from `192.0.2.0/24` — TEST-NET-1, which RFC 5737 reserves for documentation, so it can never be mistaken for something somebody has to reach — set as its primary IP, and the estate is cabled into a chain. Somebody reading a ticket asks what the device's IP is and what it is connected to; an estate that cannot answer either question teaches them this Nautobot holds nothing worth looking up.
+- **`--flush` deletes only what it created**, identified by a tag applied to every ticket, device, cable and address it makes, and never touches a ticket a person opened or a device the lab populated. Tickets are deleted before devices, so an attachment never briefly points at something gone. The location, device type, manufacturer and role are left behind as empty scaffolding, since somebody may have filed their own objects under them.
 
 **What it does not create.** No `IngestionStats` rows: those are a record of a consumer having run, and fabricating them would put numbers on the stats page that never corresponded to a message. A developer who wants stats runs the lab.
 
@@ -100,19 +101,35 @@ A `redpanda console` container is included and disabled by default: seeing the r
 
 `development/containerlab/populate_nautobot.py`, run by path — the lab guide gives both the in-container and out-of-container forms.
 
-It reads the topology file and creates: a Location for the lab, a Manufacturer and DeviceType for SR Linux, a Role, the Devices under the names they use in their own log messages, their Interfaces from the topology's links, and the management addresses the topology pins. Every object is created with `get_or_create`, so running it twice changes nothing. The topology pins every management address rather than letting containerlab choose one, which is why the script never has to ask a running lab what it assigned.
+It reads the topology file and creates: a Location for the lab, a Manufacturer and DeviceType for SR Linux, a Role, the Devices under the names they use in their own log messages, their Interfaces from the topology's links, the management addresses the topology pins, the fabric addresses, and a Cable for every link between two devices. Every object is created with `get_or_create`, so running it twice changes nothing. The topology pins every management address rather than letting containerlab choose one, which is why the script never has to ask a running lab what it assigned.
+
+**The fabric addresses are read out of the nodes' own startup configurations**, not written down a second time in the script. Those `.cli` files are what the devices actually run; a plan kept alongside them is a plan that can disagree with the device, and an interface whose address in Nautobot is not the address on the wire is worse than an interface with no address at all.
 
 **It is a script under `development/`, not a management command.** A script whose only subject is one particular containerlab topology is not something an operator of a ticketing app should find installed. What is *general* about it — "a Device and everything a Device requires" — is not lab knowledge at all, and lives in `nautobot_event_tracker/dcim_fixtures.py`, which the test data command, the test fixtures and this script all use. That chain is six `get_or_create` calls in a particular order, and Nautobot has tightened what a Device requires before; written out three times, the next tightening is found by whoever runs the lab, while they are demonstrating it. See 10.3.
 
 The device names in Nautobot match the hostnames the devices put in their syslog messages. That is the whole reason to bother: it is what makes the Phase 4 enrichment resolver's job real rather than hypothetical, and until then it is what lets a person reading a ticket search for the device by name and find it.
 
-## 7. How it is driven
+## 7. Invoke tasks
 
-*Revised: this section proposed six `lab-*` invoke tasks — `lab-up`, `lab-down`, `lab-populate`, `lab-consumer`, `lab-break`, `lab-events`. It has none.*
+Developers drive this development environment with `invoke`, and the lab is part of it. A step that exists only as a shell line in a document is a step somebody has to find, read and get right, and there is no reason for the lab to be the one part of the repository that works that way.
 
-The lab is driven by the commands in [the lab guide](../dev/lab.md): `containerlab deploy`, `invoke start` with `EVENT_TRACKER_LAB=true`, the population script by path, and `docker exec … sr_cli` to break something. The only task added to `tasks.py` is `generate-test-data`, which is not lab-specific.
+*A draft of this section had no tasks at all, on the grounds that each would be a shell line wrapped in Python. That argument was wrong about who pays: the wrapper is written once and read never, and the shell line is read every time.*
 
-The reason is that each of those tasks would have been a shell line wrapped in Python, in a file every contributor loads, for a lab most of them will never run — and a wrapper is a second thing to keep true. `invoke lab-break interface` hides the one command a developer most needs to see, because seeing it is how they learn to cause the second event without asking. The cost of the decision is that the guide has to be read rather than tab-completed, and that its commands are not checked by anything.
+| Task | Does |
+| --- | --- |
+| `lab-up` | Deploy the topology, start the stack against its broker, wait for Nautobot, populate it from the topology |
+| `lab-down` | Stop the stack and destroy the topology, in that order, leaving the ordinary dev stack able to start |
+| `lab-populate` | Section 6 on its own, for when the topology is already up |
+| `lab-consumer` | `nautobot-server eventconsumer` against the lab configuration, in the foreground; `--dry-run` decides without writing |
+| `lab-break` | Cause one of the section 4 events on purpose: `--event interface\|bgp\|unreachable\|drift`, and `--restore` to put it back |
+| `lab-events` | Read the raw messages on `network.events`, so a developer can see what the bridge actually produced |
+| `lab-console` | Start the Redpanda console for reading the topic in a browser |
+
+`eventconsumer` is a task in its own right, outside the lab section: the consumer is Phase 2's, not the lab's, and a developer pointing it at any other broker wants the same command.
+
+`lab-up` prints, at the end, what to do next: the Nautobot URL, the command that causes an event, and the one that tears it all down. `lab-break` prints its own `sr_cli` line as it runs it, so a developer learns the command rather than being kept away from it.
+
+**No `invoke.yml` editing.** The lab's compose overlay is added by `tasks.py` itself when `EVENT_TRACKER_LAB` is set, and the lab tasks set it for their own process. One environment variable decides both which compose files are used and whether Nautobot loads the lab's ingestion configuration, because they must agree: a stack started with the overlay but without the configuration comes up with no topics to subscribe to. Editing `invoke.yml` to run the lab and editing it back afterwards was a step to forget, and forgetting it means compose looking for a network containerlab has destroyed.
 
 ## 8. CI
 

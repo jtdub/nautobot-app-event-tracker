@@ -1,0 +1,3 @@
+Added `invoke` tasks for the containerlab lab - `lab-up`, `lab-down`, `lab-populate`, `lab-consumer`, `lab-break`, `lab-events` and `lab-console` - and an `eventconsumer` task for running the consumer against any configured broker. The lab's compose overlay is added automatically when `EVENT_TRACKER_LAB` is set, so no `invoke.yml` editing is needed.
+The containerlab population script now assigns fabric addresses read from each node's own startup configuration and cables every link between two devices, alongside the management addresses it already assigned.
+`generate_nautobot_event_tracker_test_data` now gives its demo devices a management address from TEST-NET-1 as their primary IP and cables them to each other.

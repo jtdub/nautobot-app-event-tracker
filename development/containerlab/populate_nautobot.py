@@ -23,7 +23,9 @@ Django models are imported inside the functions that use them: this file is run 
 until `nautobot.setup()` at the bottom has run there is no configured Django to import them from.
 """
 
+import ipaddress
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -31,6 +33,13 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 TOPOLOGY_FILE = HERE / "topology.clab.yml"
+
+#: An address line in a node's startup configuration, which is where the fabric addressing is
+#: defined:  `set / interface ethernet-1/1 subinterface 0 ipv4 address 10.1.1.0/31`
+ADDRESS_LINE = re.compile(
+    r"^set / interface (?P<interface>\S+) subinterface \d+ ipv4 address (?P<address>\S+)$",
+    re.MULTILINE,
+)
 
 LOCATION_TYPE = "Lab"
 LOCATION = "containerlab"
@@ -47,6 +56,26 @@ DEVICE_KIND = "nokia_srlinux"
 
 def main():
     """Create everything the topology describes, then say what was made."""
+    topology = yaml.safe_load(TOPOLOGY_FILE.read_text(encoding="utf-8"))["topology"]
+    nodes = topology["nodes"]
+    links = topology.get("links", [])
+
+    location, devices = _devices(nodes)
+    interfaces = _interfaces(devices, links)
+    managed = _assign_management_addresses(devices, nodes)
+    fabric = _assign_fabric_addresses(devices)
+    cables = _connect(devices, links)
+
+    print(f"Location:   {location}")
+    print(f"Devices:    {len(devices)} ({', '.join(sorted(devices))})")
+    print(f"Interfaces: {interfaces}")
+    print(f"Management: {managed} addresses assigned")
+    print(f"Fabric:     {fabric} addresses assigned")
+    print(f"Cables:     {cables} connected")
+
+
+def _devices(nodes):
+    """A Device for every topology node that is one, and the location they are all filed under."""
     from nautobot.dcim.models import Device  # pylint: disable=import-outside-toplevel
 
     from nautobot_event_tracker.dcim_fixtures import (  # pylint: disable=import-outside-toplevel
@@ -57,9 +86,6 @@ def main():
         ensure_role,
     )
 
-    topology = yaml.safe_load(TOPOLOGY_FILE.read_text(encoding="utf-8"))["topology"]
-    nodes = topology["nodes"]
-
     location = ensure_location(location_type_name=LOCATION_TYPE, location_name=LOCATION)
     common = {
         "location": location,
@@ -68,14 +94,7 @@ def main():
         "status": default_status(Device),
     }
     devices = {name: ensure_device(name, **common)[0] for name, node in sorted(nodes.items()) if _is_a_device(node)}
-
-    interfaces = _interfaces(devices, topology.get("links", []))
-    assigned = _assign_management_addresses(devices, nodes)
-
-    print(f"Location:   {location}")
-    print(f"Devices:    {len(devices)} ({', '.join(sorted(devices))})")
-    print(f"Interfaces: {interfaces}")
-    print(f"Management: {assigned} addresses assigned")
+    return location, devices
 
 
 def _is_a_device(node):
@@ -116,19 +135,22 @@ def _interface_name(port):
 
 
 def _assign_management_addresses(devices, nodes):
-    """Give each device the management address the topology pins for it.
+    """Give each device the management address the topology pins for it, as its primary IP.
 
     The topology pins every address rather than letting containerlab choose, so what Nautobot holds
     is what the lab will use on the next deploy as well as on this one.
     """
     from nautobot.dcim.models import Interface  # pylint: disable=import-outside-toplevel
-    from nautobot.ipam.models import IPAddress  # pylint: disable=import-outside-toplevel
 
-    from nautobot_event_tracker.dcim_fixtures import default_status, ensure_interface  # pylint: disable=C0415
+    from nautobot_event_tracker.dcim_fixtures import (  # pylint: disable=import-outside-toplevel
+        default_status,
+        ensure_address,
+        ensure_interface,
+        ensure_prefix,
+    )
 
-    prefix = _management_prefix()
+    prefix = ensure_prefix(MANAGEMENT_PREFIX)
     interface_status = default_status(Interface)
-    address_status = default_status(IPAddress)
 
     assigned = 0
     for name, device in devices.items():
@@ -137,34 +159,70 @@ def _assign_management_addresses(devices, nodes):
             continue
 
         interface = ensure_interface(device=device, name=MANAGEMENT_INTERFACE, status=interface_status, mgmt_only=True)
-        ip_address, _ = IPAddress.objects.get_or_create(
-            address=f"{address}/24",
-            parent=prefix,
-            defaults={"status": address_status},
-        )
-        interface.ip_addresses.add(ip_address)
-
-        if device.primary_ip4 != ip_address:
-            device.primary_ip4 = ip_address
-            device.validated_save()
+        ensure_address(f"{address}/24", interface=interface, prefix=prefix, primary=True)
         assigned += 1
     return assigned
 
 
-def _management_prefix():
-    """The management network the topology's addresses live in."""
-    from nautobot.apps.choices import PrefixTypeChoices  # pylint: disable=import-outside-toplevel
-    from nautobot.ipam.models import Namespace, Prefix  # pylint: disable=import-outside-toplevel
+def _assign_fabric_addresses(devices):
+    """Give each fabric interface the address its own startup configuration puts on it.
 
-    from nautobot_event_tracker.dcim_fixtures import default_status  # pylint: disable=import-outside-toplevel
+    Read out of the `.cli` files rather than written down a second time here. Those files are what
+    the device actually runs, so a plan kept alongside them would be a plan that could disagree
+    with the device - and an interface whose address in Nautobot is not the address on the wire is
+    worse than an interface with no address at all.
+    """
+    from nautobot.dcim.models import Interface  # pylint: disable=import-outside-toplevel
 
-    namespace, _ = Namespace.objects.get_or_create(name="Global")
-    prefix, _ = Prefix.objects.get_or_create(
-        prefix=MANAGEMENT_PREFIX,
-        namespace=namespace,
-        defaults={"status": default_status(Prefix), "type": PrefixTypeChoices.TYPE_NETWORK},
+    from nautobot_event_tracker.dcim_fixtures import (  # pylint: disable=import-outside-toplevel
+        default_status,
+        ensure_address,
+        ensure_interface,
+        ensure_prefix,
     )
-    return prefix
+
+    interface_status = default_status(Interface)
+    prefixes = {}
+
+    assigned = 0
+    for name, device in sorted(devices.items()):
+        for interface_name, address in sorted(startup_addresses(name).items()):
+            network = str(ipaddress.ip_interface(address).network)
+            if network not in prefixes:
+                prefixes[network] = ensure_prefix(network)
+
+            interface = ensure_interface(device=device, name=interface_name, status=interface_status)
+            ensure_address(address, interface=interface, prefix=prefixes[network])
+            assigned += 1
+    return assigned
+
+
+def startup_addresses(node):
+    """`{interface name: address}` from a node's startup configuration, empty if it has none."""
+    config = HERE / f"{node}.cli"
+    if not config.is_file():
+        return {}
+    return dict(ADDRESS_LINE.findall(config.read_text(encoding="utf-8")))
+
+
+def _connect(devices, links):
+    """Cable the topology's links, so the fabric in Nautobot is the fabric that exists.
+
+    Links to anything that is not a Device - the Alpine client - are skipped: a cable needs two
+    terminations, and the client has no interface in Nautobot to be the second.
+    """
+    from nautobot_event_tracker.dcim_fixtures import ensure_cable  # pylint: disable=import-outside-toplevel
+
+    connected = 0
+    for link in links:
+        ends = [endpoint.partition(":") for endpoint in link["endpoints"]]
+        if len(ends) != 2 or any(node not in devices for node, _, _ in ends):
+            continue
+
+        terminations = [devices[node].interfaces.get(name=_interface_name(port)) for node, _, port in ends]
+        if ensure_cable(*terminations) is not None:
+            connected += 1
+    return connected
 
 
 if __name__ == "__main__":

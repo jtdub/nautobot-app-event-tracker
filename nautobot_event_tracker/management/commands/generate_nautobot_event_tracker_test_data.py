@@ -22,16 +22,20 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DEFAULT_DB_ALIAS
-from nautobot.dcim.models import Device, Interface
+from nautobot.dcim.models import Cable, Device, Interface
 from nautobot.extras.models import Tag
+from nautobot.ipam.models import IPAddress
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.dcim_fixtures import (
     default_status,
+    ensure_address,
+    ensure_cable,
     ensure_device,
     ensure_device_type,
     ensure_interface,
     ensure_location,
+    ensure_prefix,
     ensure_role,
 )
 from nautobot_event_tracker.models import EventTicket, EventType
@@ -64,6 +68,11 @@ DEMO_LOCATION = "Event Tracker Demo"
 DEMO_MANUFACTURER = "Event Tracker Demo"
 DEMO_DEVICE_TYPE = "Demo Switch"
 DEMO_ROLE = "Demo Switch"
+
+#: Where the demo devices' management addresses come from. TEST-NET-1, which RFC 5737 reserves for
+#: documentation: an address from it can never be mistaken for one somebody has to reach.
+DEMO_PREFIX = "192.0.2.0/24"
+DEMO_MANAGEMENT_INTERFACE = "mgmt0"
 
 #: One title template per seeded event type, so a generated list reads like a real one.
 TITLES = {
@@ -167,13 +176,28 @@ class Command(BaseCommand):
         # Tickets first: an attachment is a content type and a UUID rather than a foreign key, so
         # nothing stops a device being deleted out from under one - the ticket page just stops
         # listing it. Deleting the tickets first means that never happens even briefly.
+        # Before the devices, and explicitly: a cable's terminations are rows in their own table,
+        # so deleting the interfaces leaves the cable behind with nothing on either end.
+        cables = Cable.objects.filter(tags__name=TEST_DATA_TAG)
+        cable_count = cables.count()
+        cables.delete()
+
         devices = Device.objects.filter(tags__name=TEST_DATA_TAG)
         device_count = devices.count()
         devices.delete()
 
-        # The location, device type, manufacturer and role are left behind: they are empty
+        # And after the devices, or Nautobot refuses: an address assigned to an interface, or
+        # serving as a device's primary IP, is protected until whatever holds it is gone.
+        addresses = IPAddress.objects.filter(tags__name=TEST_DATA_TAG)
+        address_count = addresses.count()
+        addresses.delete()
+
+        # The location, device type, manufacturer, role and prefix are left behind: they are empty
         # scaffolding, and somebody may have filed their own objects under them by now.
-        self.stdout.write(f"Deleted {ticket_count} tagged Event Tracker tickets and {device_count} demo devices.")
+        self.stdout.write(
+            f"Deleted {ticket_count} tagged Event Tracker tickets, {device_count} demo devices, "
+            f"{cable_count} demo cables and {address_count} demo addresses."
+        )
 
     def _generate(self, rng, count):
         """Create `count` tickets and give each of them a history."""
@@ -270,32 +294,71 @@ class Command(BaseCommand):
         )
 
     def _inventory(self, tag):
-        """Create the devices and interfaces the tickets are about, and tag them.
+        """Create the devices the tickets are about - with addresses and cables - and tag them.
 
         `get_or_create` throughout, so a database that already holds a device of one of these names
         keeps it - which is what happens after the containerlab lab has been populated, and is the
         behaviour you want: the tickets then point at the real thing.
-        """
-        location = ensure_location(location_type_name=DEMO_LOCATION_TYPE, location_name=DEMO_LOCATION)
-        device_type = ensure_device_type(manufacturer_name=DEMO_MANUFACTURER, model_name=DEMO_DEVICE_TYPE)
-        role = ensure_role(role_name=DEMO_ROLE)
 
-        # Resolved once rather than per device and per interface: `get_for_model()` returns a lazy
-        # queryset, so each call was its own SELECT - thirty-odd per run, for two distinct answers.
-        device_status = default_status(Device)
+        A device with no address and no cable is not much of a demo. Somebody looking at a ticket
+        asks what the device's IP is and what it is connected to, and a demo estate that cannot
+        answer either question teaches them that this Nautobot holds nothing worth looking up.
+        """
+        common = {
+            "location": ensure_location(location_type_name=DEMO_LOCATION_TYPE, location_name=DEMO_LOCATION),
+            "device_type": ensure_device_type(manufacturer_name=DEMO_MANUFACTURER, model_name=DEMO_DEVICE_TYPE),
+            "role": ensure_role(role_name=DEMO_ROLE),
+            # Resolved once rather than per device: `get_for_model()` returns a lazy queryset, so
+            # each call was its own SELECT - thirty-odd per run, for two distinct answers.
+            "status": default_status(Device),
+        }
+        prefix = ensure_prefix(DEMO_PREFIX)
         interface_status = default_status(Interface)
 
-        for name in HOSTS:
-            device, created = ensure_device(
-                name, location=location, device_type=device_type, role=role, status=device_status
-            )
+        ours = []
+        for number, name in enumerate(HOSTS, start=1):
+            device, created = ensure_device(name, **common)
             if not created:
                 # Somebody else's device - the lab's `leaf-01`, say. Not ours to tag, and therefore
-                # not ours to delete; and not ours to hang Cisco-shaped interface names off either.
+                # not ours to delete; not ours to hang Cisco-shaped interface names off; and not
+                # ours to cable or address, which would be changing their inventory.
                 continue
+
             device.tags.add(tag)
-            for interface_name in INTERFACES:
-                ensure_interface(device=device, name=interface_name, status=interface_status)
+            self._equip(device, number=number, prefix=prefix, status=interface_status, tag=tag)
+            ours.append(device)
+
+        self._cable(ours, tag)
+
+    @staticmethod
+    def _equip(device, *, number, prefix, status, tag):
+        """Interfaces for the tickets to name, a management port, and an address on it."""
+        for interface_name in INTERFACES:
+            ensure_interface(device=device, name=interface_name, status=status)
+
+        management = ensure_interface(device=device, name=DEMO_MANAGEMENT_INTERFACE, status=status, mgmt_only=True)
+        address = ensure_address(
+            f"{DEMO_PREFIX.rsplit('.', 1)[0]}.{number}/24",
+            interface=management,
+            prefix=prefix,
+            primary=True,
+        )
+        address.tags.add(tag)
+
+    @staticmethod
+    def _cable(devices, tag):
+        """Cable the demo estate into a chain, so its devices are connected to something.
+
+        A chain rather than a topology with a shape: the estate is a backdrop for a ticket list,
+        and the only claim worth making about it is that these devices are attached to each other.
+        """
+        for left, right in zip(devices, devices[1:]):
+            cable = ensure_cable(
+                left.interfaces.get(name=INTERFACES[1]),
+                right.interfaces.get(name=INTERFACES[0]),
+            )
+            if cable is not None:
+                cable.tags.add(tag)
 
     @staticmethod
     def _attachable_devices():
@@ -317,7 +380,9 @@ class Command(BaseCommand):
             name=TEST_DATA_TAG,
             defaults={"description": "Created by generate_nautobot_event_tracker_test_data."},
         )
-        tag.content_types.add(*[ContentType.objects.get_for_model(model) for model in (EventTicket, Device)])
+        tag.content_types.add(
+            *[ContentType.objects.get_for_model(model) for model in (EventTicket, Device, Cable, IPAddress)]
+        )
         return tag
 
     @staticmethod
