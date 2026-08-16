@@ -43,6 +43,10 @@ LAB_POPULATE_SCRIPT = "/source/development/containerlab/populate_nautobot.py"
 #: containerlab prefixes every container it makes with `clab-<lab name>-`.
 LAB_CONTAINER_PREFIX = "clab-event-tracker-"
 
+#: The messages `send-test-event` can publish. The list lives in `development/send_test_event.py`,
+#: which is where the messages themselves are; this is only what `--help` prints.
+TEST_EVENTS = ("bgp", "cpu", "drift", "interface", "optical", "unknown", "unreachable")
+
 
 def is_truthy(arg):
     """Convert "truthy" strings into Booleans.
@@ -1042,6 +1046,31 @@ def eventconsumer(context, dry_run=False, topic=None):
         command += " --dry-run"
     for name in topic or []:
         command += f" --topic {name}"
+    run_command(context, command)
+
+
+@task(
+    help={
+        "event": f"which message to send: {', '.join(sorted(TEST_EVENTS))}.",
+        "host": "the device it comes from (default: leaf-01).",
+        "interface": "the interface it names (default: ethernet-1/1).",
+        "count": "how many copies to send; they join one ticket rather than opening several.",
+        "type": "override the event type the message implies.",
+    }
+)
+def send_test_event(context, event="interface", host="leaf-01", interface="ethernet-1/1", count=1, type=None):  # noqa: A002 pylint: disable=redefined-builtin
+    """Publish an event onto the broker this environment consumes from, so a ticket appears.
+
+    With the ordinary stack that is the development Redis, so `invoke start`, `invoke eventconsumer`
+    and this is the whole of Phase 2 working on any machine. With the lab it is Redpanda, alongside
+    the messages the devices are sending for themselves.
+    """
+    command = (
+        f"python /source/development/send_test_event.py --event {event} --host {host} "
+        f"--interface {interface} --count {count}"
+    )
+    if type:
+        command += f" --type '{type}'"
     run_command(context, command)
 
 

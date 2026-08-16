@@ -13,7 +13,10 @@ Linux words a severity differently, or that one link flap produces eleven messag
 This lab is what turns the guess into evidence. It is also the only way to exercise the Kafka
 consumer against a real broker rather than the stub the unit tests use.
 
-Nothing else in this repository needs it. If you never run it, you lose nothing.
+Nothing else in this repository needs it. If all you want is to watch an event become a ticket, the
+ordinary development stack consumes from its own Redis and `invoke send-test-event` publishes to it
+— see [the development environment guide](dev_environment.md). What that cannot tell you is whether
+a real SR Linux says any of what the field map expects, which is the whole of this.
 
 ## What you need
 

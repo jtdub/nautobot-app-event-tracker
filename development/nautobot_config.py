@@ -114,11 +114,34 @@ PLUGINS_CONFIG = {
     "nautobot_event_tracker": {},
 }
 
-# The containerlab lab points the consumer at its own broker and describes the payloads its syslog
-# bridge produces. Opt in with `EVENT_TRACKER_LAB=true invoke start`; the ordinary development
-# stack has no broker and is unaffected.
-if is_truthy(os.getenv("EVENT_TRACKER_LAB", "false")):
-    sys.path.append(os.path.join(os.path.dirname(__file__), "containerlab"))
-    from nautobot_config_lab import LAB_INGESTION  # noqa: E402  pylint: disable=wrong-import-position
+# Event ingestion. Two brokers, one payload shape.
+#
+# The lab points the consumer at Redpanda and reads what its syslog bridge produces. Without it, the
+# consumer reads the same shape off the Redis this stack already runs - so `invoke start`, then
+# `invoke eventconsumer`, then `invoke send-test-event` produces a ticket on any machine, without
+# containerlab and without 8 GB of memory. Redis pub/sub drops anything published while nothing is
+# listening, which is exactly why ADR 0004 calls it the development broker and Kafka the reference
+# one; for watching a message become a ticket it is enough.
+#
+# The topic configuration is the lab's either way, so what you learn about the field map with Redis
+# is true of the lab as well.
+sys.path.append(os.path.join(os.path.dirname(__file__), "containerlab"))
+from nautobot_config_lab import LAB_INGESTION  # noqa: E402  pylint: disable=wrong-import-position
 
+if is_truthy(os.getenv("EVENT_TRACKER_LAB", "false")):
     PLUGINS_CONFIG["nautobot_event_tracker"]["ingestion"] = LAB_INGESTION
+else:
+    PLUGINS_CONFIG["nautobot_event_tracker"]["ingestion"] = {
+        "consumer": "redis",
+        "consumer_name": "development",
+        "redis": {
+            # Database 2: Nautobot's cache and Celery have 0 and 1, and a consumer subscribing over
+            # the top of either is a debugging session nobody enjoys.
+            "url": f"redis://{os.getenv('NAUTOBOT_REDIS_HOST', 'redis')}:{os.getenv('NAUTOBOT_REDIS_PORT', '6379')}/2",
+            "password": os.getenv("NAUTOBOT_REDIS_PASSWORD", ""),
+        },
+        # Short, so a developer watching the stats page sees a bucket roll while still looking.
+        "stats_bucket_seconds": 60,
+        "stats_flush_seconds": 5,
+        "topics": LAB_INGESTION["topics"],
+    }

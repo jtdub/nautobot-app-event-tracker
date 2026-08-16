@@ -122,7 +122,30 @@ Each command can be executed with `invoke <command>`. All commands support the a
   nbshell              Launch a nbshell session.
   generate-test-data   Fill the database with demo tickets, and the devices they are about.
   eventconsumer        Run the event consumer in the foreground, against the configured broker.
+  send-test-event      Publish an event onto that broker, so a ticket appears.
 ```
+
+#### Watching an event become a ticket
+
+The development stack consumes from the Redis it already runs, so this needs nothing else
+installed — no containerlab, no Kafka, no 8 GB of memory:
+
+```bash
+➜ invoke start
+➜ invoke eventconsumer          # in one terminal, where you can watch it
+➜ invoke send-test-event        # in another
+```
+
+A ticket appears under **Apps → Event Tracker → Tickets**, titled with the message that was sent.
+`invoke send-test-event --count 3` sends the same event three times: you should get **one** ticket
+whose event count is three, which is the recurrence rule working. `--event` chooses a different
+message — `bgp`, `unreachable`, `optical`, `cpu`, `drift`, `unknown` — and `--host` and `--interface`
+choose which device it is about.
+
+Redis pub/sub keeps nothing: an event published while the consumer is not running is gone, not
+queued. That is the difference between the development broker and the Kafka the reference
+deployment uses, and it is why [the lab](lab.md) exists — real messages from real devices over a
+broker that keeps them.
 
 #### The containerlab lab
 

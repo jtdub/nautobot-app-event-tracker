@@ -127,7 +127,9 @@ Developers drive this development environment with `invoke`, and the lab is part
 | `lab-events` | Read the raw messages on `network.events`, so a developer can see what the bridge actually produced |
 | `lab-console` | Start the Redpanda console for reading the topic in a browser |
 
-`eventconsumer` is a task in its own right, outside the lab section: the consumer is Phase 2's, not the lab's, and a developer pointing it at any other broker wants the same command.
+`eventconsumer` and `send-test-event` are tasks in their own right, outside the lab section, because what they drive is Phase 2's rather than the lab's.
+
+**The ordinary stack consumes too.** `invoke eventconsumer` on a plain `invoke start` used to fail with "no topics are configured", which is a correct error and a poor answer: the development stack already runs a Redis, and the Redis consumer exists precisely for this. It is now configured against it, reading the *lab's* topic configuration — same field map, same severity map, same dedup template — so `invoke start`, `invoke eventconsumer`, `invoke send-test-event` demonstrates the whole of Phase 2 on any machine, and what a developer learns about the field map there is true of the lab as well. Redis pub/sub keeps nothing, which is the honest difference from Kafka and the reason the lab is still worth its 8 GB.
 
 `lab-up` prints, at the end, what to do next: the Nautobot URL, the command that causes an event, and the one that tears it all down. `lab-break` prints its own `sr_cli` line as it runs it, so a developer learns the command rather than being kept away from it.
 

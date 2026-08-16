@@ -208,10 +208,7 @@ class Command(BaseCommand):
         settings = self._load(options)
         consumer_class = get_consumer_class(settings.consumer)
 
-        consumer = consumer_class(
-            settings=getattr(settings, consumer_class.settings_key),
-            topics=settings.topic_names,
-        )
+        consumer = consumer_class(settings=settings.consumer_settings, topics=settings.topic_names)
         runner = ConsumerRunner(
             consumer=consumer,
             settings=settings,
