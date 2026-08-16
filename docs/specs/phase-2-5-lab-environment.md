@@ -117,7 +117,7 @@ Developers drive this development environment with `invoke`, and the lab is part
 
 | Task | Does |
 | --- | --- |
-| `lab-up` | Deploy the topology, start the stack against its broker, wait for Nautobot, populate it from the topology |
+| `lab-up` | Deploy the topology, start the stack — broker, syslog bridge and consumer — wait for Nautobot, populate it from the topology |
 | `lab-down` | Stop the stack and destroy the topology, in that order, leaving the ordinary dev stack able to start |
 | `lab-populate` | Section 6 on its own, for when the topology is already up |
 | `lab-consumer` | `nautobot-server eventconsumer` against the lab configuration, in the foreground; `--dry-run` decides without writing |
@@ -129,7 +129,9 @@ Developers drive this development environment with `invoke`, and the lab is part
 
 `lab-up` prints, at the end, what to do next: the Nautobot URL, the command that causes an event, and the one that tears it all down. `lab-break` prints its own `sr_cli` line as it runs it, so a developer learns the command rather than being kept away from it.
 
-**No `invoke.yml` editing.** The lab's compose overlay is added by `tasks.py` itself when `EVENT_TRACKER_LAB` is set, and the lab tasks set it for their own process. One environment variable decides both which compose files are used and whether Nautobot loads the lab's ingestion configuration, because they must agree: a stack started with the overlay but without the configuration comes up with no topics to subscribe to. Editing `invoke.yml` to run the lab and editing it back afterwards was a step to forget, and forgetting it means compose looking for a network containerlab has destroyed.
+**One switch, three ways to throw it.** The lab's compose overlay is added by `tasks.py` itself rather than by a `compose_files` entry, because the same decision also settles whether Nautobot loads the lab's ingestion configuration, and the two must agree: a stack started with the broker but without the configuration comes up with no topics to subscribe to. `lab: true` in `invoke.yml` — documented in `invoke.example.yml` — makes the lab the environment `invoke start` brings up, for somebody who works on ingestion. `EVENT_TRACKER_LAB=true` does it for one shell. The `lab-*` tasks set that variable for their own process, so `invoke lab-up` works with no configuration at all.
+
+**The consumer runs as a service.** With the lab up, `invoke start` brings up Nautobot, the broker, the bridge *and* `nautobot-server eventconsumer` — its own process alongside Nautobot, which is how [ADR 0005](../decisions/0005-standalone-consumer-process.md) says it runs in production, so the development environment demonstrates the deployment rather than a simplification of it. `invoke logs -s consumer` is what it made of each message. `lab-consumer` is for watching it decide in the foreground, or for `--dry-run`; it stops the service for the duration, because two consumers in one group split the partitions and on a one-partition topic the one being watched would see nothing.
 
 ## 8. CI
 

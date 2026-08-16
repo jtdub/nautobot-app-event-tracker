@@ -32,9 +32,10 @@ ORIGINAL_COMPOSE_FILES = [
     "docker-compose.dev.yml",
 ]
 
-#: The containerlab lab. Set in the environment rather than in `invoke.yml`: it decides both which
-#: compose files are used and whether Nautobot loads the lab's ingestion configuration, and one
-#: switch for both is one thing to remember. `invoke lab-up` sets it for you.
+#: The containerlab lab. One switch decides both which compose files are used and whether Nautobot
+#: loads the lab's ingestion configuration, because those two have to agree: a stack started with
+#: the broker but without the configuration comes up with no topics to subscribe to. Set it in
+#: `invoke.yml` as `lab: true`, or in the environment, or let the `lab-*` tasks set it for you.
 LAB_ENV_VAR = "EVENT_TRACKER_LAB"
 LAB_COMPOSE_FILE = "docker-compose.redpanda.yml"
 LAB_TOPOLOGY = os.path.join(os.path.dirname(__file__), "development", "containerlab", "topology.clab.yml")
@@ -79,6 +80,10 @@ namespace.configure(
             "compose_dir": os.path.join(os.path.dirname(__file__), "development"),
             "compose_files": ORIGINAL_COMPOSE_FILES.copy(),
             "compose_http_timeout": "86400",
+            # The containerlab lab, off unless `invoke.yml` turns it on or a lab task does. Not a
+            # `compose_files` entry, because it decides two things that have to agree: which compose
+            # files are used, and whether Nautobot loads the lab's ingestion configuration.
+            "lab": False,
         }
     }
 )
@@ -88,22 +93,21 @@ def _is_compose_included(context, name):
     return f"docker-compose.{name}.yml" in _compose_files(context)
 
 
-def _lab_is_enabled():
-    """Whether the containerlab lab's broker and bridge belong in this compose invocation.
+def _lab_is_enabled(context):
+    """Whether the containerlab lab's broker, bridge and consumer belong in this invocation.
 
-    Driven by the environment rather than by `invoke.yml`, so that `invoke lab-up` can turn it on
-    for the process it runs in and every later `invoke logs`, `invoke exec` or `invoke stop` in a
-    shell that exports it agrees. Editing `invoke.yml` to run the lab and editing it back afterwards
-    is a step to forget, and forgetting it means compose looks for a network containerlab has
-    destroyed.
+    Three ways to say yes, for three different working styles: `lab: true` in `invoke.yml`, for
+    somebody who works on ingestion and wants the lab to be their normal environment; the
+    `EVENT_TRACKER_LAB` environment variable, for one shell or one command; and the `lab-*` tasks,
+    which set that variable for their own process so `invoke lab-up` needs no configuration at all.
     """
-    return is_truthy(os.getenv(LAB_ENV_VAR, "false"))
+    return is_truthy(os.getenv(LAB_ENV_VAR, "false")) or is_truthy(context.nautobot_event_tracker.lab)
 
 
 def _compose_files(context):
     """The compose files this invocation should use, with the lab's overlay if the lab is on."""
     files = list(context.nautobot_event_tracker.compose_files)
-    if _lab_is_enabled() and LAB_COMPOSE_FILE not in files:
+    if _lab_is_enabled(context) and LAB_COMPOSE_FILE not in files:
         files.append(LAB_COMPOSE_FILE)
     return files
 
@@ -163,7 +167,7 @@ def docker_compose(context, command, **kwargs):
         "PYTHON_VER": context.nautobot_event_tracker.python_ver,
         # Read by the lab overlay, which passes it on to the containers: it is what makes Nautobot
         # load the lab's ingestion configuration rather than an empty one.
-        LAB_ENV_VAR: str(_lab_is_enabled()).lower(),
+        LAB_ENV_VAR: str(_lab_is_enabled(context)).lower(),
         **kwargs.pop("env", {}),
     }
     compose_command_tokens = [
@@ -1092,11 +1096,12 @@ def lab_up(context, populate=True, test_data=False):
         generate_test_data(context)
 
     print(
-        "\nThe lab is up.\n"
+        "\nThe lab is up, and the consumer is already running.\n"
         "  Nautobot        http://localhost:8080\n"
-        "  Consumer        invoke lab-consumer\n"
         "  Cause an event  invoke lab-break\n"
+        "  What it made    invoke logs -s consumer\n"
         "  What arrived    invoke lab-events\n"
+        "  Watch it live   invoke lab-consumer\n"
         "  Tear it down    invoke lab-down\n"
     )
 
@@ -1120,9 +1125,19 @@ def lab_populate(context):
 
 @task(help={"dry_run": "decide and report every message without writing a ticket or acknowledging it."})
 def lab_consumer(context, dry_run=False):
-    """Run the event consumer against the lab's broker, in the foreground."""
+    """Run the event consumer against the lab's broker, in the foreground.
+
+    The lab already runs one as a service. This stops it for the duration and starts it again
+    afterwards, because two consumers in one group split the partitions between them - and on a
+    one-partition topic that means the one you are watching sees nothing at all.
+    """
     _enable_lab()
-    eventconsumer(context, dry_run=dry_run)
+    docker_compose(context, "stop consumer", warn=True)
+    print("Stopped the consumer service; it will be started again when this exits.\n")
+    try:
+        eventconsumer(context, dry_run=dry_run)
+    finally:
+        docker_compose(context, "start consumer", warn=True)
 
 
 @task(

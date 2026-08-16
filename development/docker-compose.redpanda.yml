@@ -20,6 +20,40 @@ services:
     environment:
       EVENT_TRACKER_LAB: "${EVENT_TRACKER_LAB:-false}"
 
+  # The consumer, running the way it runs in production: its own process, alongside Nautobot rather
+  # than inside it (ADR 0005). Bringing the lab up therefore gives you a Nautobot that is already
+  # consuming - `invoke logs -s consumer` is what it made of each message - and `invoke lab-consumer`
+  # is for when you want it in the foreground or with `--dry-run` instead.
+  #
+  # Spelled out rather than sharing the base file's YAML anchors: anchors do not cross compose files.
+  consumer:
+    image: "nautobot-event-tracker/nautobot:${NAUTOBOT_VER}-py${PYTHON_VER}"
+    # An entrypoint, not a command: the image's own entrypoint runs migrations, and the nautobot
+    # service has already done that. Two processes migrating the same database is a race.
+    entrypoint:
+      - "sh"
+      - "-c"
+      - "nautobot-server eventconsumer"
+    env_file:
+      - "development.env"
+      - "creds.env"
+    environment:
+      EVENT_TRACKER_LAB: "${EVENT_TRACKER_LAB:-false}"
+    depends_on:
+      nautobot:
+        condition: "service_healthy"
+      redpanda:
+        condition: "service_healthy"
+    volumes:
+      - "./nautobot_config.py:/opt/nautobot/nautobot_config.py"
+      - "../:/source"
+    # It exits rather than guessing when its configuration is wrong, and the fix is usually a file
+    # in this directory - so let it come back once that file is right, without a `docker compose up`.
+    restart: "on-failure"
+    healthcheck:
+      disable: true
+    tty: true
+
   redpanda:
     image: "redpandadata/redpanda:v24.2.7"
     command:

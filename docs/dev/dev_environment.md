@@ -127,6 +127,8 @@ Each command can be executed with `invoke <command>`. All commands support the a
 #### The containerlab lab
 
 Opt-in, and the one thing here that needs containerlab, privileged Docker and about 8 GB of memory.
+`invoke lab-up` needs no configuration; set `lab: true` in `invoke.yml` to make the lab — broker,
+syslog bridge and a running consumer — part of the environment that plain `invoke start` brings up.
 [The lab guide](lab.md) is the long version.
 
 ```

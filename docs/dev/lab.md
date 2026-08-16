@@ -36,19 +36,29 @@ link-down and BGP-down events; you lose only the multi-path story.
 invoke lab-up
 ```
 
-That is the whole thing. It deploys the topology, starts the development stack with the lab's broker
-and its ingestion configuration, waits for Nautobot, and mirrors the topology into it — so the
-devices named in the tickets are devices you can click on. Add `--test-data` to fill the ticket list
-at the same time.
+That is the whole thing. It deploys the topology, starts the development stack with the lab's broker,
+its syslog bridge and **a running event consumer**, waits for Nautobot, and mirrors the topology into
+it — so the devices named in the tickets are devices you can click on. Add `--test-data` to fill the
+ticket list at the same time.
 
-There is no `invoke.yml` to edit: `EVENT_TRACKER_LAB` is what adds the broker's compose overlay and
-what makes Nautobot load the lab's ingestion configuration, and the lab tasks set it themselves. If
-you would rather run the ordinary tasks against the lab — `invoke logs`, `invoke exec` — export it
-in your shell and they will agree:
+The consumer runs as a service, the way it runs in production: its own process alongside Nautobot,
+rather than inside it. `invoke logs -s consumer` is what it made of each message.
 
-```shell
-export EVENT_TRACKER_LAB=true
+**Turning it on for good.** `lab-up` needs no configuration — it sets `EVENT_TRACKER_LAB` for its own
+run. If you work on ingestion often enough to want the lab to be your normal environment, copy
+`invoke.example.yml` to `invoke.yml` and set:
+
+```yaml
+---
+nautobot_event_tracker:
+  lab: true
 ```
+
+Then plain `invoke start`, `invoke logs`, `invoke exec` and `invoke stop` all include the broker, the
+bridge and the consumer, and Nautobot loads the lab's ingestion configuration. For one shell instead
+of for good, `export EVENT_TRACKER_LAB=true` does the same thing. Either way, deploy the topology
+first — `invoke lab-up` does that, and compose will not start a service whose external network does
+not exist yet.
 
 **The steps, if one of them fails.** `lab-up` is these in order, and each is a task of its own:
 
@@ -56,7 +66,7 @@ export EVENT_TRACKER_LAB=true
 | --- | --- |
 | `invoke lab-populate` | Mirror the topology into Nautobot: a Location, a Nokia SR Linux device type, one device per node under the name it uses in its own log messages, the interfaces its links describe, their addresses — management and fabric — and a cable for every link. Idempotent; run it again after redeploying |
 | `invoke generate-test-data` | Fifty tickets across every status, each with a trail and attached to the device its title names, on a small demo estate of its own |
-| `invoke lab-consumer` | The consumer, in the foreground where you can watch it |
+| `invoke lab-consumer` | The consumer in the foreground, where you can watch it decide. It stops the consumer service for the duration and starts it again afterwards — two consumers in one group split the partitions, and on a one-partition topic the one you are watching would see nothing |
 
 `generate-test-data` creates its own demo devices, but where a name matches one the lab populated it
 uses that device instead — so `leaf-01` in a ticket is the `leaf-01` you can shut an interface on,
@@ -148,12 +158,12 @@ deliberately, so that the key still resolves. Every interface-less event of one 
 therefore joins a single ticket. If you want them apart, give the template a field that
 distinguishes them rather than removing `interface`, which brings back the symptom above.
 
-**Nothing arrives at all.** Check in order: is the consumer running; does **Ingestion Stats** show
-anything received; does `invoke lab-events` show messages on the topic; is Fluent Bit logging
-(`EVENT_TRACKER_LAB=true invoke logs -s fluent-bit`); does the device have the remote server
-configured (`docker exec -it clab-event-tracker-leaf-01 sr_cli "info / system logging"`).
+**Nothing arrives at all.** Check in order: is the consumer running (`invoke logs -s consumer`); does
+**Ingestion Stats** show anything received; does `invoke lab-events` show messages on the topic; is
+Fluent Bit logging (`invoke logs -s fluent-bit`); does the device have the remote server configured
+(`docker exec -it clab-event-tracker-leaf-01 sr_cli "info / system logging"`).
 
-**The stack starts but the consumer says no topics are configured.** Nautobot came up without
+**The consumer restarts saying no topics are configured.** Nautobot came up without
 `EVENT_TRACKER_LAB`, so it loaded an empty ingestion configuration — which happens if the stack was
 already running before `invoke lab-up`. `invoke lab-down && invoke lab-up` fixes it.
 
