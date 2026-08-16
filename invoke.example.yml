@@ -32,4 +32,4 @@ nautobot_event_tracker:
   # the development stack consumes from its own Redis, and `invoke send-test-event` publishes to it.
   #
   # See docs/dev/lab.md.
-  lab: true 
+  lab: true
