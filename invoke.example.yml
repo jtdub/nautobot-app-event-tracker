@@ -5,6 +5,12 @@ nautobot_event_tracker:
   # local: false
   # ephemeral_ports: false
   # compose_dir: "/full/path/to/nautobot-app-event-tracker/development"
+  compose_files:
+    - "docker-compose.base.yml"
+    - "docker-compose.redis.yml"
+    - "docker-compose.dev.yml"
+    - "docker-compose.postgres.yml"
+    - "docker-compose.redpanda.yml"
 
   # The containerlab lab: a three-node SR Linux fabric whose logs are real, a Redpanda broker, the
   # syslog bridge between them, and a running event consumer. Turning this on adds all four to the
@@ -20,4 +26,4 @@ nautobot_event_tracker:
   # network containerlab creates.
   #
   # See docs/dev/lab.md.
-  # lab: false
+  lab: true 
