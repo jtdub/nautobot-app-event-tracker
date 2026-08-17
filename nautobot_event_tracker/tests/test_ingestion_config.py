@@ -258,3 +258,104 @@ class TestDatabaseValidation(TestCase):
         """A topic that never falls back has nothing to check."""
         with self.assertNumQueries(0):
             self.assertEqual(config.database_problems(config.load()), [])
+
+
+class TestTriageConfiguration(fixtures.RefusalAssertions, SimpleTestCase):
+    """The triage block: defaults, faults, and the per-topic switch."""
+
+    @settings_with({"topics": {"network.events": TOPIC}})
+    def test_triage_defaults_to_off(self):
+        """An app installed before anyone registered a provider must not try to call one."""
+        loaded = config.load()
+        self.assertFalse(loaded.triage.enabled)
+        self.assertTrue(loaded.topics["network.events"].triage)
+
+    @settings_with(
+        {
+            "topics": {"network.events": TOPIC},
+            "triage": {"enabled": True, "provider": "Lab", "model": "triage-model", "timeout_seconds": 5},
+        }
+    )
+    def test_a_configured_triage_block_parses(self):
+        """The happy path, with a default surviving beside an override."""
+        triage = config.load().triage
+        self.assertTrue(triage.enabled)
+        self.assertEqual(triage.provider, "Lab")
+        self.assertEqual(triage.model, "triage-model")
+        self.assertEqual(triage.timeout_seconds, 5.0)
+        self.assertEqual(triage.attach_candidates, 5)
+
+    @settings_with({"topics": {"network.events": TOPIC}, "triage": {"enabled": True}})
+    def test_enabling_triage_without_a_model_names_both_missing_keys(self):
+        """Both faults in one message, one restart."""
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            config.load()
+        self.assert_names(str(raised.exception), ["'provider' is required", "'model' is required"])
+
+    @settings_with(
+        {
+            "topics": {"network.events": TOPIC},
+            "triage": {"enabled": "yes", "timeout_seconds": 0, "attach_candidates": "many"},
+        }
+    )
+    def test_wrongly_typed_triage_values_are_each_reported(self):
+        """A boolean that is not one, a timeout of zero, a count that is a word."""
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            config.load()
+        self.assert_names(
+            str(raised.exception),
+            ["'enabled' must be a boolean", "'timeout_seconds' must be a positive number", "'attach_candidates'"],
+        )
+
+    @settings_with({"topics": {"network.events": {**TOPIC, "triage": "sometimes"}}})
+    def test_a_non_boolean_topic_switch_is_refused(self):
+        """Per-topic participation is a yes or a no."""
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            config.load()
+        self.assert_names(str(raised.exception), ["'triage' must be a boolean"])
+
+    @settings_with({"topics": {"network.events": {**TOPIC, "triage": False}}})
+    def test_a_topic_can_opt_out(self):
+        """The payload-privacy escape hatch (spec 12.3)."""
+        self.assertFalse(config.load().topics["network.events"].triage)
+
+
+class TestTriageDatabaseValidation(TestCase):
+    """The fault only a query can find: the configured model is missing or disabled."""
+
+    def _load(self, provider="Test Provider", model="test-model"):
+        with settings_with(
+            {
+                "topics": {"network.events": TOPIC},
+                "triage": {"enabled": True, "provider": provider, "model": model},
+            }
+        ):
+            return config.load()
+
+    def test_a_registered_enabled_model_passes(self):
+        """The happy path costs one query at startup."""
+        fixtures.create_event_types()
+        fixtures.create_llmmodel()
+        self.assertEqual(config.database_problems(self._load()), [])
+
+    def test_a_missing_model_is_reported(self):
+        """Consuming with a model that does not exist would fail on the first survivor."""
+        fixtures.create_event_types()
+        problems = config.database_problems(self._load(model="no-such-model"))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no-such-model", problems[0])
+
+    def test_a_disabled_model_is_reported(self):
+        """Rule L8's refusal, surfaced at startup instead of on the first event."""
+        fixtures.create_event_types()
+        fixtures.create_llmmodel(name="switched-off", enabled=False)
+        problems = config.database_problems(self._load(model="switched-off"))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("disabled", problems[0])
+
+    def test_disabled_triage_checks_nothing(self):
+        """A deployment with triage off must not be told about models it is not using."""
+        fixtures.create_event_types()
+        with settings_with({"topics": {"network.events": TOPIC}}):
+            loaded = config.load()
+        self.assertEqual(config.database_problems(loaded), [])

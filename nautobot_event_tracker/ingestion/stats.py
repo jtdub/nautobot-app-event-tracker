@@ -33,6 +33,9 @@ class Counts:  # pylint: disable=too-many-instance-attributes
     tickets_opened: int = 0
     tickets_joined: int = 0
     suppressed: int = 0
+    triaged: int = 0
+    triage_attached: int = 0
+    triage_errors: int = 0
     drops_by_reason: Counter = field(default_factory=Counter)
     last_message_at: object = None
 
@@ -78,7 +81,19 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
         return datetime.fromtimestamp(epoch_seconds - (epoch_seconds % self.bucket_seconds), tz=utc)
 
     def record(  # pylint: disable=too-many-arguments
-        self, topic, *, received=0, errored=0, opened=0, joined=0, suppressed=0, drop_reason=None, message_time=None
+        self,
+        topic,
+        *,
+        received=0,
+        errored=0,
+        opened=0,
+        joined=0,
+        suppressed=0,
+        triaged=0,
+        triage_attached=0,
+        triage_errors=0,
+        drop_reason=None,
+        message_time=None,
     ):
         """Add to the current bucket's counts for this topic."""
         counts = self._counts[(topic, self.bucket_for(self._now()))]
@@ -87,6 +102,9 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
         counts.tickets_opened += opened
         counts.tickets_joined += joined
         counts.suppressed += suppressed
+        counts.triaged += triaged
+        counts.triage_attached += triage_attached
+        counts.triage_errors += triage_errors
         if drop_reason is not None:
             counts.add_drop(drop_reason)
         counts.saw_message_at(message_time)
@@ -141,6 +159,9 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
                 tickets_opened=F("tickets_opened") + counts.tickets_opened,
                 tickets_joined=F("tickets_joined") + counts.tickets_joined,
                 suppressed=F("suppressed") + counts.suppressed,
+                triaged=F("triaged") + counts.triaged,
+                triage_attached=F("triage_attached") + counts.triage_attached,
+                triage_errors=F("triage_errors") + counts.triage_errors,
                 drops_by_reason=dict(merged),
                 last_message_at=_newest(row.last_message_at, counts.last_message_at),
             )

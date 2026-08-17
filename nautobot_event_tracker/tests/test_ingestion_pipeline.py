@@ -297,3 +297,175 @@ class TestDedupWarning(PipelineTestCase):
             for _ in range(5):
                 self.handle(self.payload(host=None))
         self.assertEqual(len(logs.output), 1)
+
+
+class TriagedPipelineTestCase(PipelineTestCase):
+    """The pipeline with LLM triage in the loop, its model faked at the service seam."""
+
+    TRIAGE = {"enabled": True, "provider": "Test Provider", "model": "test-model"}
+
+    @classmethod
+    def setUpTestData(cls):
+        """Also register the model triage is configured to call."""
+        super().setUpTestData()
+        fixtures.create_llmmodel()
+
+    def setUp(self):
+        """The seam the next `handle_triaged` call will fill in."""
+        super().setUp()
+        self.fake = None
+
+    def handle_triaged(self, payload=None, *, answer=None, error=None, topic_settings=None, **kwargs):
+        """Push one message through with a triage filter answering `answer` (or failing)."""
+        from nautobot_event_tracker.ingestion.triage import TriageFilter  # pylint: disable=import-outside-toplevel
+        from nautobot_event_tracker.tests.test_ingestion_triage import (  # pylint: disable=import-outside-toplevel
+            FakeComplete,
+        )
+
+        with fixtures.ingestion_settings(
+            triage=self.TRIAGE,
+            topics={"network.events": {**TOPIC, **(topic_settings or {})}},
+        ):
+            loaded = config.load()
+        rules = prefilter.PreFilter(loaded, clock=self.clock)
+        self.fake = FakeComplete(answer, error=error) if answer or error else FakeComplete()
+        triage = TriageFilter(loaded, complete=self.fake)
+        message = fixtures.broker_message(payload if payload is not None else self.payload())
+        self.recorder.record(message.topic, received=1, message_time=message.timestamp)
+        return pipeline.handle_message(
+            message, rules=rules, recorder=self.recorder, config=loaded, triage=triage, **kwargs
+        )
+
+
+class TestTriageInThePipeline(TriagedPipelineTestCase):
+    """Spec 6.3: each verdict applied, attributed, counted - and every failure surviving."""
+
+    def test_an_accept_opens_a_ticket_and_links_its_usage(self):
+        """The judged event's cost ends up on the ticket it produced."""
+        from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
+
+        decision = self.handle_triaged()
+        self.assertEqual(decision.action, ACTION_ACCEPT)
+        ticket = EventTicket.objects.get()
+        record = LLMUsageRecord.objects.get()
+        self.assertEqual(record.ticket, ticket)
+        self.assertEqual(self.counts().triaged, 1)
+
+    def test_an_attach_joins_the_chosen_ticket_as_the_ai(self):
+        """T6 - the model decided, the trail says so, the counters agree."""
+        target = fixtures.create_ticket(title="The open incident")
+        self.handle_triaged(answer='{"action": "attach", "reason": "same incident", "ticket": 0}')
+
+        target.refresh_from_db()
+        self.assertEqual(target.event_count, 2)
+        self.assertEqual(EventTicket.objects.count(), 1)
+        update = target.updates.get(update_type=UpdateTypeChoices.RECURRENCE)
+        self.assertEqual(update.source, TicketSourceChoices.AI)
+        self.assertIsNone(update.user)
+        self.assertIn("Attached by LLM triage: same incident", update.message)
+
+        counts = self.counts()
+        self.assertEqual(counts.tickets_joined, 1)
+        self.assertEqual(counts.triage_attached, 1)
+        self.assertEqual(counts.received, counts.accounted_for)
+
+    def test_an_attach_links_the_usage_to_the_joined_ticket(self):
+        """The spend lands on the ticket the event ended up on."""
+        from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
+
+        target = fixtures.create_ticket(title="The open incident")
+        self.handle_triaged(answer='{"action": "attach", "reason": "same", "ticket": 0}')
+        self.assertEqual(LLMUsageRecord.objects.get().ticket, target)
+
+    def test_a_triage_suppression_is_the_ais_own_act(self):
+        """A rule-suppress says system; a model-suppress says ai, with the model's reason."""
+        self.handle_triaged(answer='{"action": "suppress", "reason": "known flapping optic"}')
+        ticket = EventTicket.objects.get()
+        self.assertEqual(ticket.status, TicketStatusChoices.SUPPRESSED)
+        update = ticket.updates.get(update_type=UpdateTypeChoices.STATUS_CHANGE)
+        self.assertEqual(update.source, TicketSourceChoices.AI)
+        self.assertIn("Suppressed by LLM triage: known flapping optic", update.message)
+        self.assertEqual(self.counts().suppressed, 1)
+
+    def test_a_triage_drop_is_counted_under_the_fixed_key(self):
+        """T8 - the model's free-text reason must not mint counter keys."""
+        from nautobot_event_tracker.ingestion.constants import REASON_TRIAGE  # pylint: disable=import-outside-toplevel
+
+        decision = self.handle_triaged(answer='{"action": "drop", "reason": "lab traffic nobody cares about"}')
+        self.assertEqual(decision.action, ACTION_DROP)
+        self.assertFalse(EventTicket.objects.exists())
+        counts = self.counts()
+        self.assertEqual(counts.drops_by_reason, {REASON_TRIAGE: 1})
+        self.assertEqual(counts.received, counts.accounted_for)
+
+    def test_a_dropped_events_usage_record_stays_unlinked(self):
+        """The money was spent; there is just no ticket to pin it to."""
+        from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
+
+        self.handle_triaged(answer='{"action": "drop", "reason": "noise"}')
+        record = LLMUsageRecord.objects.get()
+        self.assertIsNone(record.ticket)
+
+    def test_a_model_failure_accepts_and_counts_the_error(self):
+        """T4 - the event lands as a ticket, and the stats page shows the model faltering."""
+        decision = self.handle_triaged(error=RuntimeError("provider down"))
+        self.assertEqual(decision.action, ACTION_ACCEPT)
+        self.assertTrue(EventTicket.objects.exists())
+        counts = self.counts()
+        self.assertEqual(counts.triaged, 1)
+        self.assertEqual(counts.triage_errors, 1)
+
+    def test_a_recurrence_never_pays_for_a_second_opinion(self):
+        """T2 at the pipeline level: the second event joins by key with zero model calls."""
+        self.handle_triaged()
+        first_calls = len(self.fake.calls)
+        self.handle_triaged()
+        self.assertEqual(first_calls, 1)
+        self.assertEqual(len(self.fake.calls), 0)
+        self.assertEqual(EventTicket.objects.get().event_count, 2)
+
+    def test_a_vanished_attach_target_falls_back_to_opening(self):
+        """A ticket too many beats an event lost (spec 6.3)."""
+        import uuid  # pylint: disable=import-outside-toplevel
+
+        from nautobot_event_tracker.ingestion.prefilter import Decision  # pylint: disable=import-outside-toplevel
+        from nautobot_event_tracker.ingestion.triage import TriageResult  # pylint: disable=import-outside-toplevel
+        from nautobot_event_tracker.models import EventType  # pylint: disable=import-outside-toplevel
+
+        with fixtures.ingestion_settings(topics={"network.events": TOPIC}):
+            loaded = config.load()
+        result = TriageResult(
+            decision=Decision("attach", "gone"),
+            event_type=EventType.objects.get(name="Test Interface Down"),
+            target_ticket_id=uuid.uuid4(),
+            triaged=True,
+        )
+        from nautobot_event_tracker.ingestion.normalize import (  # pylint: disable=import-outside-toplevel
+            decode,
+            normalize,
+        )
+
+        event = normalize(
+            decode(fixtures.broker_message(self.payload()).value),
+            topic_config=loaded.topics["network.events"],
+            broker_timestamp=None,
+        )
+        ticket = pipeline._apply(event, result, self.recorder, loaded)  # pylint: disable=protected-access
+        self.assertTrue(ticket.was_created)
+        self.assertEqual(self.counts().tickets_opened, 1)
+
+    def test_a_rolled_back_write_leaves_the_usage_record_standing(self):
+        """L1 - the money was spent whatever became of the transaction."""
+        from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
+
+        with mock.patch(
+            "nautobot_event_tracker.services.tickets.create_ticket",
+            side_effect=DatabaseError("connection lost"),
+        ):
+            with self.assertRaises(DatabaseError):
+                self.handle_triaged()
+
+        self.assertFalse(EventTicket.objects.exists())
+        record = LLMUsageRecord.objects.get()
+        self.assertTrue(record.success)
+        self.assertIsNone(record.ticket)

@@ -264,3 +264,34 @@ class TestRetention(StatsTestCase):
             any("bucket_start__lt" in str(call) for call in filtering.call_args_list),
             "pruned twice within one bucket",
         )
+
+
+class TestTriageCounters(StatsTestCase):
+    """The Phase 3 memo counters, outside the accounting invariant like `suppressed`."""
+
+    def test_triage_counts_flush(self):
+        """Judged, attached and errored each land in their column."""
+        self.recorder.record(TOPIC, received=1, opened=1, triaged=1)
+        self.recorder.record(TOPIC, received=1, joined=1, triaged=1, triage_attached=1)
+        self.recorder.record(TOPIC, received=1, opened=1, triaged=1, triage_errors=1)
+        self.recorder.flush()
+        row = self.row()
+        self.assertEqual(row.triaged, 3)
+        self.assertEqual(row.triage_attached, 1)
+        self.assertEqual(row.triage_errors, 1)
+
+    def test_the_invariant_ignores_the_memo_counters(self):
+        """`received` still equals the four outcomes; triage adds commentary, not outcomes."""
+        self.recorder.record(TOPIC, received=1, opened=1, triaged=1, triage_errors=1)
+        self.recorder.flush()
+        row = self.row()
+        self.assertEqual(row.received, row.accounted_for)
+
+    def test_a_second_flush_accumulates_triage_counts(self):
+        """`F()` expressions cover the new columns too."""
+        self.recorder.record(TOPIC, received=1, opened=1, triaged=1)
+        self.recorder.flush()
+        self.recorder.record(TOPIC, received=1, opened=1, triaged=1)
+        self.clock.advance(11)
+        self.recorder.flush()
+        self.assertEqual(self.row().triaged, 2)

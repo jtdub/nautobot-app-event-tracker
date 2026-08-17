@@ -303,3 +303,10 @@ Appended as each PR lands, per the Phase 2 precedent.
 - The usage-record filter form declares its model picker in `__init__` rather than as a class attribute, because `model` already names the Django model on every `NautobotFilterForm`.
 - `default_parameters` may set `timeout`, which applies when a caller states none; rule L6's 30 seconds is the floor beneath both, not above them.
 - `complete()` lets `ImproperlyConfigured` (the missing-extra refusal) propagate rather than wrapping it in `LLMCallError`: a deployment fault is not a failed call, and nothing left the process (section 5.2).
+
+### PR B
+
+- `TriageFilter.decide()` takes the broker offset as an explicit argument for the T5 memo, rather than a message object: the pipeline hands it the already-normalized event, which carries no offset.
+- A rule-decided suppression passes through triage untouched — the model judges only clean accepts. The spec's "accept / suppress reach triage" diagram is honest about what flows *past* the pre-filter, but the model is not given a vote over an operator's rule.
+- Triage drops return `Decision(drop, "llm_triage")` — the fixed counter key — while the model's own reason goes to the log line, so the printed decision and the counter agree.
+- The vanished-attach-target fallback lives in the pipeline's `_apply()`/`_attach()` pair; `join_ticket` raising S3's `TicketImmutableError` is one of the two ways a target can be gone, a re-read finding nothing is the other.

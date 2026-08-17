@@ -53,6 +53,17 @@ DEFAULTS = {
         "url": "",
         "external_integration": "",
     },
+    # LLM triage (Phase 3, spec section 3). Off by default: an app installed before anyone has
+    # registered a provider must not try to call one.
+    "triage": {
+        "enabled": False,
+        "provider": "",
+        "model": "",
+        "timeout_seconds": 15,
+        "max_output_tokens": 256,
+        "max_context_chars": 4000,
+        "attach_candidates": 5,
+    },
     "topics": {},
 }
 
@@ -66,6 +77,9 @@ TOPIC_DEFAULTS = {
     "unknown_event_type": UNKNOWN_EVENT_TYPE_DEFAULT,
     "rate_limit": {},
     "rules": [],
+    # Whether this topic's survivors go to LLM triage, when triage is enabled at all. On by
+    # default so enabling triage means enabling it, and opting a sensitive topic out is explicit.
+    "triage": True,
 }
 
 #: Field map keys a topic must provide. Everything else has a sensible fallback; these two do not,
@@ -91,6 +105,19 @@ class RateLimit:
 
 
 @dataclass(frozen=True)
+class TriageConfig:  # pylint: disable=too-many-instance-attributes
+    """The LLM triage block, parsed and checked (spec section 3)."""
+
+    enabled: bool
+    provider: str
+    model: str
+    timeout_seconds: float
+    max_output_tokens: int
+    max_context_chars: int
+    attach_candidates: int
+
+
+@dataclass(frozen=True)
 class TopicConfig:  # pylint: disable=too-many-instance-attributes
     """Everything the pipeline needs to know about one topic."""
 
@@ -103,6 +130,7 @@ class TopicConfig:  # pylint: disable=too-many-instance-attributes
     unknown_event_type: str
     rules: tuple = ()
     rate_limit: RateLimit = None
+    triage: bool = True
 
 
 @dataclass(frozen=True)
@@ -120,6 +148,7 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
     stats_retention_days: int
     kafka: dict = field(default_factory=dict)
     redis: dict = field(default_factory=dict)
+    triage: TriageConfig = None
     topics: dict = field(default_factory=dict)
 
     @property
@@ -209,6 +238,9 @@ def load(*, topics=None, consumer=None, require_topics=False):
     if not isinstance(raw.get("poll_timeout_seconds"), (int, float)) or raw["poll_timeout_seconds"] <= 0:
         problems.append(f"'poll_timeout_seconds' must be a positive number, got {raw.get('poll_timeout_seconds')!r}")
 
+    triage, triage_problems = _parse_triage(raw.get("triage") or {})
+    problems.extend(triage_problems)
+
     if problems:
         raise ImproperlyConfigured(render_problems(problems))
 
@@ -224,13 +256,16 @@ def load(*, topics=None, consumer=None, require_topics=False):
         stats_retention_days=raw["stats_retention_days"],
         kafka=dict(raw["kafka"]),
         redis=dict(raw["redis"]),
+        triage=triage,
         topics=parsed_topics,
     )
 
 
 def database_problems(config):
-    """Return the faults that only a query can find: event types the catalogue does not hold."""
+    """Return the faults that only a query can find: missing event types, and the triage model."""
     from nautobot_event_tracker.models import EventType  # pylint: disable=import-outside-toplevel
+
+    problems = []
 
     # A list of pairs rather than a map keyed on the type: two topics naming the same missing type
     # are two faults, and this module's whole contract is that every fault is reported.
@@ -239,19 +274,33 @@ def database_problems(config):
         for name, topic in config.topics.items()
         if topic.defaults.get("event_type")
     ]
-    if not wanted:
-        return []
-    known = set(
-        EventType.objects.filter(name__in={event_type for _, event_type in wanted}).values_list("name", flat=True)
-    )
-    return [
-        f"topic '{topic}': default event type '{event_type}' does not exist"
-        for topic, event_type in sorted(wanted)
-        if event_type not in known
-    ]
+    if wanted:
+        known = set(
+            EventType.objects.filter(name__in={event_type for _, event_type in wanted}).values_list("name", flat=True)
+        )
+        problems.extend(
+            f"topic '{topic}': default event type '{event_type}' does not exist"
+            for topic, event_type in sorted(wanted)
+            if event_type not in known
+        )
+
+    if config.triage is not None and config.triage.enabled:
+        # Through the LLM service so "exists" and "enabled" are one definition (rule L8);
+        # `services.llm` imports no litellm at module level, so neither does this check.
+        from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=import-outside-toplevel
+        from nautobot_event_tracker.services.exceptions import (  # pylint: disable=import-outside-toplevel
+            LLMConfigurationError,
+        )
+
+        try:
+            llm_service.get_model(config.triage.provider, config.triage.model)
+        except LLMConfigurationError as error:
+            problems.append(f"triage: {error}")
+
+    return problems
 
 
-def _parse_topic(name, topic_settings):
+def _parse_topic(name, topic_settings):  # pylint: disable=too-many-locals
     """Parse one topic, returning it and the problems found. Returns None when unusable."""
     problems = []
     if not isinstance(topic_settings, dict):
@@ -289,6 +338,11 @@ def _parse_topic(name, topic_settings):
     rate_limit, rate_problems = _parse_rate_limit(name, merged["rate_limit"] or {})
     problems.extend(rate_problems)
 
+    topic_triage = merged["triage"]
+    if not isinstance(topic_triage, bool):
+        problems.append(f"topic '{name}': 'triage' must be a boolean, got {topic_triage!r}")
+        topic_triage = True
+
     topic = TopicConfig(
         name=name,
         field_map=dict(field_map),
@@ -299,8 +353,50 @@ def _parse_topic(name, topic_settings):
         unknown_event_type=str(policy),
         rules=rules,
         rate_limit=rate_limit,
+        triage=topic_triage,
     )
     return topic, problems
+
+
+def _parse_triage(triage_settings):
+    """Parse the triage block, returning it and the problems found."""
+    problems = []
+    if not isinstance(triage_settings, dict):
+        return None, ["'triage' must be a mapping"]
+
+    merged = {**DEFAULTS["triage"], **triage_settings}
+    enabled = merged["enabled"]
+    if not isinstance(enabled, bool):
+        problems.append(f"triage: 'enabled' must be a boolean, got {enabled!r}")
+        enabled = False
+
+    if enabled:
+        for key in ("provider", "model"):
+            if not merged.get(key):
+                problems.append(f"triage: '{key}' is required when triage is enabled")
+
+    for key in ("max_output_tokens", "max_context_chars", "attach_candidates"):
+        if not isinstance(merged.get(key), int) or isinstance(merged.get(key), bool) or merged[key] < 1:
+            problems.append(f"triage: '{key}' must be a positive integer, got {merged.get(key)!r}")
+
+    if not isinstance(merged.get("timeout_seconds"), (int, float)) or merged["timeout_seconds"] <= 0:
+        problems.append(f"triage: 'timeout_seconds' must be a positive number, got {merged.get('timeout_seconds')!r}")
+
+    if problems:
+        return None, problems
+
+    return (
+        TriageConfig(
+            enabled=enabled,
+            provider=str(merged["provider"]),
+            model=str(merged["model"]),
+            timeout_seconds=float(merged["timeout_seconds"]),
+            max_output_tokens=merged["max_output_tokens"],
+            max_context_chars=merged["max_context_chars"],
+            attach_candidates=merged["attach_candidates"],
+        ),
+        [],
+    )
 
 
 def _parse_rules(topic_name, rule_settings):

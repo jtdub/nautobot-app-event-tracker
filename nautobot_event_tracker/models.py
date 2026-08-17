@@ -328,6 +328,18 @@ class IngestionStats(BaseModel):
         default=0,
         help_text="Messages a suppression rule accepted. Counted under opened or joined as well.",
     )
+    triaged = models.PositiveIntegerField(
+        default=0,
+        help_text="Messages LLM triage actually judged. A memo counter, outside the accounting invariant.",
+    )
+    triage_attached = models.PositiveIntegerField(
+        default=0,
+        help_text="Messages triage attached to an existing ticket. Counted under joined as well.",
+    )
+    triage_errors = models.PositiveIntegerField(
+        default=0,
+        help_text="Triage calls that failed and fell back to accept (rule T4).",
+    )
     drops_by_reason = models.JSONField(
         default=dict,
         blank=True,

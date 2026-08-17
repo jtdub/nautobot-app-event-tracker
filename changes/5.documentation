@@ -1,0 +1,1 @@
+Added the event triage section to the LLM administrator guide, and reworded the install guide's AI service account note: in-process triage needs no account, which becomes relevant only for later-phase agents.

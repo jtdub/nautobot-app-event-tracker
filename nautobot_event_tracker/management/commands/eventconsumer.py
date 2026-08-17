@@ -19,6 +19,7 @@ from nautobot_event_tracker.ingestion.consumers import get_consumer_class
 from nautobot_event_tracker.ingestion.pipeline import handle_message
 from nautobot_event_tracker.ingestion.prefilter import PreFilter
 from nautobot_event_tracker.ingestion.stats import NullStatsRecorder, StatsRecorder
+from nautobot_event_tracker.ingestion.triage import TriageFilter
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         settings,
         rules=None,
         recorder=None,
+        triage=None,
         dry_run=False,
         max_messages=None,
         sleep=time.sleep,
@@ -77,6 +79,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         self.rules = rules if rules is not None else PreFilter(settings)
         self.dry_run = dry_run
         self.recorder = recorder if recorder is not None else self._build_recorder(settings, dry_run)
+        self.triage = triage if triage is not None else self._build_triage(settings, dry_run)
         self.max_messages = max_messages
         self._sleep = sleep
         self._stdout = stdout
@@ -94,6 +97,17 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
             flush_seconds=settings.stats_flush_seconds,
             retention_days=settings.stats_retention_days,
         )
+
+    @staticmethod
+    def _build_triage(settings, dry_run):
+        """The triage step, or None when it must not run.
+
+        None on a dry run whatever the configuration says (T9): a dry run writes nothing, rule L1
+        forbids an unrecorded model call, so the model cannot be consulted.
+        """
+        if dry_run or settings.triage is None or not settings.triage.enabled:
+            return None
+        return TriageFilter(settings)
 
     def stop(self):
         """Ask the loop to finish the message in flight and come back."""
@@ -162,6 +176,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
                     rules=self.rules,
                     recorder=self.recorder,
                     config=self.settings,
+                    triage=self.triage,
                     write=not self.dry_run,
                 )
                 break
@@ -176,7 +191,12 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
                 self._sleep(RETRY_BACKOFF_SECONDS * attempt)
 
         if self.dry_run:
-            self._report(f"{message.topic}: {decision.action} {decision.reason}".rstrip())
+            line = f"{message.topic}: {decision.action} {decision.reason}".rstrip()
+            if self.settings.triage is not None and self.settings.triage.enabled:
+                # T9 - say that the model was not consulted, so a dry run's output is not read as
+                # what triage would have decided.
+                line += " (triage skipped: dry run)"
+            self._report(line)
             return
 
         self.consumer.acknowledge(message)
@@ -256,10 +276,14 @@ class Command(BaseCommand):
 
     def _banner(self, settings, consumer):
         """One line naming everything an operator would otherwise have to ask for."""
+        if settings.triage is not None and settings.triage.enabled:
+            triage = f"triage {settings.triage.provider}:{settings.triage.model}"
+        else:
+            triage = "triage off"
         self.stdout.write(
             f"Event Tracker consumer '{settings.consumer_name}' starting: "
             f"{type(consumer).__name__}, replay {'supported' if consumer.supports_replay else 'unsupported'}, "
-            f"topics {', '.join(settings.topic_names)}"
+            f"topics {', '.join(settings.topic_names)}, {triage}"
         )
 
     def _install_signal_handlers(self, runner):

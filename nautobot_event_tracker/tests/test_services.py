@@ -712,3 +712,68 @@ class TestWalkToStatus(TestCase):
                 source=TicketSourceChoices.HUMAN,
                 user=self.user,
             )
+
+
+class JoinTicketTest(TestCase):
+    """`join_ticket` in its own right: the S5 join, callable by triage's attach (Phase 3)."""
+
+    def setUp(self):
+        """One open ticket to join."""
+        super().setUp()
+        self.user = fixtures.create_user()
+        self.ticket = fixtures.create_ticket(user=self.user)
+
+    def join(self, **kwargs):
+        """One join with the boilerplate filled in."""
+        defaults = {"ticket": self.ticket, "source": TicketSourceChoices.AI}
+        return ticket_service.join_ticket(**{**defaults, **kwargs})
+
+    def test_a_join_increments_and_records_once(self):
+        """S1 - one mutation, one update."""
+        before = self.ticket.updates.count()
+        joined = self.join()
+        self.assertEqual(joined.event_count, 2)
+        self.assertFalse(joined.was_created)
+        self.assertEqual(self.ticket.updates.count(), before + 1)
+        update = self.ticket.updates.latest()
+        self.assertEqual(update.update_type, UpdateTypeChoices.RECURRENCE)
+        self.assertEqual(update.source, TicketSourceChoices.AI)
+        self.assertIsNone(update.user)
+
+    def test_a_custom_message_replaces_the_stock_line(self):
+        """Triage has something better to say than an occurrence count."""
+        self.join(message="Attached by LLM triage: same incident")
+        self.assertEqual(self.ticket.updates.latest().message, "Attached by LLM triage: same incident")
+
+    def test_last_seen_stays_monotonic(self):
+        """Out-of-order delivery must not move the ticket backwards in time."""
+        from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+        newest = self.ticket.last_seen
+        self.join(occurred_at=newest - timedelta(hours=1))
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.last_seen, newest)
+
+    def test_an_ai_join_of_a_terminal_ticket_is_refused(self):
+        """S3 - finished work is immutable to AI actors, through this door like every other."""
+        resolved = fixtures.create_ticket_in_status(RESOLVED, user=self.user, title="Done")
+        with self.assertRaises(TicketImmutableError):
+            self.join(ticket=resolved)
+
+    def test_an_ai_join_with_a_user_is_refused(self):
+        """S4 - the actor binding holds here too."""
+        with self.assertRaises(InvalidActorError):
+            self.join(user=self.user)
+
+    def test_create_ticket_still_joins_through_it(self):
+        """The dedup branch and the public function are one implementation."""
+        keyed = fixtures.create_ticket(user=self.user, title="Keyed", dedup_key="join-key")
+        again = ticket_service.create_ticket(
+            title="Ignored on a join",
+            event_type=keyed.event_type,
+            source=TicketSourceChoices.SYSTEM,
+            dedup_key="join-key",
+        )
+        self.assertEqual(again.pk, keyed.pk)
+        self.assertEqual(again.event_count, 2)
+        self.assertFalse(again.was_created)

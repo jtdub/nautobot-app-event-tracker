@@ -25,9 +25,12 @@ so an entry in the change log per write would bury it under a record of arithmet
 | Tickets Opened | Messages that opened a new ticket. |
 | Tickets Joined | Messages that matched an open ticket's dedup key and became a recurrence. |
 | Suppressed | Messages a suppression rule accepted. Counted under opened or joined as well. |
-| Dropped | Messages the pre-filter discarded. |
+| Dropped | Messages the pre-filter or LLM triage discarded. |
 | Errored | Messages that could not be read — not JSON, or not a JSON object. |
-| Drops by Reason | Drop counts broken down by the rule or filter that refused each message. |
+| Triaged | Messages LLM triage actually judged. Recurrences and opted-out topics are not judged, so this is also the model-call count. |
+| Triage Attached | Messages triage attached to an existing ticket. Counted under Tickets Joined as well. |
+| Triage Errors | Triage calls that failed and fell back to accepting the event. |
+| Drops by Reason | Drop counts broken down by the rule or filter that refused each message. Triage drops appear under `llm_triage`. |
 | Last Message At | The broker timestamp of the newest message counted here. |
 
 ## Reading the numbers
@@ -39,7 +42,9 @@ Received = Errored + Dropped + Tickets Opened + Tickets Joined
 ```
 
 **Suppressed** is not a term in that sum. A suppressed message still opened or joined a ticket, and
-is counted there too; the column says how many of those arrived through a suppression rule.
+is counted there too; the column says how many of those arrived through a suppression rule. The
+three **Triage** columns are the same kind of commentary: an attached message is already counted
+under joined, and an errored triage call still accepted its event.
 
 **Drops by Reason** is the useful one. Keys are either a filter's name — `unknown_topic`,
 `event_type_disabled`, `below_severity_floor`, `rate_limited` — or the name of a rule an
