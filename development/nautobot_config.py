@@ -164,9 +164,15 @@ elif LAB_INGESTION is not None:
         "consumer_name": "development",
         "redis": {
             # Database 2: Nautobot's cache and Celery have 0 and 1, and a consumer subscribing over
-            # the top of either is a debugging session nobody enjoys.
-            "url": f"redis://{os.getenv('NAUTOBOT_REDIS_HOST', 'redis')}:{os.getenv('NAUTOBOT_REDIS_PORT', '6379')}/2",
-            "password": os.getenv("NAUTOBOT_REDIS_PASSWORD", ""),
+            # the top of either is a debugging session nobody enjoys. The password rides in the
+            # URL: the consumer reads only `url` (or an external integration), so a separate
+            # `password` key would be dead configuration - and the schema rejects it.
+            "url": (
+                f"redis://:{os.getenv('NAUTOBOT_REDIS_PASSWORD', '')}@"
+                f"{os.getenv('NAUTOBOT_REDIS_HOST', 'redis')}:{os.getenv('NAUTOBOT_REDIS_PORT', '6379')}/2"
+                if os.getenv("NAUTOBOT_REDIS_PASSWORD")
+                else f"redis://{os.getenv('NAUTOBOT_REDIS_HOST', 'redis')}:{os.getenv('NAUTOBOT_REDIS_PORT', '6379')}/2"
+            ),
         },
         # Short, so a developer watching the stats page sees a bucket roll while still looking.
         "stats_bucket_seconds": 60,

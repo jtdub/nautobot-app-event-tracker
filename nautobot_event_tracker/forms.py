@@ -13,9 +13,16 @@ from nautobot.apps.forms import (
     TagsBulkEditFormMixin,
 )
 
-from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
-from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats
+from nautobot_event_tracker.choices import (
+    LLMProviderTypeChoices,
+    LLMPurposeChoices,
+    SeverityChoices,
+    TicketSourceChoices,
+    TicketStatusChoices,
+)
+from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, LLMModel, LLMProvider, LLMUsageRecord
 from nautobot_event_tracker.services import tickets as ticket_service
+from nautobot_event_tracker.tables import LLM_MODEL_FIELDS
 
 #: Nautobot has BOOLEAN_WITH_BLANK_CHOICES, but only under nautobot.core.forms.constants, which is
 #: outside the public nautobot.apps surface this app otherwise stays within.
@@ -233,3 +240,101 @@ class IngestionStatsFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
     q = forms.CharField(required=False, label="Search", help_text="Search within consumer name and topic.")
     consumer_name = forms.CharField(required=False, label="Consumer name")
     topic = forms.CharField(required=False, label="Topic")
+
+
+class LLMProviderForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
+    """LLMProvider creation/edit form."""
+
+    class Meta:
+        """Meta attributes."""
+
+        model = LLMProvider
+        fields = [  # pylint: disable=nb-use-fields-all
+            "name",
+            "description",
+            "provider_type",
+            "external_integration",
+            "enabled",
+        ]
+
+
+class LLMProviderBulkEditForm(NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
+    """LLMProvider bulk edit form."""
+
+    pk = forms.ModelMultipleChoiceField(queryset=LLMProvider.objects.all(), widget=forms.MultipleHiddenInput)
+    description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+    class Meta:
+        """Meta attributes."""
+
+        nullable_fields = ["description"]
+
+
+class LLMProviderFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for LLMProvider."""
+
+    model = LLMProvider
+    field_order = ["q", "name", "provider_type", "enabled"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within name and description.")
+    name = forms.CharField(required=False, label="Name")
+    provider_type = forms.MultipleChoiceField(
+        choices=LLMProviderTypeChoices, required=False, widget=StaticSelect2Multiple
+    )
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+
+class LLMModelForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
+    """LLMModel creation/edit form."""
+
+    provider = DynamicModelChoiceField(queryset=LLMProvider.objects.all())
+
+    class Meta:
+        """Meta attributes."""
+
+        model = LLMModel
+        # One definition of the field list, shared with the detail panel.
+        fields = list(LLM_MODEL_FIELDS)  # pylint: disable=nb-use-fields-all
+
+
+class LLMModelBulkEditForm(NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
+    """LLMModel bulk edit form."""
+
+    pk = forms.ModelMultipleChoiceField(queryset=LLMModel.objects.all(), widget=forms.MultipleHiddenInput)
+    description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+    class Meta:
+        """Meta attributes."""
+
+        nullable_fields = ["description"]
+
+
+class LLMModelFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for LLMModel."""
+
+    model = LLMModel
+    field_order = ["q", "provider", "name", "enabled"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within name, description and provider.")
+    provider = DynamicModelChoiceField(queryset=LLMProvider.objects.all(), required=False, to_field_name="name")
+    name = forms.CharField(required=False, label="Name")
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+
+class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for LLMUsageRecord.
+
+    Filter form only: usage records are written by the service layer alone, so there is no create
+    or edit form to offer.
+    """
+
+    model = LLMUsageRecord
+    field_order = ["q", "purpose", "success"]
+
+    # No model picker: a form field named `model` would collide with the attribute above, and the
+    # model detail page already links here pre-filtered. The filterset still accepts `model=`.
+    q = forms.CharField(required=False, label="Search", help_text="Search within model name, purpose and error.")
+    purpose = forms.MultipleChoiceField(choices=LLMPurposeChoices, required=False, widget=StaticSelect2Multiple)
+    success = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))

@@ -183,15 +183,40 @@ class TemplateGuardTest(SimpleTestCase):
         self.assertEqual([str(path) for path in html_files], [])
 
 
+def _import_offenders(paths, forbidden):
+    """Yield `path:line imports name` for every import of a forbidden package in these files.
+
+    Walks the whole AST, so an import buried in a function body is found too. Shared by the
+    import guards so a fix to the matcher cannot land in one copy only.
+    """
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            for name in names:
+                if name.split(".")[0] in forbidden:
+                    yield f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}"
+
+
 class IngestionGuardTest(SimpleTestCase):
     """Phase 2's two rules, asserted rather than trusted.
 
     The ingestion package writes tickets only through the service layer, and calls no language
-    model. Both are the kind of rule a well-meaning change breaks silently.
+    model. Both are the kind of rule a well-meaning change breaks silently. Phase 3 narrowed the
+    second rule rather than removing it: litellm now exists, but only behind `services/llm.py`,
+    and ingestion still talks to a model exclusively through that service (rule L2).
     """
 
-    #: Anything that would mean an LLM had arrived in a phase that is meant to have none.
-    FORBIDDEN_IMPORTS = ("litellm", "openai", "anthropic", "langchain", "transformers")
+    #: SDKs that must appear nowhere: every call goes through litellm (ADR 0006).
+    PROVIDER_SDKS = ("openai", "anthropic", "langchain", "transformers")
+
+    #: The one LLM client the app uses, importable only where `test_litellm_is_imported_only_in_the_llm_service`
+    #: allows.
+    LLM_LIBRARY = "litellm"
 
     def _ingestion_modules(self):
         """Every module in the ingestion package and the consumer command."""
@@ -216,19 +241,9 @@ class IngestionGuardTest(SimpleTestCase):
         )
 
     def test_the_ingestion_package_imports_no_language_model(self):
-        """Phase 2 is AI-free by design; triage is Phase 3 and plugs in at a named seam."""
-        offenders = []
-        for path in self._ingestion_modules():
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                names = []
-                if isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                elif isinstance(node, ast.ImportFrom):
-                    names = [node.module or ""]
-                for name in names:
-                    if name.split(".")[0] in self.FORBIDDEN_IMPORTS:
-                        offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}")
+        """Ingestion reaches a model only through `services.llm`, never through a client library."""
+        forbidden = self.PROVIDER_SDKS + (self.LLM_LIBRARY,)
+        offenders = list(_import_offenders(self._ingestion_modules(), forbidden))
 
         self.assertEqual(
             offenders,
@@ -236,9 +251,66 @@ class IngestionGuardTest(SimpleTestCase):
             "No module under ingestion/ may import a language model client. Offending lines: " + ", ".join(offenders),
         )
 
-    def test_the_app_declares_no_language_model_dependency(self):
-        """The same rule at the packaging level, where it is equally easy to break."""
+    def test_litellm_is_imported_only_in_the_llm_service(self):
+        """L2 - one import site for litellm, and no provider SDK anywhere in the app."""
+        allowed = {"services/llm.py"}
+        paths = [path for path in sorted(APP_ROOT.rglob("*.py")) if str(path.relative_to(APP_ROOT)) not in allowed]
+        offenders = list(_import_offenders(paths, self.PROVIDER_SDKS + (self.LLM_LIBRARY,)))
+        offenders += list(_import_offenders([APP_ROOT / "services" / "llm.py"], self.PROVIDER_SDKS))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "litellm belongs in services/llm.py alone, and provider SDKs belong nowhere. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_app_declares_no_provider_sdk_dependency(self):
+        """The no-SDK rule at the packaging level, where it is equally easy to break."""
         pyproject = (APP_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
         dependencies = pyproject.split("[tool.poetry.group.dev.dependencies]")[0]
-        for name in self.FORBIDDEN_IMPORTS:
-            self.assertNotIn(name, dependencies, f"'{name}' must not be a runtime dependency in Phase 2")
+        for name in self.PROVIDER_SDKS:
+            self.assertNotIn(name, dependencies, f"'{name}' must not be a runtime dependency; use litellm")
+
+    def test_litellm_is_an_optional_dependency(self):
+        """litellm stays behind the `llm` extra: a deployment without triage installs no client."""
+        pyproject = (APP_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
+        dependency_lines = [
+            line
+            for line in pyproject.split("[tool.poetry.group.dev.dependencies]")[0].splitlines()
+            if line.startswith("litellm")
+        ]
+        self.assertEqual(len(dependency_lines), 1, "litellm must be declared exactly once as a runtime dependency")
+        self.assertIn("optional = true", dependency_lines[0], "litellm must be optional")
+
+        extras = pyproject.split("[tool.poetry.extras]")[1].split("[tool.")[0]
+        self.assertIn('llm = ["litellm"]', extras, "the 'llm' extra must install litellm")
+        self.assertIn('"litellm",', extras, "the 'all' extra must include litellm")
+
+
+class LLMUsageGuardTest(SimpleTestCase):
+    """Rule L1's mechanical half: only `services/llm.py` writes usage records."""
+
+    def test_no_direct_llm_usage_record_writes_outside_the_service_layer(self):
+        """The model test suite is exempt, as for TicketUpdate, and for the same reason."""
+        allowed = {"tests/test_models.py"}
+        paths = [path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in allowed]
+        offenders = list(
+            _manager_call_offenders(
+                paths,
+                {"LLMUsageRecord"},
+                {"create", "get_or_create", "update_or_create", "bulk_create", "update"},
+            )
+        )
+
+        for path in paths:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "LLMUsageRecord":
+                    offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "LLMUsageRecord rows must only be written by services/llm.py. Offending lines: " + ", ".join(offenders),
+        )

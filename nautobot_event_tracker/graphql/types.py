@@ -1,14 +1,14 @@
 """GraphQL types for nautobot_event_tracker.
 
-`EventType` and `EventTicket` are exposed automatically through the `graphql` entry in their
-`extras_features`. `TicketUpdate` and `IngestionStats` need explicit types because neither is a
-PrimaryModel.
+`EventType`, `EventTicket`, `LLMProvider` and `LLMModel` are exposed automatically through the
+`graphql` entry in their `extras_features`. `TicketUpdate`, `IngestionStats` and `LLMUsageRecord`
+need explicit types because none of them is a PrimaryModel.
 """
 
 from nautobot.apps.graphql import OptimizedNautobotObjectType
 
-from nautobot_event_tracker.filters import IngestionStatsFilterSet, TicketUpdateFilterSet
-from nautobot_event_tracker.models import IngestionStats, TicketUpdate
+from nautobot_event_tracker.filters import IngestionStatsFilterSet, LLMUsageRecordFilterSet, TicketUpdateFilterSet
+from nautobot_event_tracker.models import IngestionStats, LLMUsageRecord, TicketUpdate
 
 
 class TicketUpdateType(OptimizedNautobotObjectType):
@@ -43,4 +43,17 @@ class IngestionStatsType(OptimizedNautobotObjectType):
         filterset_class = IngestionStatsFilterSet
 
 
-graphql_types = [TicketUpdateType, IngestionStatsType]
+class LLMUsageRecordType(OptimizedNautobotObjectType):
+    """GraphQL type for LLMUsageRecord.
+
+    Query-only, like everything else here, and doubly so for a model only the service layer writes.
+    """
+
+    class Meta:  # pylint: disable=too-few-public-methods
+        """Meta attributes."""
+
+        model = LLMUsageRecord
+        filterset_class = LLMUsageRecordFilterSet
+
+
+graphql_types = [TicketUpdateType, IngestionStatsType, LLMUsageRecordType]

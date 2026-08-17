@@ -3,8 +3,15 @@
 from django.test import TestCase
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
-from nautobot_event_tracker.filters import EventTicketFilterSet, EventTypeFilterSet, TicketUpdateFilterSet
-from nautobot_event_tracker.models import EventTicket, EventType, TicketUpdate
+from nautobot_event_tracker.filters import (
+    EventTicketFilterSet,
+    EventTypeFilterSet,
+    LLMModelFilterSet,
+    LLMProviderFilterSet,
+    LLMUsageRecordFilterSet,
+    TicketUpdateFilterSet,
+)
+from nautobot_event_tracker.models import EventTicket, EventType, LLMModel, LLMProvider, LLMUsageRecord, TicketUpdate
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.tests import fixtures
 
@@ -210,3 +217,87 @@ class TicketUpdateFilterTest(TestCase):
         results = self._filter({"user": [self.user.username]})
         self.assertTrue(results.exists())
         self.assertFalse(results.filter(source=TicketSourceChoices.AI).exists())
+
+
+class LLMProviderFilterTest(TestCase):
+    """Filters for LLMProvider."""
+
+    queryset = LLMProvider.objects.all()
+    filterset = LLMProviderFilterSet
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        fixtures.create_llmprovider(name="Local Lab", description="the on-prem endpoint")
+        fixtures.create_llmprovider(name="Disabled Provider", enabled=False)
+
+    def test_q_matches_name_and_description(self):
+        """Search covers both text fields."""
+        self.assertEqual(self.filterset({"q": "Lab"}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.filterset({"q": "on-prem"}, self.queryset).qs.count(), 1)
+
+    def test_enabled(self):
+        """Enabled flag filter, both ways."""
+        self.assertFalse(self.filterset({"enabled": False}, self.queryset).qs.filter(enabled=True).exists())
+        self.assertFalse(self.filterset({"enabled": True}, self.queryset).qs.filter(enabled=False).exists())
+
+    def test_provider_type(self):
+        """Type filter."""
+        params = {"provider_type": ["openai_compatible"]}
+        self.assertEqual(self.filterset(params, self.queryset).qs.count(), 2)
+
+
+class LLMModelFilterTest(TestCase):
+    """Filters for LLMModel."""
+
+    queryset = LLMModel.objects.all()
+    filterset = LLMModelFilterSet
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        cls.provider = fixtures.create_llmprovider()
+        other = fixtures.create_llmprovider(name="Other Provider")
+        fixtures.create_llmmodel(name="fast-model", provider=cls.provider)
+        fixtures.create_llmmodel(name="smart-model", provider=other)
+
+    def test_provider_by_name_or_pk(self):
+        """The provider filter takes the natural key or the ID."""
+        self.assertEqual(self.filterset({"provider": ["Test Provider"]}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.filterset({"provider": [str(self.provider.pk)]}, self.queryset).qs.count(), 1)
+
+    def test_q_matches_the_provider_name_too(self):
+        """Searching by where a model lives is as natural as by what it is called."""
+        self.assertEqual(self.filterset({"q": "Other"}, self.queryset).qs.count(), 1)
+
+
+class LLMUsageRecordFilterTest(TestCase):
+    """Filters for LLMUsageRecord."""
+
+    queryset = LLMUsageRecord.objects.all()
+    filterset = LLMUsageRecordFilterSet
+
+    @classmethod
+    def setUpTestData(cls):
+        """One success and one failure, written the sole-writer way."""
+        from nautobot_event_tracker.services.exceptions import LLMCallError  # pylint: disable=import-outside-toplevel
+
+        cls.model = fixtures.create_llmmodel()
+        fixtures.create_llmusagerecord(model=cls.model)
+        try:
+            fixtures.create_llmusagerecord(model=cls.model, client=fixtures.FakeLLMClient(error=RuntimeError("broke")))
+        except LLMCallError:
+            pass
+
+    def test_success(self):
+        """The success filter separates the two."""
+        self.assertEqual(self.filterset({"success": True}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.filterset({"success": False}, self.queryset).qs.count(), 1)
+
+    def test_model(self):
+        """The model filter finds both."""
+        self.assertEqual(self.filterset({"model": [self.model.pk]}, self.queryset).qs.count(), 2)
+
+    def test_q_matches_the_error_text(self):
+        """Finding a failure by its message is the point of recording it."""
+        self.assertEqual(self.filterset({"q": "broke"}, self.queryset).qs.count(), 1)

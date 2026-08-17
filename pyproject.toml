@@ -34,6 +34,9 @@ nautobot = ">=3.2.0,<4.0.0"
 # The Kafka consumer's client, optional: a deployment consuming from Redis, or not consuming at
 # all, installs nothing it does not use. See the Phase 2 spec, section 13.1.
 confluent-kafka = { version = ">=2.0.0,<3.0.0", optional = true }
+# The one LLM runtime dependency (ADR 0006), optional for the same reason: a deployment that has
+# not enabled triage installs no model client. Imported only by services/llm.py (rule L2).
+litellm = { version = ">=1.74.0,<2.0.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 coverage = "*"
@@ -72,8 +75,10 @@ mkdocs-glightbox = "~0.5.2"
 
 [tool.poetry.extras]
 kafka = ["confluent-kafka"]
+llm = ["litellm"]
 all = [
     "confluent-kafka",
+    "litellm",
 ]
 
 [tool.pylint.main]

@@ -1,0 +1,1 @@
+Fixed the development ingestion configuration carrying a dead `redis.password` key the consumer never read; the password now rides in the URL, and `invoke validate-app-config` passes again.

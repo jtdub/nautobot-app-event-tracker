@@ -117,9 +117,13 @@ nav:
           - Event Type: "models/eventtype.md"
           - Ticket Update: "models/ticketupdate.md"
           - Ingestion Stats: "models/ingestionstats.md"
+          - LLM Provider: "models/llmprovider.md"
+          - LLM Model: "models/llmmodel.md"
+          - LLM Usage Record: "models/llmusagerecord.md"
   - Administrator Guide:
       - Install and Configure: "admin/install.md"
       - Running the Event Consumer: "admin/ingestion.md"
+      - Configuring LLM Providers: "admin/llm.md"
       - Upgrade: "admin/upgrade.md"
       - Uninstall: "admin/uninstall.md"
       - Compatibility Matrix: "admin/compatibility_matrix.md"
@@ -149,6 +153,7 @@ nav:
               - "Phase 1 — Ticketing": "specs/phase-1-tickets.md"
               - "Phase 2 — Ingestion": "specs/phase-2-ingestion.md"
               - "Phase 2.5 — Lab Environment": "specs/phase-2-5-lab-environment.md"
+              - "Phase 3 — LLM Service Layer and Triage": "specs/phase-3-llm-triage.md"
       - Code Reference:
           - "dev/code_reference/index.md"
           - Package: "dev/code_reference/package.md"

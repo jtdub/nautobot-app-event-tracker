@@ -351,6 +351,27 @@ class EventTicketUIViewSet(NautobotUIViewSet):
                 enable_related_link=False,
                 include_columns=["created", "update_type", "source", "user", "message", "related_object"],
             ),
+            ObjectsTablePanel(
+                weight=600,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.LLMUsageRecordTable,
+                table_filter="ticket",
+                label="LLM Usage",
+                select_related_fields=["model__provider"],
+                enable_bulk_actions=False,
+                # Usage records are written by the service layer alone, so there is nothing to add
+                # from here.
+                add_button_route=None,
+                include_columns=[
+                    "called_at",
+                    "model",
+                    "purpose",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "cost",
+                    "success",
+                ],
+            ),
         ],
         extra_buttons=[
             AttachObjectButton(weight=100, label="Attach Object", icon="mdi-link-variant"),
@@ -570,6 +591,102 @@ class IngestionStatsUIViewSet(  # pylint: disable=too-many-ancestors,abstract-me
                 weight=200,
                 section=SectionChoices.RIGHT_HALF,
                 label="Drops by reason",
+            ),
+        ),
+    )
+
+
+class LLMProviderUIViewSet(NautobotUIViewSet):
+    """ViewSet for LLMProvider views."""
+
+    bulk_update_form_class = forms.LLMProviderBulkEditForm
+    filterset_class = filters.LLMProviderFilterSet
+    filterset_form_class = forms.LLMProviderFilterForm
+    form_class = forms.LLMProviderForm
+    lookup_field = "pk"
+    # Annotated so the table's model count is one query rather than one per row.
+    queryset = models.LLMProvider.objects.select_related("external_integration").annotate(
+        model_count=count_related(models.LLMModel, "provider")
+    )
+    serializer_class = serializers.LLMProviderSerializer
+    table_class = tables.LLMProviderTable
+
+    object_detail_content = ObjectDetailContent(
+        panels=[
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=["name", "description", "provider_type", "external_integration", "enabled"],
+            ),
+            ObjectsTablePanel(
+                weight=200,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.LLMModelTable,
+                table_filter="provider",
+                related_field_name="provider",
+                label="Models",
+                select_related_fields=["provider"],
+            ),
+        ],
+    )
+
+
+class LLMModelUIViewSet(NautobotUIViewSet):
+    """ViewSet for LLMModel views."""
+
+    bulk_update_form_class = forms.LLMModelBulkEditForm
+    filterset_class = filters.LLMModelFilterSet
+    filterset_form_class = forms.LLMModelFilterForm
+    form_class = forms.LLMModelForm
+    lookup_field = "pk"
+    queryset = models.LLMModel.objects.select_related("provider")
+    serializer_class = serializers.LLMModelSerializer
+    table_class = tables.LLMModelTable
+
+    object_detail_content = ObjectDetailContent(
+        panels=[
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=list(tables.LLM_MODEL_FIELDS),
+            ),
+            ObjectsTablePanel(
+                weight=200,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.LLMUsageRecordTable,
+                table_filter="model",
+                label="Recent Usage",
+                select_related_fields=["model__provider", "ticket"],
+                enable_bulk_actions=False,
+                add_button_route=None,
+            ),
+        ],
+    )
+
+
+class LLMUsageRecordUIViewSet(  # pylint: disable=too-many-ancestors,abstract-method
+    ObjectListViewMixin,
+    ObjectDetailViewMixin,
+):
+    """Read-only views for the LLM usage records.
+
+    List and detail only, the IngestionStats posture and for the same reason: the service layer is
+    the only thing that writes these rows (rule L1), so there is no add, edit or delete route.
+    """
+
+    queryset = models.LLMUsageRecord.objects.select_related("model__provider", "ticket")
+    table_class = tables.LLMUsageRecordTable
+    filterset_class = filters.LLMUsageRecordFilterSet
+    filterset_form_class = forms.LLMUsageRecordFilterForm
+    serializer_class = serializers.LLMUsageRecordSerializer
+    action_buttons = ()
+
+    object_detail_content = ObjectDetailContent(
+        panels=(
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=(*tables.LLM_USAGE_FIELDS, "request_id", "error"),
             ),
         ),
     )

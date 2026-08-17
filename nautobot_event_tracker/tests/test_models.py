@@ -12,6 +12,8 @@ from nautobot.apps.testing import ModelTestCases
 
 from nautobot_event_tracker import models
 from nautobot_event_tracker.choices import (
+    LLMProviderTypeChoices,
+    LLMPurposeChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
@@ -414,3 +416,129 @@ class TestIngestionStats(TestCase):
     def test_stats_are_not_change_logged(self):
         """A row rewritten every few seconds must not fill the change log."""
         self.assertFalse(hasattr(self._create(), "to_objectchange"))
+
+
+class TestLLMProvider(ModelTestCases.BaseModelTestCase):
+    """The LLM provider registry entry."""
+
+    model = models.LLMProvider
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        super().setUpTestData()
+        fixtures.create_llmprovider(name="Provider One")
+        fixtures.create_llmprovider(name="Provider Two")
+        fixtures.create_llmprovider(name="Provider Three")
+
+    def test_str(self):
+        """A provider stringifies as its name."""
+        self.assertEqual(str(fixtures.create_llmprovider(name="Stringify Me")), "Stringify Me")
+
+    def test_an_openai_compatible_provider_needs_a_remote_url(self):
+        """There is no default endpoint to fall back to for a self-hosted protocol."""
+        integration = fixtures.create_external_integration(name="No URL", remote_url="")
+        provider = models.LLMProvider(
+            name="Missing Endpoint",
+            provider_type=LLMProviderTypeChoices.OPENAI_COMPATIBLE,
+            external_integration=integration,
+        )
+        with self.assertRaises(ValidationError) as raised:
+            provider.full_clean()
+        self.assertIn("external_integration", raised.exception.message_dict)
+
+    def test_a_hosted_provider_needs_no_remote_url(self):
+        """OpenAI and Anthropic have well-known endpoints litellm already knows."""
+        integration = fixtures.create_external_integration(name="Hosted", remote_url="")
+        provider = models.LLMProvider(
+            name="Hosted Provider",
+            provider_type=LLMProviderTypeChoices.OPENAI,
+            external_integration=integration,
+        )
+        provider.full_clean()
+
+    def test_protected_while_models_exist(self):
+        """A provider with models cannot be deleted out from under them."""
+        model = fixtures.create_llmmodel()
+        with self.assertRaises(ProtectedError):
+            model.provider.delete()
+
+
+class TestLLMModel(ModelTestCases.BaseModelTestCase):
+    """The LLM model registry entry."""
+
+    model = models.LLMModel
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        super().setUpTestData()
+        provider = fixtures.create_llmprovider()
+        fixtures.create_llmmodel(name="model-one", provider=provider)
+        fixtures.create_llmmodel(name="model-two", provider=provider)
+        fixtures.create_llmmodel(name="model-three", provider=provider)
+
+    def test_str_names_the_provider_and_the_model(self):
+        """Two providers may offer the same model name, so both halves matter."""
+        model = models.LLMModel.objects.get(name="model-one")
+        self.assertEqual(str(model), "Test Provider: model-one")
+
+    def test_one_name_per_provider(self):
+        """The same name on the same provider is a duplicate; on another provider it is not."""
+        provider = fixtures.create_llmprovider()
+        with self.assertRaises(IntegrityError):
+            models.LLMModel.objects.create(provider=provider, name="model-one")
+
+    def test_the_same_name_on_another_provider_is_allowed(self):
+        """A model name is only unique within its provider."""
+        other = fixtures.create_llmprovider(name="Other Provider")
+        models.LLMModel.objects.create(provider=other, name="model-one")
+        self.assertEqual(models.LLMModel.objects.filter(name="model-one").count(), 2)
+
+
+class TestLLMUsageRecord(TestCase):
+    """The accounting row. Constructed directly only here, as the guard tests allow."""
+
+    def _record(self, **kwargs):
+        """One usage record, built directly to exercise the model itself."""
+        defaults = {
+            "model": fixtures.create_llmmodel(),
+            "purpose": LLMPurposeChoices.TRIAGE,
+            "success": True,
+        }
+        record = models.LLMUsageRecord(**{**defaults, **kwargs})
+        record.full_clean()
+        record.save()
+        return record
+
+    def test_counters_default_to_zero(self):
+        """A record carries zeros until the provider reports usage."""
+        record = self._record()
+        self.assertEqual(record.prompt_tokens, 0)
+        self.assertEqual(record.completion_tokens, 0)
+        self.assertEqual(record.cost, 0)
+        self.assertEqual(record.latency_ms, 0)
+
+    def test_ordering_is_newest_first(self):
+        """The list view answers 'what just happened' without a sort."""
+        older = self._record(called_at=timezone.now() - timedelta(minutes=5))
+        newer = self._record()
+        self.assertEqual(list(models.LLMUsageRecord.objects.all()), [newer, older])
+
+    def test_a_deleted_ticket_leaves_the_spend_history(self):
+        """The money was spent whether or not the ticket survived."""
+        ticket = fixtures.create_ticket()
+        record = self._record(ticket=ticket)
+        ticket.delete()
+        record.refresh_from_db()
+        self.assertIsNone(record.ticket)
+
+    def test_the_model_is_protected_while_records_exist(self):
+        """Deleting a registry entry must not silently delete its accounting."""
+        record = self._record()
+        with self.assertRaises(ProtectedError):
+            record.model.delete()
+
+    def test_records_are_not_change_logged(self):
+        """One ObjectChange per model call would bury the change log, as for IngestionStats."""
+        self.assertFalse(hasattr(self._record(), "to_objectchange"))

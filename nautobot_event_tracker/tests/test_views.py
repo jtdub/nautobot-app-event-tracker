@@ -2,8 +2,10 @@
 
 # pylint: disable=too-many-ancestors,duplicate-code
 
+from decimal import Decimal
+
 from django.contrib.contenttypes.models import ContentType
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from nautobot.apps.choices import CustomFieldTypeChoices
 from nautobot.apps.testing import TestCase, ViewTestCases
 from nautobot.dcim.models import Location
@@ -12,12 +14,13 @@ from nautobot.extras.models import CustomField
 from nautobot_event_tracker import forms
 from nautobot_event_tracker.api.serializers import SERVICE_OWNED_FIELDS
 from nautobot_event_tracker.choices import (
+    LLMProviderTypeChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
     UpdateTypeChoices,
 )
-from nautobot_event_tracker.models import EventTicket, EventType
+from nautobot_event_tracker.models import EventTicket, EventType, LLMModel, LLMProvider, LLMUsageRecord
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.tests import fixtures
 
@@ -546,3 +549,94 @@ class TestDetachingSomethingNotAttached(TestCase):
             },
         )
         self.assertEqual(self.ticket.updates.count(), before)
+
+
+class LLMProviderViewTest(ViewTestCases.PrimaryObjectViewTestCase):
+    """Standard view test cases for LLMProvider."""
+
+    model = LLMProvider
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        fixtures.create_llmprovider(name="Provider One")
+        fixtures.create_llmprovider(name="Provider Two")
+        fixtures.create_llmprovider(name="Provider Three")
+        integration = fixtures.create_external_integration()
+        cls.form_data = {
+            "name": "View Test Provider",
+            "description": "created through the form",
+            "provider_type": LLMProviderTypeChoices.OPENAI_COMPATIBLE,
+            "external_integration": integration.pk,
+            "enabled": True,
+        }
+        cls.bulk_edit_data = {"description": "bulk edited"}
+
+
+class LLMModelViewTest(ViewTestCases.PrimaryObjectViewTestCase):
+    """Standard view test cases for LLMModel."""
+
+    model = LLMModel
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        provider = fixtures.create_llmprovider()
+        fixtures.create_llmmodel(name="model-one", provider=provider)
+        fixtures.create_llmmodel(name="model-two", provider=provider)
+        fixtures.create_llmmodel(name="model-three", provider=provider)
+        cls.form_data = {
+            "provider": provider.pk,
+            "name": "view-test-model",
+            "description": "created through the form",
+            "enabled": True,
+            # Decimal, not string: the generic edit test compares this dict against the saved
+            # instance, which holds Decimals.
+            "input_cost_per_million": Decimal("1.0000"),
+            "output_cost_per_million": Decimal("2.0000"),
+            "default_parameters": "{}",
+        }
+        cls.bulk_edit_data = {"description": "bulk edited"}
+
+
+class LLMUsageRecordViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+):
+    """List and detail only: the usage pages exist to be read, not written."""
+
+    model = LLMUsageRecord
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create three records the sole-writer way."""
+        model = fixtures.create_llmmodel()
+        for _ in range(3):
+            fixtures.create_llmusagerecord(model=model)
+
+    def test_there_is_no_add_route(self):
+        """The router must not register an add view for a service-written model."""
+        with self.assertRaises(NoReverseMatch):
+            reverse("plugins:nautobot_event_tracker:llmusagerecord_add")
+
+
+class TicketDetailShowsLLMUsageTest(TestCase):
+    """The ticket page carries its LLM spend."""
+
+    def setUp(self):
+        """A ticket with one usage record linked to it."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.ticket = fixtures.create_ticket(user=self.user)
+        fixtures.create_llmusagerecord(ticket=self.ticket)
+
+    def test_the_panel_renders(self):
+        """The detail page shows the LLM Usage panel with the record in it."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_eventticket",
+            "nautobot_event_tracker.view_llmusagerecord",
+        )
+        response = self.client.get(self.ticket.get_absolute_url())
+        text = response.content.decode()
+        self.assertIn("LLM Usage", text)
+        self.assertIn("test-model", text)

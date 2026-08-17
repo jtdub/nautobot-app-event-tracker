@@ -17,7 +17,15 @@ from rest_framework.serializers import ListSerializer
 from nautobot_event_tracker import filters
 from nautobot_event_tracker.api import serializers
 from nautobot_event_tracker.choices import TicketSourceChoices
-from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
+from nautobot_event_tracker.models import (
+    EventTicket,
+    EventType,
+    IngestionStats,
+    LLMModel,
+    LLMProvider,
+    LLMUsageRecord,
+    TicketUpdate,
+)
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import (
     InvalidActorError,
@@ -119,6 +127,35 @@ class IngestionStatsViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-a
     queryset = IngestionStats.objects.all()
     serializer_class = serializers.IngestionStatsSerializer
     filterset_class = filters.IngestionStatsFilterSet
+    http_method_names = ["get", "head", "options"]
+
+
+class LLMProviderViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
+    """LLMProvider viewset."""
+
+    queryset = LLMProvider.objects.select_related("external_integration")
+    serializer_class = serializers.LLMProviderSerializer
+    filterset_class = filters.LLMProviderFilterSet
+
+
+class LLMModelViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
+    """LLMModel viewset."""
+
+    queryset = LLMModel.objects.select_related("provider")
+    serializer_class = serializers.LLMModelSerializer
+    filterset_class = filters.LLMModelFilterSet
+
+
+class LLMUsageRecordViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-ancestors
+    """LLMUsageRecord viewset.
+
+    Read-only by construction, like TicketUpdate and for the same reason: the rows are the service
+    layer's accounting of calls it made (rule L1), and there is nothing for a client to change.
+    """
+
+    queryset = LLMUsageRecord.objects.select_related("model__provider", "ticket")
+    serializer_class = serializers.LLMUsageRecordSerializer
+    filterset_class = filters.LLMUsageRecordFilterSet
     http_method_names = ["get", "head", "options"]
 
 

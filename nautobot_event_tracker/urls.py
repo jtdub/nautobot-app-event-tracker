@@ -13,6 +13,9 @@ router = NautobotUIViewSetRouter()
 router.register("event-types", views.EventTypeUIViewSet)
 router.register("tickets", views.EventTicketUIViewSet)
 router.register("ingestion-stats", views.IngestionStatsUIViewSet)
+router.register("llm-providers", views.LLMProviderUIViewSet)
+router.register("llm-models", views.LLMModelUIViewSet)
+router.register("llm-usage", views.LLMUsageRecordUIViewSet)
 
 urlpatterns = [
     path(

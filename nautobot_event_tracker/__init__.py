@@ -36,6 +36,11 @@ class EventTrackerConfig(NautobotAppConfig):
         # for the keys inside this one are applied by `ingestion.config`, not here. See the Phase 2
         # spec, section 3.
         "ingestion": {},
+        # LLM service settings. Defaults for the keys inside this one are applied by
+        # `services.llm`, not here, for the same merge reason as `ingestion`. Providers, models,
+        # and credentials are registry objects, never settings (ADR 0006). See the Phase 3 spec,
+        # section 3.
+        "llm": {},
     }
     docs_view_name = "plugins:nautobot_event_tracker:docs"
     searchable_models = ["eventticket", "eventtype"]

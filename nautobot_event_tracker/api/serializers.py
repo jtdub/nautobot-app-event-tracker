@@ -3,7 +3,15 @@
 from nautobot.apps.api import BaseModelSerializer, ContentTypeField, NautobotModelSerializer, TaggedModelSerializerMixin
 from rest_framework import serializers
 
-from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
+from nautobot_event_tracker.models import (
+    EventTicket,
+    EventType,
+    IngestionStats,
+    LLMModel,
+    LLMProvider,
+    LLMUsageRecord,
+    TicketUpdate,
+)
 
 #: Fields the service layer owns. A write to any of them through the generic endpoints is rejected
 #: rather than silently dropped, so a client never gets a 200 for a change that did not happen.
@@ -149,5 +157,55 @@ class IngestionStatsSerializer(BaseModelSerializer):
             "suppressed",
             "drops_by_reason",
             "last_message_at",
+        ]
+        read_only_fields = fields
+
+
+class LLMProviderSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
+    """LLMProvider Serializer."""
+
+    class Meta:
+        """Meta attributes."""
+
+        model = LLMProvider
+        fields = "__all__"
+
+
+class LLMModelSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
+    """LLMModel Serializer."""
+
+    class Meta:
+        """Meta attributes."""
+
+        model = LLMModel
+        fields = "__all__"
+
+
+class LLMUsageRecordSerializer(BaseModelSerializer):
+    """LLMUsageRecord Serializer.
+
+    Read-only in every field. A usage record is the service layer's accounting of a call it made;
+    nothing outside the service has any business writing one (rule L1).
+    """
+
+    class Meta:
+        """Meta attributes."""
+
+        model = LLMUsageRecord
+        fields = [
+            "id",
+            "url",
+            "natural_slug",
+            "model",
+            "ticket",
+            "purpose",
+            "request_id",
+            "prompt_tokens",
+            "completion_tokens",
+            "cost",
+            "latency_ms",
+            "success",
+            "error",
+            "called_at",
         ]
         read_only_fields = fields

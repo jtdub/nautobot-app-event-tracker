@@ -84,6 +84,37 @@ class UpdateTypeChoices(ChoiceSet):
     )
 
 
+class LLMProviderTypeChoices(ChoiceSet):
+    """The kind of API an LLMProvider speaks.
+
+    This selects how the service layer builds the litellm model string and which credentials it
+    expects, nothing more. An on-premises endpoint speaking the OpenAI protocol is a first-class
+    citizen here (ADR 0006): many network operators cannot send configuration to a third party.
+    """
+
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    OPENAI_COMPATIBLE = "openai_compatible"
+
+    CHOICES = (
+        (OPENAI, "OpenAI"),
+        (ANTHROPIC, "Anthropic"),
+        (OPENAI_COMPATIBLE, "OpenAI-compatible"),
+    )
+
+
+class LLMPurposeChoices(ChoiceSet):
+    """What an LLM call was for. Every LLMUsageRecord carries one.
+
+    Phase 3 has a single purpose; later phases append (agents in Phase 4, embeddings in Phase 5)
+    without a migration, since choices are code.
+    """
+
+    TRIAGE = "triage"
+
+    CHOICES = ((TRIAGE, "Triage"),)
+
+
 #: Numeric weights for severity, so that ordering and comparison do not depend on alphabetical
 #: accident. Higher is more severe.
 SEVERITY_WEIGHTS = {
