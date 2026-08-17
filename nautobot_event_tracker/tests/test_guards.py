@@ -16,6 +16,10 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 SERVICES_DIR = APP_ROOT / "services"
 MIGRATIONS_DIR = APP_ROOT / "migrations"
 
+#: Every manager method that writes. One set for every sole-writer guard, so strengthening the
+#: matcher strengthens all of them at once rather than the one someone happened to be editing.
+WRITE_METHODS = frozenset({"create", "get_or_create", "update_or_create", "bulk_create", "update"})
+
 
 def _python_files_outside_services():
     """Yield every app module that is not part of the service layer."""
@@ -27,11 +31,11 @@ def _python_files_outside_services():
         yield path
 
 
-def _manager_call_offenders(paths, models, methods):
+def _manager_call_offenders(paths, models, methods=WRITE_METHODS):
     """Yield `path:line` for every `<Model>.objects.<method>()` call in these files.
 
     The AST rather than a string search: a docstring mentioning the call is not the call. Shared by
-    both write guards so a fix to the matcher cannot land in one copy only.
+    every write guard so a fix to the matcher cannot land in one copy only.
     """
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -46,6 +50,19 @@ def _manager_call_offenders(paths, models, methods):
                 and isinstance(value.value, ast.Name)
                 and value.value.id in models
             ):
+                yield f"{path.relative_to(APP_ROOT)}:{node.lineno}"
+
+
+def _constructor_call_offenders(paths, class_names):
+    """Yield `path:line` for every direct `<Model>(...)` construction in these files.
+
+    The companion to `_manager_call_offenders`, shared for the same reason: the sole-writer
+    guards need both shapes, and two copies of a matcher drift.
+    """
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in class_names:
                 yield f"{path.relative_to(APP_ROOT)}:{node.lineno}"
 
 
@@ -84,14 +101,8 @@ class StatusAssignmentGuardTest(SimpleTestCase):
         """
         allowed = {"tests/test_models.py"}
         paths = [path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in allowed]
-        offenders = list(_manager_call_offenders(paths, {"TicketUpdate"}, {"create"}))
-
-        # Direct construction, which the manager matcher cannot see.
-        for path in paths:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "TicketUpdate":
-                    offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno}")
+        offenders = list(_manager_call_offenders(paths, {"TicketUpdate"}))
+        offenders += list(_constructor_call_offenders(paths, {"TicketUpdate"}))
 
         self.assertEqual(
             offenders,
@@ -226,13 +237,7 @@ class IngestionGuardTest(SimpleTestCase):
 
     def test_no_direct_ticket_writes_in_the_ingestion_package(self):
         """`EventTicket.objects.create()` there would bypass the trail and the dedup rule."""
-        offenders = list(
-            _manager_call_offenders(
-                self._ingestion_modules(),
-                {"EventTicket", "TicketUpdate"},
-                {"create", "get_or_create", "update_or_create", "bulk_create"},
-            )
-        )
+        offenders = list(_manager_call_offenders(self._ingestion_modules(), {"EventTicket", "TicketUpdate"}))
 
         self.assertEqual(
             offenders,
@@ -265,27 +270,33 @@ class IngestionGuardTest(SimpleTestCase):
             "Offending lines: " + ", ".join(offenders),
         )
 
+    @staticmethod
+    def _poetry():
+        """The parsed `[tool.poetry]` table, so the guards read data rather than source strings."""
+        try:
+            import tomllib  # pylint: disable=import-outside-toplevel
+        except ImportError:  # Python 3.10
+            import tomli as tomllib  # pylint: disable=import-outside-toplevel
+
+        with open(APP_ROOT.parent / "pyproject.toml", "rb") as handle:
+            return tomllib.load(handle)["tool"]["poetry"]
+
     def test_the_app_declares_no_provider_sdk_dependency(self):
         """The no-SDK rule at the packaging level, where it is equally easy to break."""
-        pyproject = (APP_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
-        dependencies = pyproject.split("[tool.poetry.group.dev.dependencies]")[0]
+        dependencies = self._poetry()["dependencies"]
         for name in self.PROVIDER_SDKS:
             self.assertNotIn(name, dependencies, f"'{name}' must not be a runtime dependency; use litellm")
 
     def test_litellm_is_an_optional_dependency(self):
         """litellm stays behind the `llm` extra: a deployment without triage installs no client."""
-        pyproject = (APP_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
-        dependency_lines = [
-            line
-            for line in pyproject.split("[tool.poetry.group.dev.dependencies]")[0].splitlines()
-            if line.startswith("litellm")
-        ]
-        self.assertEqual(len(dependency_lines), 1, "litellm must be declared exactly once as a runtime dependency")
-        self.assertIn("optional = true", dependency_lines[0], "litellm must be optional")
-
-        extras = pyproject.split("[tool.poetry.extras]")[1].split("[tool.")[0]
-        self.assertIn('llm = ["litellm"]', extras, "the 'llm' extra must install litellm")
-        self.assertIn('"litellm",', extras, "the 'all' extra must include litellm")
+        poetry = self._poetry()
+        self.assertIs(
+            poetry["dependencies"].get("litellm", {}).get("optional"),
+            True,
+            "litellm must be a runtime dependency marked optional",
+        )
+        self.assertIn("litellm", poetry["extras"].get("llm", ()), "the 'llm' extra must install litellm")
+        self.assertIn("litellm", poetry["extras"].get("all", ()), "the 'all' extra must include litellm")
 
 
 class LLMUsageGuardTest(SimpleTestCase):
@@ -295,19 +306,8 @@ class LLMUsageGuardTest(SimpleTestCase):
         """The model test suite is exempt, as for TicketUpdate, and for the same reason."""
         allowed = {"tests/test_models.py"}
         paths = [path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in allowed]
-        offenders = list(
-            _manager_call_offenders(
-                paths,
-                {"LLMUsageRecord"},
-                {"create", "get_or_create", "update_or_create", "bulk_create", "update"},
-            )
-        )
-
-        for path in paths:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "LLMUsageRecord":
-                    offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno}")
+        offenders = list(_manager_call_offenders(paths, {"LLMUsageRecord"}))
+        offenders += list(_constructor_call_offenders(paths, {"LLMUsageRecord"}))
 
         self.assertEqual(
             offenders,

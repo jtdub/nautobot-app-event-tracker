@@ -22,7 +22,20 @@ from nautobot_event_tracker.choices import (
 )
 from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, LLMModel, LLMProvider, LLMUsageRecord
 from nautobot_event_tracker.services import tickets as ticket_service
-from nautobot_event_tracker.tables import LLM_MODEL_FIELDS
+
+#: The model registry entry's editable fields, in the order they read best. Shared with the detail
+#: panel in views.py so the form and the page cannot drift apart. Homed here rather than in
+#: tables.py: no table uses it, and forms must not depend on presentation modules.
+LLM_MODEL_FIELDS = (
+    "provider",
+    "name",
+    "description",
+    "enabled",
+    "input_cost_per_million",
+    "output_cost_per_million",
+    "max_output_tokens",
+    "default_parameters",
+)
 
 #: Nautobot has BOOLEAN_WITH_BLANK_CHOICES, but only under nautobot.core.forms.constants, which is
 #: outside the public nautobot.apps surface this app otherwise stays within.

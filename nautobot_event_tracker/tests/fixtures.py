@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timedelta
 from datetime import timezone as datetime_timezone
 from decimal import Decimal
+from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -272,24 +273,13 @@ def create_llmmodel(name="test-model", provider=None, **overrides):
 class FakeLLMResponse:  # pylint: disable=too-few-public-methods
     """The shape `litellm.completion` returns, as far as the service reads it."""
 
-    class _Usage:  # pylint: disable=too-few-public-methods
-        def __init__(self, prompt_tokens, completion_tokens):
-            self.prompt_tokens = prompt_tokens
-            self.completion_tokens = completion_tokens
-
-    class _Message:  # pylint: disable=too-few-public-methods
-        def __init__(self, content):
-            self.content = content
-
-    class _Choice:  # pylint: disable=too-few-public-methods
-        def __init__(self, content):
-            self.message = FakeLLMResponse._Message(content)
-
     def __init__(self, content="ok", *, prompt_tokens=10, completion_tokens=5, request_id="req-1", usage=True):
         """A successful-looking response carrying this content and usage."""
         self.id = request_id
-        self.choices = [self._Choice(content)] if content is not None else []
-        self.usage = self._Usage(prompt_tokens, completion_tokens) if usage else None
+        self.choices = [SimpleNamespace(message=SimpleNamespace(content=content))] if content is not None else []
+        self.usage = (
+            SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens) if usage else None
+        )
 
 
 class FakeLLMClient:  # pylint: disable=too-few-public-methods

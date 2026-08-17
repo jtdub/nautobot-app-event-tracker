@@ -103,6 +103,17 @@ class LLMProviderTypeChoices(ChoiceSet):
     )
 
 
+#: The litellm routing prefix for each provider type, kept beside the ChoiceSet the same way
+#: SEVERITY_WEIGHTS sits beside SeverityChoices: a new provider type is one edit in one file, not
+#: a choices entry that compiles everywhere and KeyErrors at call time. An OpenAI-compatible
+#: endpoint uses the `openai` prefix with its own `api_base`.
+LITELLM_PROVIDER_PREFIXES = {
+    LLMProviderTypeChoices.OPENAI: "openai",
+    LLMProviderTypeChoices.ANTHROPIC: "anthropic",
+    LLMProviderTypeChoices.OPENAI_COMPATIBLE: "openai",
+}
+
+
 class LLMPurposeChoices(ChoiceSet):
     """What an LLM call was for. Every LLMUsageRecord carries one.
 

@@ -42,19 +42,6 @@ TICKET_CORE_FIELDS = (
 )
 
 
-#: The model registry entry's editable fields, in the order they read best. Shared by the form and
-#: the detail panel so the two cannot drift apart.
-LLM_MODEL_FIELDS = (
-    "provider",
-    "name",
-    "description",
-    "enabled",
-    "input_cost_per_million",
-    "output_cost_per_million",
-    "max_output_tokens",
-    "default_parameters",
-)
-
 #: The usage record's accounting fields, in the order they read best: what was called, what it
 #: consumed, and what came of it. Shared by the list table and the ticket detail panel so the two
 #: cannot drift apart.

@@ -25,16 +25,18 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from decimal import Decimal
 
 from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured, ObjectDoesNotExist
 from django.db import transaction
 from django.utils import timezone
+from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.utils import deepmerge
+from nautobot.extras.choices import SecretsGroupSecretTypeChoices
 
-from nautobot_event_tracker.choices import LLMProviderTypeChoices
+from nautobot_event_tracker.choices import LITELLM_PROVIDER_PREFIXES
 from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
+from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ DEFAULT_TIMEOUT_SECONDS = 30
 #: and why a call failed, not to archive a stack trace.
 ERROR_TEXT_CAP = 1000
 
-TOKENS_PER_MILLION = Decimal(1_000_000)
+TOKENS_PER_MILLION = 1_000_000
 
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
 #: rather than one per call. The same shape as `StatsRecorder._prune`'s bookkeeping.
@@ -62,27 +64,51 @@ _last_pruned_on = None  # pylint: disable=invalid-name
 
 @dataclass(frozen=True)
 class LLMResponse:
-    """What a successful call returns."""
+    """What a successful call returns: the text, and the accounting row that priced it.
+
+    The numbers live on the record alone; the properties are conveniences, not copies, so a new
+    accounting field is added in one place.
+    """
 
     text: str
-    prompt_tokens: int
-    completion_tokens: int
-    cost: Decimal
-    latency_ms: int
-    request_id: str
     record: LLMUsageRecord
+
+    @property
+    def prompt_tokens(self):
+        """Tokens the prompt cost, as recorded."""
+        return self.record.prompt_tokens
+
+    @property
+    def completion_tokens(self):
+        """Tokens the completion cost, as recorded."""
+        return self.record.completion_tokens
+
+    @property
+    def cost(self):
+        """The call's computed price, as recorded."""
+        return self.record.cost
+
+    @property
+    def latency_ms(self):
+        """How long the call took, as recorded."""
+        return self.record.latency_ms
+
+    @property
+    def request_id(self):
+        """The provider's response identifier, as recorded."""
+        return self.record.request_id
 
 
 def get_settings():
     """The `llm` settings block with defaults applied per key."""
-    configured = django_settings.PLUGINS_CONFIG["nautobot_event_tracker"].get("llm") or {}
+    configured = django_settings.PLUGINS_CONFIG.get("nautobot_event_tracker", {}).get("llm") or {}
     return deepmerge(DEFAULTS, configured)
 
 
 def get_model(provider_name, model_name):
     """Resolve an enabled model on an enabled provider, or say exactly what is wrong (L8)."""
     try:
-        model = LLMModel.objects.select_related("provider__external_integration").get(
+        model = LLMModel.objects.select_related("provider__external_integration__secrets_group").get(
             provider__name=provider_name, name=model_name
         )
     except ObjectDoesNotExist as error:
@@ -105,42 +131,39 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     """One model call: refuse (L8), resolve credentials (L3), call (L6), record (L1), price (L5).
 
     `client` is the test seam: a callable `(model_string, messages, **kwargs)` returning a
-    litellm-shaped response object. The default is the real litellm call, and nothing else in the
-    app may supply another one outside a test.
+    litellm-shaped response object. The default is litellm itself, resolved before anything is
+    attempted so that a missing package is a plain `ImproperlyConfigured` - a deployment fault,
+    not a failed call, and not on the record (section 5.2 of the spec).
 
     Returns an `LLMResponse`. Raises `LLMConfigurationError` before any network traffic,
     `LLMCallError` when the call fails, and `LLMResponseError` when what came back is unusable -
     the latter two carrying the usage record already written for the attempt (L4).
     """
     _check_enabled(model)
+    call = client if client is not None else _litellm_completion()
 
     call_kwargs = dict(model.default_parameters or {})
     call_kwargs.update(_credential_kwargs(model.provider))
     call_kwargs["timeout"] = timeout if timeout is not None else DEFAULT_TIMEOUT_SECONDS
-    if max_tokens is not None or model.max_output_tokens is not None:
-        call_kwargs["max_tokens"] = max_tokens if max_tokens is not None else model.max_output_tokens
+    effective_max_tokens = max_tokens if max_tokens is not None else model.max_output_tokens
+    if effective_max_tokens is not None:
+        call_kwargs["max_tokens"] = effective_max_tokens
     if response_format is not None:
         call_kwargs["response_format"] = response_format
 
-    call = client if client is not None else _litellm_completion
     started = time.monotonic()
     try:
         raw = call(_model_string(model), messages, **call_kwargs)
-    except ImproperlyConfigured:
-        # A missing package is a deployment fault, not a failed call: nothing left the process,
-        # so there is nothing to record (same reasoning as L8).
-        raise
     except Exception as error:  # pylint: disable=broad-except
-        # L4 - whatever litellm raised, the caller sees one family, and the failure is on the
+        # L4 - whatever the client raised, the caller sees one family, and the failure is on the
         # record first (L1).
-        latency_ms = _elapsed_ms(started)
-        record = _record_usage(model=model, ticket=ticket, purpose=purpose, latency_ms=latency_ms, error=error)
+        record = _record_usage(
+            model=model, ticket=ticket, purpose=purpose, latency_ms=_elapsed_ms(started), error=error
+        )
         raise LLMCallError(f"LLM call to {model} failed: {error}", record=record) from error
 
     latency_ms = _elapsed_ms(started)
     prompt_tokens, completion_tokens = _token_usage(raw)
-    cost = _cost(model, prompt_tokens, completion_tokens)
-    request_id = str(getattr(raw, "id", "") or "")
     text = _response_text(raw)
 
     record = _record_usage(
@@ -150,22 +173,14 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         latency_ms=latency_ms,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        cost=cost,
-        request_id=request_id,
+        cost=_cost(model, prompt_tokens, completion_tokens),
+        request_id=str(getattr(raw, "id", "") or ""),
         error=None if text is not None else "The response carried no message content.",
     )
     if text is None:
         raise LLMResponseError(f"LLM call to {model} returned no usable content.", record=record)
 
-    return LLMResponse(
-        text=text,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cost=cost,
-        latency_ms=latency_ms,
-        request_id=request_id,
-        record=record,
-    )
+    return LLMResponse(text=text, record=record)
 
 
 def link_usage_records(record_ids, ticket):
@@ -189,63 +204,31 @@ def _check_enabled(model):
 
 
 def _model_string(model):
-    """The litellm model string for this registry entry.
-
-    litellm routes on a `provider/model` prefix; an OpenAI-compatible endpoint uses the `openai`
-    prefix with its own `api_base`.
-    """
-    prefixes = {
-        LLMProviderTypeChoices.OPENAI: "openai",
-        LLMProviderTypeChoices.ANTHROPIC: "anthropic",
-        LLMProviderTypeChoices.OPENAI_COMPATIBLE: "openai",
-    }
-    return f"{prefixes[model.provider.provider_type]}/{model.name}"
+    """The litellm model string for this registry entry. litellm routes on the prefix."""
+    return f"{LITELLM_PROVIDER_PREFIXES[model.provider.provider_type]}/{model.name}"
 
 
 def _credential_kwargs(provider):
     """L3 - the endpoint and key, read from Nautobot at call time and passed straight through.
 
     A missing key is not an error here: an on-premises endpoint may not want one, and one that
-    does will refuse the call itself, which the record then shows.
+    does will refuse the call itself, which the record then shows. Prefers the token secret type
+    and falls back to the plain secret type, so either way an operator has modeled "the key"
+    works.
     """
     integration = provider.external_integration
     kwargs = {}
     if integration.remote_url:
         kwargs["api_base"] = integration.remote_url
-    key = _api_key(integration)
-    if key:
-        kwargs["api_key"] = key
+    for secret_type in (SecretsGroupSecretTypeChoices.TYPE_TOKEN, SecretsGroupSecretTypeChoices.TYPE_SECRET):
+        key = read_secret(integration, secret_type)
+        if key:
+            kwargs["api_key"] = key
+            break
     return kwargs
 
 
-def _api_key(integration):
-    """The API key out of the integration's secrets group, or None when it has none.
-
-    Prefers the token secret type and falls back to the plain secret type, so either way an
-    operator has modeled "the key" works.
-    """
-    from nautobot.extras.choices import (  # pylint: disable=import-outside-toplevel
-        SecretsGroupAccessTypeChoices,
-        SecretsGroupSecretTypeChoices,
-    )
-    from nautobot.extras.secrets.exceptions import SecretError  # pylint: disable=import-outside-toplevel
-
-    if integration.secrets_group is None:
-        return None
-
-    for secret_type in (SecretsGroupSecretTypeChoices.TYPE_TOKEN, SecretsGroupSecretTypeChoices.TYPE_SECRET):
-        try:
-            return integration.secrets_group.get_secret_value(
-                access_type=SecretsGroupAccessTypeChoices.TYPE_GENERIC,
-                secret_type=secret_type,
-                obj=integration,
-            )
-        except (SecretError, ObjectDoesNotExist):
-            continue
-    return None
-
-
-def _litellm_completion(model_string, messages, **kwargs):
+def _litellm_completion():
     """The one place litellm exists (L2). Imported lazily so the app runs without the extra."""
     try:
         import litellm  # pylint: disable=import-outside-toplevel
@@ -253,7 +236,7 @@ def _litellm_completion(model_string, messages, **kwargs):
         raise ImproperlyConfigured(
             "litellm is not installed. Install the app with the 'llm' extra: nautobot-app-event-tracker[llm]."
         ) from error
-    return litellm.completion(model=model_string, messages=messages, **kwargs)
+    return litellm.completion
 
 
 def _token_usage(raw):
@@ -267,8 +250,7 @@ def _token_usage(raw):
 def _cost(model, prompt_tokens, completion_tokens):
     """L5 - price the call from the registry's numbers, not litellm's price tables."""
     return (
-        Decimal(prompt_tokens) * model.input_cost_per_million
-        + Decimal(completion_tokens) * model.output_cost_per_million
+        prompt_tokens * model.input_cost_per_million + completion_tokens * model.output_cost_per_million
     ) / TOKENS_PER_MILLION
 
 
@@ -292,21 +274,23 @@ def _record_usage(  # pylint: disable=too-many-arguments
     latency_ms,
     prompt_tokens=0,
     completion_tokens=0,
-    cost=Decimal(0),
+    cost=0,
     request_id="",
     error=None,
 ):
     """L1 - the one place a usage record is written; success and failure both land here.
 
     Runs in its own transaction so the record survives whatever the caller's transaction later
-    does: a rolled-back ticket write must not unwrite the money it spent.
+    does: a rolled-back ticket write must not unwrite the money it spent. No `full_clean()`:
+    every value is service-constructed or capped here, and validating the FKs the service just
+    fetched would cost three queries per call on the consumer's hot path.
     """
     with transaction.atomic():
-        record = LLMUsageRecord(
+        record = LLMUsageRecord.objects.create(
             model=model,
             ticket=ticket,
             purpose=purpose,
-            request_id=request_id,
+            request_id=request_id[:CHARFIELD_MAX_LENGTH],
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost=cost,
@@ -314,32 +298,34 @@ def _record_usage(  # pylint: disable=too-many-arguments
             success=error is None,
             error=str(error)[:ERROR_TEXT_CAP] if error is not None else "",
         )
-        record.full_clean()
-        record.save()
     _maybe_prune()
     return record
 
 
-def _maybe_prune(now=None):
+def _maybe_prune():
     """L7 - delete usage records older than the retention window, at most once per process per day.
 
     Piggybacked on the write path, like `StatsRecorder._prune`, so retention needs no scheduled
-    job and a deployment that never calls a model never pays for one either.
+    job and a deployment that never calls a model never pays for one either. Never raises: a
+    failed cleanup must not turn the successful call it rode in on into an error.
     """
     global _last_pruned_on  # pylint: disable=global-statement
 
-    now = now or timezone.now()
-    if _last_pruned_on == now.date():
+    today = timezone.now().date()
+    if _last_pruned_on == today:
         return
-    _last_pruned_on = now.date()
+    _last_pruned_on = today
 
-    retention_days = int(get_settings()["usage_retention_days"])
-    cutoff = now - timedelta(days=retention_days)
-    deleted, _ = LLMUsageRecord.objects.filter(called_at__lt=cutoff).delete()
-    if deleted:
-        logger.info("Pruned %d LLM usage records older than %d days", deleted, retention_days)
+    try:
+        retention_days = int(get_settings()["usage_retention_days"])
+        cutoff = timezone.now() - timedelta(days=retention_days)
+        deleted, _ = LLMUsageRecord.objects.filter(called_at__lt=cutoff).delete()
+        if deleted:
+            logger.info("Pruned %d LLM usage records older than %d days", deleted, retention_days)
+    except Exception:  # pylint: disable=broad-except
+        logger.exception("Could not prune LLM usage records")
 
 
-def _elapsed_ms(started, clock=time.monotonic):
+def _elapsed_ms(started):
     """Whole milliseconds since `started`."""
-    return int((clock() - started) * 1000)
+    return int((time.monotonic() - started) * 1000)

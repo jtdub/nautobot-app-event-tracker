@@ -557,26 +557,32 @@ class DropsByReasonPanel(KeyValueTablePanel):
         return key
 
 
-class IngestionStatsUIViewSet(  # pylint: disable=too-many-ancestors,abstract-method
+class RecordUIViewSet(  # pylint: disable=too-many-ancestors,abstract-method
     ObjectListViewMixin,
     ObjectDetailViewMixin,
 ):
-    """Read-only views for the ingestion counters.
+    """List and detail only, for rows that are records of what happened.
 
-    List and detail only: there is no add, edit or delete route, because the consumer is the only
-    thing that writes these rows. Same posture as the update trail, for the same reason.
+    No add, edit or delete route exists, because nothing outside the process that writes these
+    rows has any business changing them. The posture is declared once here, as its API twin
+    `api.views.RecordViewSet` does for REST.
 
     `abstract-method` is disabled deliberately: `NautobotViewSetMixin` declares the form-processing
     hooks for creating, updating and destroying objects, and a viewset offering none of those
     routes has no form to process.
     """
 
+    action_buttons = ()
+
+
+class IngestionStatsUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
+    """Read-only views for the ingestion counters: the consumer is the only writer."""
+
     queryset = models.IngestionStats.objects.all()
     table_class = tables.IngestionStatsTable
     filterset_class = filters.IngestionStatsFilterSet
     filterset_form_class = forms.IngestionStatsFilterForm
     serializer_class = serializers.IngestionStatsSerializer
-    action_buttons = ()
 
     object_detail_content = ObjectDetailContent(
         panels=(
@@ -648,7 +654,7 @@ class LLMModelUIViewSet(NautobotUIViewSet):
             ObjectFieldsPanel(
                 weight=100,
                 section=SectionChoices.LEFT_HALF,
-                fields=list(tables.LLM_MODEL_FIELDS),
+                fields=list(forms.LLM_MODEL_FIELDS),
             ),
             ObjectsTablePanel(
                 weight=200,
@@ -664,22 +670,14 @@ class LLMModelUIViewSet(NautobotUIViewSet):
     )
 
 
-class LLMUsageRecordUIViewSet(  # pylint: disable=too-many-ancestors,abstract-method
-    ObjectListViewMixin,
-    ObjectDetailViewMixin,
-):
-    """Read-only views for the LLM usage records.
-
-    List and detail only, the IngestionStats posture and for the same reason: the service layer is
-    the only thing that writes these rows (rule L1), so there is no add, edit or delete route.
-    """
+class LLMUsageRecordUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
+    """Read-only views for the LLM usage records: the service layer is the only writer (rule L1)."""
 
     queryset = models.LLMUsageRecord.objects.select_related("model__provider", "ticket")
     table_class = tables.LLMUsageRecordTable
     filterset_class = filters.LLMUsageRecordFilterSet
     filterset_form_class = forms.LLMUsageRecordFilterForm
     serializer_class = serializers.LLMUsageRecordSerializer
-    action_buttons = ()
 
     object_detail_content = ObjectDetailContent(
         panels=(
