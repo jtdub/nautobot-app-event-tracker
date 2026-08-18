@@ -26,11 +26,11 @@ from nautobot_event_tracker.choices import TERMINAL_STATUSES, LLMPurposeChoices
 from nautobot_event_tracker.ingestion.constants import (
     ACTION_ACCEPT,
     ACTION_ATTACH,
-    ACTION_SUPPRESS,
     TRIAGE_ACTIONS,
 )
 from nautobot_event_tracker.ingestion.prefilter import Decision
 from nautobot_event_tracker.services import llm as llm_service
+from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import LLMError
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,6 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         on first use rather than here: startup validation (`config.database_problems`) has already
         checked it exists, and resolving lazily keeps construction database-free for tests.
         """
-        self.config = config
         self.triage = config.triage
         self._complete = complete if complete is not None else llm_service.complete
         self._model = None
@@ -154,10 +153,11 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
 
     @staticmethod
     def _open_ticket_exists(dedup_key):
-        """Whether S5 would join this event to an open ticket. One indexed existence query."""
-        from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
+        """Whether S5 would join this event to an open ticket. One indexed existence query.
 
-        return EventTicket.objects.filter(dedup_key=dedup_key).exclude(status__in=TERMINAL_STATUSES).exists()
+        The lookup itself belongs to the write layer, so this asks it rather than restating it.
+        """
+        return ticket_service.open_tickets_for_dedup_key(dedup_key).exists()
 
     def _shortlist(self, event):
         """The open tickets the model may attach to (spec 6.4): bounded and boring on purpose.
@@ -167,7 +167,15 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         """
         from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
 
-        open_tickets = EventTicket.objects.exclude(status__in=TERMINAL_STATUSES).order_by("-last_seen")
+        # Only the five columns the description line uses: a ticket row carries a payload of up to
+        # `max_payload_bytes`, and reading five of those per triaged event to print a title is the
+        # largest avoidable cost on this path.
+        open_tickets = (
+            EventTicket.objects.exclude(status__in=TERMINAL_STATUSES)
+            .select_related("event_type")
+            .only("title", "severity", "last_seen", "event_type__name")
+            .order_by("-last_seen")
+        )
         candidates = list(open_tickets.filter(event_type__name=event.event_type_name)[: self.triage.attach_candidates])
         if not candidates:
             candidates = list(open_tickets[: self.triage.attach_candidates])
@@ -234,6 +242,4 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
                 return ACTION_ACCEPT, "", None
             return ACTION_ATTACH, reason, shortlist[index][0]
 
-        if action == ACTION_SUPPRESS:
-            return ACTION_SUPPRESS, reason, None
         return action, reason, None

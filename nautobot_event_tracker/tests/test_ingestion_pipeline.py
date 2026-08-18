@@ -302,7 +302,7 @@ class TestDedupWarning(PipelineTestCase):
 class TriagedPipelineTestCase(PipelineTestCase):
     """The pipeline with LLM triage in the loop, its model faked at the service seam."""
 
-    TRIAGE = {"enabled": True, "provider": "Test Provider", "model": "test-model"}
+    TRIAGE = fixtures.TRIAGE_SETTINGS
 
     @classmethod
     def setUpTestData(cls):
@@ -318,9 +318,6 @@ class TriagedPipelineTestCase(PipelineTestCase):
     def handle_triaged(self, payload=None, *, answer=None, error=None, topic_settings=None, **kwargs):
         """Push one message through with a triage filter answering `answer` (or failing)."""
         from nautobot_event_tracker.ingestion.triage import TriageFilter  # pylint: disable=import-outside-toplevel
-        from nautobot_event_tracker.tests.test_ingestion_triage import (  # pylint: disable=import-outside-toplevel
-            FakeComplete,
-        )
 
         with fixtures.ingestion_settings(
             triage=self.TRIAGE,
@@ -328,7 +325,7 @@ class TriagedPipelineTestCase(PipelineTestCase):
         ):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
-        self.fake = FakeComplete(answer, error=error) if answer or error else FakeComplete()
+        self.fake = fixtures.FakeComplete(answer, error=error)
         triage = TriageFilter(loaded, complete=self.fake)
         message = fixtures.broker_message(payload if payload is not None else self.payload())
         self.recorder.record(message.topic, received=1, message_time=message.timestamp)

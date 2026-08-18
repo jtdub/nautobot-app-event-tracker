@@ -31,6 +31,9 @@ def ingestion(**overrides):
 
 payload = fixtures.event_payload
 
+#: The one settings override the triage-wiring tests need.
+TRIAGE_ON = {"triage": fixtures.TRIAGE_SETTINGS}
+
 
 class RunnerTestCase(TestCase):
     """A runner driven by a fake consumer."""
@@ -40,9 +43,9 @@ class RunnerTestCase(TestCase):
         """Create test data."""
         fixtures.create_event_types()
 
-    def build(self, messages=(), **kwargs):
-        """A runner over these queued messages."""
-        with ingestion():
+    def build(self, messages=(), *, settings_overrides=None, **kwargs):
+        """A runner over these queued messages, on the default settings or the named overrides."""
+        with ingestion(**(settings_overrides or {})):
             settings = config.load()
         consumer = fixtures.FakeEventConsumer(topics=settings.topic_names, messages=list(messages))
         runner = ConsumerRunner(consumer=consumer, settings=settings, sleep=lambda _seconds: None, **kwargs)
@@ -364,34 +367,22 @@ class TestTriageWiring(RunnerTestCase):
         """The runner wires the step itself, from the same settings everything else uses."""
         from nautobot_event_tracker.ingestion.triage import TriageFilter  # pylint: disable=import-outside-toplevel
 
-        with ingestion(triage={"enabled": True, "provider": "Test Provider", "model": "test-model"}):
-            settings = config.load()
-        consumer = fixtures.FakeEventConsumer(topics=settings.topic_names)
-        runner = ConsumerRunner(consumer=consumer, settings=settings, sleep=lambda _seconds: None)
+        runner, _ = self.build(settings_overrides=TRIAGE_ON)
         self.assertIsInstance(runner.triage, TriageFilter)
 
     def test_a_dry_run_never_builds_triage(self):
         """T9 - a dry run writes nothing, and rule L1 forbids an unrecorded model call."""
-        with ingestion(triage={"enabled": True, "provider": "Test Provider", "model": "test-model"}):
-            settings = config.load()
-        consumer = fixtures.FakeEventConsumer(topics=settings.topic_names)
-        runner = ConsumerRunner(consumer=consumer, settings=settings, dry_run=True, sleep=lambda _seconds: None)
+        runner, _ = self.build(settings_overrides=TRIAGE_ON, dry_run=True)
         self.assertIsNone(runner.triage)
 
     def test_a_dry_run_says_triage_was_skipped(self):
         """The printed decision must not read as what triage would have decided."""
         out = StringIO()
-        with ingestion(triage={"enabled": True, "provider": "Test Provider", "model": "test-model"}):
-            settings = config.load()
-        consumer = fixtures.FakeEventConsumer(
-            topics=settings.topic_names, messages=[fixtures.broker_message(payload())]
-        )
-        runner = ConsumerRunner(
-            consumer=consumer,
-            settings=settings,
+        runner, _ = self.build(
+            messages=[fixtures.broker_message(payload())],
+            settings_overrides=TRIAGE_ON,
             dry_run=True,
             max_messages=1,
-            sleep=lambda _seconds: None,
             stdout=out,
         )
         runner.run()
@@ -400,9 +391,7 @@ class TestTriageWiring(RunnerTestCase):
     def test_a_plain_dry_run_line_is_unchanged(self):
         """A deployment without triage sees the Phase 2 line, word for word."""
         out = StringIO()
-        runner, _ = self.build(
-            messages=[fixtures.broker_message(payload())], dry_run=True, max_messages=1, stdout=out
-        )
+        runner, _ = self.build(messages=[fixtures.broker_message(payload())], dry_run=True, max_messages=1, stdout=out)
         runner.run()
         self.assertIn("network.events: accept", out.getvalue())
         self.assertNotIn("triage", out.getvalue())

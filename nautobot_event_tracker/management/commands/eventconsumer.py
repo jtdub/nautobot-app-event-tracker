@@ -105,7 +105,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         None on a dry run whatever the configuration says (T9): a dry run writes nothing, rule L1
         forbids an unrecorded model call, so the model cannot be consulted.
         """
-        if dry_run or settings.triage is None or not settings.triage.enabled:
+        if dry_run or not settings.triage.enabled:
             return None
         return TriageFilter(settings)
 
@@ -192,7 +192,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
 
         if self.dry_run:
             line = f"{message.topic}: {decision.action} {decision.reason}".rstrip()
-            if self.settings.triage is not None and self.settings.triage.enabled:
+            if self.settings.triage.enabled:
                 # T9 - say that the model was not consulted, so a dry run's output is not read as
                 # what triage would have decided.
                 line += " (triage skipped: dry run)"
@@ -276,7 +276,7 @@ class Command(BaseCommand):
 
     def _banner(self, settings, consumer):
         """One line naming everything an operator would otherwise have to ask for."""
-        if settings.triage is not None and settings.triage.enabled:
+        if settings.triage.enabled:
             triage = f"triage {settings.triage.provider}:{settings.triage.model}"
         else:
             triage = "triage off"

@@ -15,30 +15,8 @@ from nautobot_event_tracker.ingestion.normalize import NormalizedEvent
 from nautobot_event_tracker.ingestion.prefilter import ACCEPT, Decision, FilterResult
 from nautobot_event_tracker.ingestion.triage import TriageFilter
 from nautobot_event_tracker.models import EventType, LLMUsageRecord
-from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.tests import fixtures
-
-TRIAGE_SETTINGS = {"enabled": True, "provider": "Test Provider", "model": "test-model"}
-
-
-class FakeComplete:  # pylint: disable=too-few-public-methods
-    """The `complete` seam: answers with canned text, through the real service and a fake client.
-
-    Routing through `services.llm.complete` keeps rule L1 honest in these tests: every triage
-    decision leaves a real usage record behind, exactly as it would in production.
-    """
-
-    def __init__(self, text='{"action": "accept", "reason": "looks real"}', *, error=None):
-        """Answer every call with this text, or fail every call with this error."""
-        self.text = text
-        self.error = error
-        self.calls = []
-
-    def __call__(self, **kwargs):
-        """Record the call, then answer through the real service."""
-        self.calls.append(kwargs)
-        client = fixtures.FakeLLMClient(fixtures.FakeLLMResponse(self.text), error=self.error)
-        return llm_service.complete(**kwargs, client=client)
+from nautobot_event_tracker.tests.fixtures import TRIAGE_SETTINGS, FakeComplete
 
 
 class TriageTestCase(TestCase):

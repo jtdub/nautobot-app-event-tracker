@@ -214,6 +214,16 @@ def effective_severity(severity, event_type):
     return severity or event_type.default_severity
 
 
+def open_tickets_for_dedup_key(dedup_key):
+    """The open tickets an event with this dedup key would join, newest first (S5's lookup).
+
+    One expression, in the layer that owns the write, for the reason `effective_severity` is:
+    Phase 3's triage has to know whether S5 will join an event before any ticket is written, and a
+    second copy of the predicate would drift from this one silently.
+    """
+    return EventTicket.objects.filter(dedup_key=dedup_key).exclude(status__in=TERMINAL_STATUSES).order_by("-last_seen")
+
+
 def _lock_dedup_key(dedup_key):
     """Hold a transaction-scoped lock on this dedup key until the surrounding transaction ends.
 
@@ -269,12 +279,7 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
     with transaction.atomic():
         if dedup_key:
             _lock_dedup_key(dedup_key)
-            existing = (
-                EventTicket.objects.filter(dedup_key=dedup_key)
-                .exclude(status__in=TERMINAL_STATUSES)
-                .order_by("-last_seen")
-                .first()
-            )
+            existing = open_tickets_for_dedup_key(dedup_key).first()
             if existing is not None:
                 return join_ticket(
                     ticket=existing,

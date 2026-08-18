@@ -117,6 +117,12 @@ class TriageConfig:  # pylint: disable=too-many-instance-attributes
     attach_candidates: int
 
 
+#: What "triage is off" is, so that it is one value rather than a value and a `None`. Every reader
+#: then asks `config.triage.enabled` and no reader has to defend against a state `load()` cannot
+#: produce.
+TRIAGE_OFF = TriageConfig(**DEFAULTS["triage"])
+
+
 @dataclass(frozen=True)
 class TopicConfig:  # pylint: disable=too-many-instance-attributes
     """Everything the pipeline needs to know about one topic."""
@@ -148,7 +154,7 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
     stats_retention_days: int
     kafka: dict = field(default_factory=dict)
     redis: dict = field(default_factory=dict)
-    triage: TriageConfig = None
+    triage: TriageConfig = TRIAGE_OFF
     topics: dict = field(default_factory=dict)
 
     @property
@@ -166,6 +172,27 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
         from nautobot_event_tracker.ingestion.consumers import CONSUMERS  # pylint: disable=import-outside-toplevel
 
         return getattr(self, CONSUMERS[self.consumer].settings_key, {})
+
+
+def _positive_int_problem(label, value):
+    """The faults this value has as a positive integer: one, or none at all.
+
+    A list rather than an optional string so that every caller reads `problems += ...`, matching
+    how the rest of this module accumulates. The `bool` clause is the half that is easy to leave
+    out and hard to notice missing: in Python `True` is an `int`, so without it
+    `attach_candidates: True` validates as 1. Written once so every block checks the same thing
+    and words the fault the same way.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        return [f"{label} must be a positive integer, got {value!r}"]
+    return []
+
+
+def _positive_number_problem(label, value):
+    """The faults this value has as a positive number: one, or none at all."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        return [f"{label} must be a positive number, got {value!r}"]
+    return []
 
 
 def get_settings():
@@ -232,11 +259,9 @@ def load(*, topics=None, consumer=None, require_topics=False):
         "stats_flush_seconds",
         "stats_retention_days",
     ):
-        if not isinstance(raw.get(key), int) or isinstance(raw.get(key), bool) or raw[key] < 1:
-            problems.append(f"'{key}' must be a positive integer, got {raw.get(key)!r}")
+        problems += _positive_int_problem(f"'{key}'", raw.get(key))
 
-    if not isinstance(raw.get("poll_timeout_seconds"), (int, float)) or raw["poll_timeout_seconds"] <= 0:
-        problems.append(f"'poll_timeout_seconds' must be a positive number, got {raw.get('poll_timeout_seconds')!r}")
+    problems += _positive_number_problem("'poll_timeout_seconds'", raw.get("poll_timeout_seconds"))
 
     triage, triage_problems = _parse_triage(raw.get("triage") or {})
     problems.extend(triage_problems)
@@ -284,7 +309,7 @@ def database_problems(config):
             if event_type not in known
         )
 
-    if config.triage is not None and config.triage.enabled:
+    if config.triage.enabled:
         # Through the LLM service so "exists" and "enabled" are one definition (rule L8);
         # `services.llm` imports no litellm at module level, so neither does this check.
         from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=import-outside-toplevel
@@ -376,11 +401,9 @@ def _parse_triage(triage_settings):
                 problems.append(f"triage: '{key}' is required when triage is enabled")
 
     for key in ("max_output_tokens", "max_context_chars", "attach_candidates"):
-        if not isinstance(merged.get(key), int) or isinstance(merged.get(key), bool) or merged[key] < 1:
-            problems.append(f"triage: '{key}' must be a positive integer, got {merged.get(key)!r}")
+        problems += _positive_int_problem(f"triage: '{key}'", merged.get(key))
 
-    if not isinstance(merged.get("timeout_seconds"), (int, float)) or merged["timeout_seconds"] <= 0:
-        problems.append(f"triage: 'timeout_seconds' must be a positive number, got {merged.get('timeout_seconds')!r}")
+    problems += _positive_number_problem("triage: 'timeout_seconds'", merged.get("timeout_seconds"))
 
     if problems:
         return None, problems
@@ -448,8 +471,7 @@ def _parse_rate_limit(topic_name, rate_settings):
     per_minute = rate_settings.get("per_minute")
     burst = rate_settings.get("burst", per_minute)
     for label, value in (("per_minute", per_minute), ("burst", burst)):
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            problems.append(f"topic '{topic_name}': rate_limit {label} must be a positive integer, got {value!r}")
+        problems += _positive_int_problem(f"topic '{topic_name}': rate_limit {label}", value)
 
     if problems:
         return None, problems

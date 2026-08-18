@@ -12,7 +12,7 @@ import time
 
 from django.db import transaction
 
-from nautobot_event_tracker.choices import TERMINAL_STATUSES, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.choices import TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.ingestion.constants import (
     ACTION_ATTACH,
     ACTION_DROP,
@@ -84,20 +84,30 @@ def handle_message(message, *, rules, recorder, config, triage=None, write=True)
         # T1 - a drop never reaches the model.
         return _dropped(message.topic, result.decision.reason, recorder)
 
+    # Read off the triage result here rather than sniffed for further down: only this branch knows
+    # whether `result` is the pre-filter's or the model's, and a missing attribute should be a
+    # loud failure rather than a silently unattributed decision.
+    usage_record_ids = ()
+    ai_decided = False
+
     if triage is not None and write:
         result = triage.decide(event, topic_config, result, offset=message.offset)
         if result.triaged:
             recorder.record(message.topic, triaged=1, triage_errors=1 if result.errored else 0)
+            usage_record_ids = result.usage_record_ids
+            # T4's fallback returns the pre-filter's own decision, so the model decided this one
+            # only when the call actually produced an answer.
+            ai_decided = not result.errored
         if result.decision.action == ACTION_DROP:
             # T8 - the counter key is fixed; the model's own reason goes to the log.
             logger.info("LLM triage dropped an event from %s: %s", message.topic, result.decision.reason)
             return _dropped(message.topic, REASON_TRIAGE, recorder)
 
     if write:
-        ticket = _apply(event, result, recorder, config)
+        ticket = _apply(event, result, recorder, config, ai_decided=ai_decided)
         # Linked after the write's transaction, not inside it: a rolled-back ticket must leave
         # the usage record standing (L1) with no ticket to point at.
-        llm_service.link_usage_records(getattr(result, "usage_record_ids", ()), ticket)
+        llm_service.link_usage_records(usage_record_ids, ticket)
     return result.decision
 
 
@@ -124,7 +134,7 @@ def _warn_about_an_unresolvable_dedup_key(event, topic_config, clock=time.monoto
     )
 
 
-def _apply(event, result, recorder, config):
+def _apply(event, result, recorder, config, *, ai_decided=False):
     """Apply what was decided: open, join by key, suppress - or attach where triage said to.
 
     Returns the ticket the event ended up on, for the usage-record link.
@@ -137,14 +147,16 @@ def _apply(event, result, recorder, config):
         # too many beats an event lost, so the event falls through to open its own (spec 6.3).
         logger.info("LLM triage's attach target was gone; opening a ticket instead")
 
-    return _write_ticket(event, result, recorder, config)
+    return _write_ticket(event, result, recorder, config, ai_decided=ai_decided)
 
 
 def _attach(event, result, recorder):
     """Join the ticket triage chose, as the AI actor that chose it (T6). None when it cannot be."""
     from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
 
-    ticket = EventTicket.objects.filter(pk=result.target_ticket_id).exclude(status__in=TERMINAL_STATUSES).first()
+    # Terminal status is not filtered out here: `join_ticket` refuses an AI actor on one (S3), and
+    # that refusal is caught below. One gate, in the layer that owns the rule.
+    ticket = EventTicket.objects.filter(pk=result.target_ticket_id).first()
     if ticket is None:
         return None
 
@@ -164,7 +176,7 @@ def _attach(event, result, recorder):
     return ticket
 
 
-def _write_ticket(event, result, recorder, config):
+def _write_ticket(event, result, recorder, config, *, ai_decided=False):
     """Open or join the ticket this event belongs to, and suppress it if something said so.
 
     I2 - everything one message causes commits together: the ticket, its `created` update, and a
@@ -175,7 +187,6 @@ def _write_ticket(event, result, recorder, config):
     speaking, a triage verdict is the model's own act, and the trail should say which.
     """
     suppress = result.decision.action == ACTION_SUPPRESS
-    ai_decided = getattr(result, "triaged", False)
 
     with transaction.atomic():
         ticket = ticket_service.create_ticket(
