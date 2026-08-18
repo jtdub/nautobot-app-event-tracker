@@ -22,6 +22,11 @@ INGESTION_STATS_COUNTER_FIELDS = (
     "suppressed",
     "dropped",
     "errored",
+    # The triage counters read after the outcomes they explain: `triaged` is what the model was
+    # paid to judge, and the other two are what came of it.
+    "triaged",
+    "triage_attached",
+    "triage_errors",
     "last_message_at",
 )
 

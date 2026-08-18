@@ -72,6 +72,13 @@ class IngestionStatsAPITest(  # pylint: disable=too-many-ancestors
         response = self.client.get(self._get_detail_url(IngestionStats.objects.first()), **self.header)
         self.assertIn("drops_by_reason", response.data)
 
+    def test_the_triage_counters_are_returned(self):
+        """A counter the model writes and the documentation names must be readable."""
+        self.add_permissions("nautobot_event_tracker.view_ingestionstats")
+        response = self.client.get(self._get_detail_url(IngestionStats.objects.first()), **self.header)
+        for field in ("triaged", "triage_attached", "triage_errors"):
+            self.assertIn(field, response.data)
+
 
 class IngestionStatsViewTest(  # pylint: disable=too-many-ancestors
     ViewTestCases.GetObjectViewTestCase,
@@ -119,3 +126,12 @@ class IngestionStatsViewTest(  # pylint: disable=too-many-ancestors
         stats = IngestionStats.objects.exclude(drops_by_reason={}).first()
         response = self.client.get(stats.get_absolute_url())
         self.assertContains(response, "lab-estate")
+
+    def test_the_detail_page_shows_the_triage_counters(self):
+        """'What did the model cost me, and what did it do' is the other question."""
+        self.user.is_superuser = True
+        self.user.save()
+        response = self.client.get(IngestionStats.objects.first().get_absolute_url())
+        self.assertContains(response, "Triaged")
+        self.assertContains(response, "Triage Attached")
+        self.assertContains(response, "Triage Errors")

@@ -53,6 +53,17 @@ DEFAULTS = {
         "url": "",
         "external_integration": "",
     },
+    # LLM triage (Phase 3, spec section 3). Off by default: an app installed before anyone has
+    # registered a provider must not try to call one.
+    "triage": {
+        "enabled": False,
+        "provider": "",
+        "model": "",
+        "timeout_seconds": 15,
+        "max_output_tokens": 256,
+        "max_context_chars": 4000,
+        "attach_candidates": 5,
+    },
     "topics": {},
 }
 
@@ -66,6 +77,9 @@ TOPIC_DEFAULTS = {
     "unknown_event_type": UNKNOWN_EVENT_TYPE_DEFAULT,
     "rate_limit": {},
     "rules": [],
+    # Whether this topic's survivors go to LLM triage, when triage is enabled at all. On by
+    # default so enabling triage means enabling it, and opting a sensitive topic out is explicit.
+    "triage": True,
 }
 
 #: Field map keys a topic must provide. Everything else has a sensible fallback; these two do not,
@@ -91,6 +105,25 @@ class RateLimit:
 
 
 @dataclass(frozen=True)
+class TriageConfig:  # pylint: disable=too-many-instance-attributes
+    """The LLM triage block, parsed and checked (spec section 3)."""
+
+    enabled: bool
+    provider: str
+    model: str
+    timeout_seconds: float
+    max_output_tokens: int
+    max_context_chars: int
+    attach_candidates: int
+
+
+#: What "triage is off" is, so that it is one value rather than a value and a `None`. Every reader
+#: then asks `config.triage.enabled` and no reader has to defend against a state `load()` cannot
+#: produce.
+TRIAGE_OFF = TriageConfig(**DEFAULTS["triage"])
+
+
+@dataclass(frozen=True)
 class TopicConfig:  # pylint: disable=too-many-instance-attributes
     """Everything the pipeline needs to know about one topic."""
 
@@ -103,6 +136,7 @@ class TopicConfig:  # pylint: disable=too-many-instance-attributes
     unknown_event_type: str
     rules: tuple = ()
     rate_limit: RateLimit = None
+    triage: bool = True
 
 
 @dataclass(frozen=True)
@@ -120,6 +154,7 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
     stats_retention_days: int
     kafka: dict = field(default_factory=dict)
     redis: dict = field(default_factory=dict)
+    triage: TriageConfig = TRIAGE_OFF
     topics: dict = field(default_factory=dict)
 
     @property
@@ -137,6 +172,27 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
         from nautobot_event_tracker.ingestion.consumers import CONSUMERS  # pylint: disable=import-outside-toplevel
 
         return getattr(self, CONSUMERS[self.consumer].settings_key, {})
+
+
+def _positive_int_problem(label, value):
+    """The faults this value has as a positive integer: one, or none at all.
+
+    A list rather than an optional string so that every caller reads `problems += ...`, matching
+    how the rest of this module accumulates. The `bool` clause is the half that is easy to leave
+    out and hard to notice missing: in Python `True` is an `int`, so without it
+    `attach_candidates: True` validates as 1. Written once so every block checks the same thing
+    and words the fault the same way.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        return [f"{label} must be a positive integer, got {value!r}"]
+    return []
+
+
+def _positive_number_problem(label, value):
+    """The faults this value has as a positive number: one, or none at all."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        return [f"{label} must be a positive number, got {value!r}"]
+    return []
 
 
 def get_settings():
@@ -203,11 +259,12 @@ def load(*, topics=None, consumer=None, require_topics=False):
         "stats_flush_seconds",
         "stats_retention_days",
     ):
-        if not isinstance(raw.get(key), int) or isinstance(raw.get(key), bool) or raw[key] < 1:
-            problems.append(f"'{key}' must be a positive integer, got {raw.get(key)!r}")
+        problems += _positive_int_problem(f"'{key}'", raw.get(key))
 
-    if not isinstance(raw.get("poll_timeout_seconds"), (int, float)) or raw["poll_timeout_seconds"] <= 0:
-        problems.append(f"'poll_timeout_seconds' must be a positive number, got {raw.get('poll_timeout_seconds')!r}")
+    problems += _positive_number_problem("'poll_timeout_seconds'", raw.get("poll_timeout_seconds"))
+
+    triage, triage_problems = _parse_triage(raw.get("triage") or {})
+    problems.extend(triage_problems)
 
     if problems:
         raise ImproperlyConfigured(render_problems(problems))
@@ -224,13 +281,16 @@ def load(*, topics=None, consumer=None, require_topics=False):
         stats_retention_days=raw["stats_retention_days"],
         kafka=dict(raw["kafka"]),
         redis=dict(raw["redis"]),
+        triage=triage,
         topics=parsed_topics,
     )
 
 
 def database_problems(config):
-    """Return the faults that only a query can find: event types the catalogue does not hold."""
+    """Return the faults that only a query can find: missing event types, and the triage model."""
     from nautobot_event_tracker.models import EventType  # pylint: disable=import-outside-toplevel
+
+    problems = []
 
     # A list of pairs rather than a map keyed on the type: two topics naming the same missing type
     # are two faults, and this module's whole contract is that every fault is reported.
@@ -239,19 +299,40 @@ def database_problems(config):
         for name, topic in config.topics.items()
         if topic.defaults.get("event_type")
     ]
-    if not wanted:
-        return []
-    known = set(
-        EventType.objects.filter(name__in={event_type for _, event_type in wanted}).values_list("name", flat=True)
-    )
-    return [
-        f"topic '{topic}': default event type '{event_type}' does not exist"
-        for topic, event_type in sorted(wanted)
-        if event_type not in known
-    ]
+    if wanted:
+        known = set(
+            EventType.objects.filter(name__in={event_type for _, event_type in wanted}).values_list("name", flat=True)
+        )
+        problems.extend(
+            f"topic '{topic}': default event type '{event_type}' does not exist"
+            for topic, event_type in sorted(wanted)
+            if event_type not in known
+        )
+
+    if config.triage.enabled:
+        # Through the LLM service so "exists" and "enabled" are one definition (rule L8);
+        # `services.llm` imports no litellm at module level, so neither does this check.
+        from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=import-outside-toplevel
+        from nautobot_event_tracker.services.exceptions import (  # pylint: disable=import-outside-toplevel
+            LLMConfigurationError,
+        )
+
+        try:
+            llm_service.get_model(config.triage.provider, config.triage.model)
+        except LLMConfigurationError as error:
+            problems.append(f"triage: {error}")
+
+        try:
+            llm_service.require_client()
+        except ImproperlyConfigured as error:
+            # Not an LLMError, and so not something triage's fail-open would catch: without this
+            # the consumer would start and then die on its first accepted event.
+            problems.append(f"triage: {error}")
+
+    return problems
 
 
-def _parse_topic(name, topic_settings):
+def _parse_topic(name, topic_settings):  # pylint: disable=too-many-locals
     """Parse one topic, returning it and the problems found. Returns None when unusable."""
     problems = []
     if not isinstance(topic_settings, dict):
@@ -289,6 +370,11 @@ def _parse_topic(name, topic_settings):
     rate_limit, rate_problems = _parse_rate_limit(name, merged["rate_limit"] or {})
     problems.extend(rate_problems)
 
+    topic_triage = merged["triage"]
+    if not isinstance(topic_triage, bool):
+        problems.append(f"topic '{name}': 'triage' must be a boolean, got {topic_triage!r}")
+        topic_triage = True
+
     topic = TopicConfig(
         name=name,
         field_map=dict(field_map),
@@ -299,8 +385,48 @@ def _parse_topic(name, topic_settings):
         unknown_event_type=str(policy),
         rules=rules,
         rate_limit=rate_limit,
+        triage=topic_triage,
     )
     return topic, problems
+
+
+def _parse_triage(triage_settings):
+    """Parse the triage block, returning it and the problems found."""
+    problems = []
+    if not isinstance(triage_settings, dict):
+        return None, ["'triage' must be a mapping"]
+
+    merged = {**DEFAULTS["triage"], **triage_settings}
+    enabled = merged["enabled"]
+    if not isinstance(enabled, bool):
+        problems.append(f"triage: 'enabled' must be a boolean, got {enabled!r}")
+        enabled = False
+
+    if enabled:
+        for key in ("provider", "model"):
+            if not merged.get(key):
+                problems.append(f"triage: '{key}' is required when triage is enabled")
+
+    for key in ("max_output_tokens", "max_context_chars", "attach_candidates"):
+        problems += _positive_int_problem(f"triage: '{key}'", merged.get(key))
+
+    problems += _positive_number_problem("triage: 'timeout_seconds'", merged.get("timeout_seconds"))
+
+    if problems:
+        return None, problems
+
+    return (
+        TriageConfig(
+            enabled=enabled,
+            provider=str(merged["provider"]),
+            model=str(merged["model"]),
+            timeout_seconds=float(merged["timeout_seconds"]),
+            max_output_tokens=merged["max_output_tokens"],
+            max_context_chars=merged["max_context_chars"],
+            attach_candidates=merged["attach_candidates"],
+        ),
+        [],
+    )
 
 
 def _parse_rules(topic_name, rule_settings):
@@ -352,8 +478,7 @@ def _parse_rate_limit(topic_name, rate_settings):
     per_minute = rate_settings.get("per_minute")
     burst = rate_settings.get("burst", per_minute)
     for label, value in (("per_minute", per_minute), ("burst", burst)):
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            problems.append(f"topic '{topic_name}': rate_limit {label} must be a positive integer, got {value!r}")
+        problems += _positive_int_problem(f"topic '{topic_name}': rate_limit {label}", value)
 
     if problems:
         return None, problems

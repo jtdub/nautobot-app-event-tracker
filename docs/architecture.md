@@ -1,7 +1,7 @@
 # Architecture
 
 !!! warning "Draft"
-    This document was reconstructed from the system diagram supplied at project kickoff. It describes the **target** system across all phases. Phases 1 and 2 are implemented, and Phase 3 is specified in [its spec](specs/phase-3-llm-triage.md). Everything else is stated here so that the implemented phases do not paint later ones into a corner.
+    This document was reconstructed from the system diagram supplied at project kickoff. It describes the **target** system across all phases. Phases 1 through 3 are implemented ([Phase 3 spec](specs/phase-3-llm-triage.md)). Everything else is stated here so that the implemented phases do not paint later ones into a corner.
 
 Event Tracker turns raw network events into tickets that a human or an AI agent can work, and keeps a complete, append-only record of who did what. Nautobot is the source of truth for the network itself; this app never duplicates that data, it references it.
 

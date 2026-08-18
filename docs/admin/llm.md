@@ -62,6 +62,54 @@ PLUGINS_CONFIG = {
 Providers, models and credentials are deliberately **not** settings — they are the registry
 objects above, and the API key never appears in `PLUGINS_CONFIG` or in a log line.
 
+## Enabling event triage
+
+With a provider and model registered, the event consumer can ask the model to triage every event
+the [pre-filter](ingestion.md) accepts: open a ticket, attach the event to an open ticket,
+suppress it, or drop it. Configure it inside the `ingestion` block:
+
+```python
+"ingestion": {
+    ...,
+    "triage": {
+        "enabled": True,
+        "provider": "Local Lab",        # LLMProvider name
+        "model": "llama-3.1-70b",       # LLMModel name on that provider
+        "timeout_seconds": 15,
+        "max_output_tokens": 256,
+        "max_context_chars": 4000,      # payload cap in the prompt
+        "attach_candidates": 5,         # open tickets the model may attach to
+    },
+    "topics": {
+        "network.events": {..., "triage": True},   # per-topic; default True
+    },
+},
+```
+
+The consumer refuses to start when the named provider or model does not exist or is disabled, or
+when the app was installed without the `llm` extra, alongside every other configuration fault.
+
+What to know before you turn it on:
+
+- **Cost and privacy.** Each surviving event makes one model call, whose prompt carries the
+  event's payload (capped at `max_context_chars`). Set `triage: False` on a topic whose payloads
+  must not leave the box, or point the provider at a self-hosted endpoint. Recurrences are free:
+  an event whose dedup key matches an open ticket joins it without a model call.
+- **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event — a
+  ticket too many, never an event lost — and shows up in the `triage_errors` counter and on the
+  failed call's usage record. The consumer never exits because a model misbehaved.
+- **Latency.** The consumer handles one message at a time, so a slow model bounds throughput.
+  The pre-filter and the dedup short-circuit keep the call volume to genuinely new events.
+- **Attribution.** Actions the model decided — a suppression, an attach — appear in the ticket
+  trail with source *AI* and no user, with the model's reason in the message. Triage needs no
+  Nautobot account: it runs inside the consumer process (see the note in
+  [Install and Configure](install.md)).
+- **Dry runs stay free.** `--dry-run` never consults the model; its output says
+  `(triage skipped: dry run)`.
+
+Watch it work on the ingestion stats page: `triaged`, `triage_attached` and `triage_errors`
+counters, and triage drops under `llm_triage` in the drop breakdown.
+
 ## Watching the spend
 
 Every call the app makes — including failed ones — writes a usage record with its token counts,

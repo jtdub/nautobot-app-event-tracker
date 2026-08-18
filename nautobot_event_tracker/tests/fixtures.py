@@ -303,6 +303,33 @@ class FakeLLMClient:  # pylint: disable=too-few-public-methods
         return self.response
 
 
+#: The triage block a test that wants triage on needs, naming the model `create_llmmodel` registers.
+TRIAGE_SETTINGS = {"enabled": True, "provider": "Test Provider", "model": "test-model"}
+
+#: What the triage fake says when a test does not care what the model answered.
+DEFAULT_TRIAGE_ANSWER = '{"action": "accept", "reason": "looks real"}'
+
+
+class FakeComplete:  # pylint: disable=too-few-public-methods
+    """The `complete` seam of `TriageFilter`: canned text, through the real service and a fake client.
+
+    Routing through `services.llm.complete` keeps rule L1 honest in these tests: every triage
+    decision leaves a real usage record behind, exactly as it would in production.
+    """
+
+    def __init__(self, text=None, *, error=None):
+        """Answer every call with this text, or fail every call with this error."""
+        self.text = DEFAULT_TRIAGE_ANSWER if text is None else text
+        self.error = error
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        """Record the call, then answer through the real service."""
+        self.calls.append(kwargs)
+        client = FakeLLMClient(FakeLLMResponse(self.text), error=self.error)
+        return llm_service.complete(**kwargs, client=client)
+
+
 def create_llmusagerecord(model=None, ticket=None, **complete_kwargs):
     """One usage record, written the only way one may be: by the service making a call.
 

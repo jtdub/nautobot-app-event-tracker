@@ -1,0 +1,3 @@
+Added LLM triage to the event consumer: every event the pre-filter accepts can be judged by a configured model, whose verdict opens, attaches, suppresses or drops - with any failure falling back to accepting the event.
+Added the `attach` outcome, routed through the new public `services.tickets.join_ticket()` (the S5 dedup join, extracted), recorded as a recurrence with source `ai`.
+Added the `ingestion.triage` configuration block with startup validation, a per-topic `triage` switch, and the `triaged`, `triage_attached` and `triage_errors` counters on IngestionStats - shown on the ingestion stats list and detail pages and returned by the REST API.

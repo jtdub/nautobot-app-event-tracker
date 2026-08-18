@@ -48,6 +48,7 @@ __all__ = [
     "get_attachable_content_types",
     "get_attachable_object_types",
     "get_related_objects",
+    "join_ticket",
     "resolve_object",
     "set_severity",
     "ticket_ids_with_attached_types",
@@ -213,6 +214,16 @@ def effective_severity(severity, event_type):
     return severity or event_type.default_severity
 
 
+def open_tickets_for_dedup_key(dedup_key):
+    """The open tickets an event with this dedup key would join, newest first (S5's lookup).
+
+    One expression, in the layer that owns the write, for the reason `effective_severity` is:
+    Phase 3's triage has to know whether S5 will join an event before any ticket is written, and a
+    second copy of the predicate would drift from this one silently.
+    """
+    return EventTicket.objects.filter(dedup_key=dedup_key).exclude(status__in=TERMINAL_STATUSES).order_by("-last_seen")
+
+
 def _lock_dedup_key(dedup_key):
     """Hold a transaction-scoped lock on this dedup key until the surrounding transaction ends.
 
@@ -268,32 +279,15 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
     with transaction.atomic():
         if dedup_key:
             _lock_dedup_key(dedup_key)
-            existing = (
-                EventTicket.objects.filter(dedup_key=dedup_key)
-                .exclude(status__in=TERMINAL_STATUSES)
-                .order_by("-last_seen")
-                .first()
-            )
+            existing = open_tickets_for_dedup_key(dedup_key).first()
             if existing is not None:
-                existing.event_count += 1
-                # max() keeps last_seen monotonic under out-of-order delivery, which at-least-once
-                # brokers make normal (ADR 0004).
-                existing.last_seen = max(existing.last_seen, occurred_at)
-                existing.full_clean()
-                existing.save()
-                _record(
+                return join_ticket(
                     ticket=existing,
-                    update_type=UpdateTypeChoices.RECURRENCE,
                     source=source,
                     user=user,
-                    message=f"Event recurred; this is occurrence {existing.event_count}.",
+                    occurred_at=occurred_at,
+                    related_objects=related_objects,
                 )
-                # A recurrence can implicate objects the first occurrence did not name, so the
-                # attachments are applied to the joined ticket too. Ones already attached are
-                # no-ops.
-                _attach_all(ticket=existing, objects=related_objects, source=source, user=user)
-                existing.was_created = False
-                return existing
 
         ticket = EventTicket(
             title=title,
@@ -325,6 +319,44 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
 
         _attach_all(ticket=ticket, objects=related_objects, source=source, user=user)
         ticket.was_created = True
+        return ticket
+
+
+def join_ticket(  # pylint: disable=too-many-arguments
+    *, ticket, source, user=None, occurred_at=None, message="", related_objects=None
+):
+    """Record that this event is that ticket again: the S5 join, callable in its own right.
+
+    Extracted from `create_ticket`'s dedup branch so that Phase 3's triage `attach` (spec 6.4)
+    reuses the same semantics rather than inventing new ones - there is one implementation of a
+    recurrence, whether a dedup key found the ticket or a model chose it. Writes exactly one
+    `recurrence` update (S1); `message` overrides the stock occurrence line when the caller has
+    something better to say.
+
+    Returns the ticket with `was_created=False`, matching what `create_ticket` returns for a join.
+    """
+    _check_mutable(ticket, source)
+    _validate_actor(source, user)
+    occurred_at = occurred_at or timezone.now()
+
+    with transaction.atomic():
+        ticket.event_count += 1
+        # max() keeps last_seen monotonic under out-of-order delivery, which at-least-once
+        # brokers make normal (ADR 0004).
+        ticket.last_seen = max(ticket.last_seen, occurred_at)
+        ticket.full_clean()
+        ticket.save()
+        _record(
+            ticket=ticket,
+            update_type=UpdateTypeChoices.RECURRENCE,
+            source=source,
+            user=user,
+            message=message or f"Event recurred; this is occurrence {ticket.event_count}.",
+        )
+        # A recurrence can implicate objects the first occurrence did not name, so the
+        # attachments are applied to the joined ticket too. Ones already attached are no-ops.
+        _attach_all(ticket=ticket, objects=related_objects, source=source, user=user)
+        ticket.was_created = False
         return ticket
 
 

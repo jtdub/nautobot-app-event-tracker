@@ -158,6 +158,52 @@
                     },
                     "additionalProperties": false
                 },
+                "triage": {
+                    "type": "object",
+                    "description": "LLM triage of events the pre-filter accepted. Off by default; the provider and model name registry objects, not settings.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Whether accepted events are triaged by a model at all.",
+                            "default": false
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Name of the LLMProvider to call. Required when enabled.",
+                            "default": ""
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Name of the LLMModel on that provider. Required when enabled.",
+                            "default": ""
+                        },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "description": "Timeout passed on every triage call. The consumer handles one message at a time, so this bounds worst-case throughput.",
+                            "exclusiveMinimum": 0,
+                            "default": 15
+                        },
+                        "max_output_tokens": {
+                            "type": "integer",
+                            "description": "Completion cap for triage answers, which are one small JSON object.",
+                            "minimum": 1,
+                            "default": 256
+                        },
+                        "max_context_chars": {
+                            "type": "integer",
+                            "description": "Longest payload JSON included in a triage prompt; anything longer is truncated.",
+                            "minimum": 1,
+                            "default": 4000
+                        },
+                        "attach_candidates": {
+                            "type": "integer",
+                            "description": "How many open tickets the model is shown as attach candidates.",
+                            "minimum": 1,
+                            "default": 5
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "topics": {
                     "type": "object",
                     "description": "Per-topic configuration, keyed by broker topic or channel name. A topic with no entry here is not consumed.",
@@ -301,6 +347,11 @@
                                     ],
                                     "additionalProperties": false
                                 }
+                            },
+                            "triage": {
+                                "type": "boolean",
+                                "description": "Whether this topic's accepted events go to LLM triage, when triage is enabled at all.",
+                                "default": true
                             }
                         },
                         "required": [

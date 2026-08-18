@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Nautobot app (`nautobot_event_tracker`) that turns raw network events into tickets and keeps an append-only record of every change. Built in phases (see `docs/architecture.md`): Phase 1 (tickets, service layer, UI/API) and Phase 2 (broker consumers, ingestion pipeline) are implemented. Phase 3 (spec: `docs/specs/phase-3-llm-triage.md`) adds the LLM layer: `services/llm.py` is the **only** module that imports litellm (lazily; optional `llm` extra) and the only writer of `LLMUsageRecord` — rules L1–L8. No provider SDK is imported anywhere; static guards in `tests/test_guards.py` enforce all of this. Agents, MCP, and RAG are later phases and deliberately absent.
+A Nautobot app (`nautobot_event_tracker`) that turns raw network events into tickets and keeps an append-only record of every change. Built in phases (see `docs/architecture.md`): Phase 1 (tickets, service layer, UI/API), Phase 2 (broker consumers, ingestion pipeline) and Phase 3 (LLM layer + triage; spec: `docs/specs/phase-3-llm-triage.md`) are implemented. `services/llm.py` is the **only** module that imports litellm (lazily; optional `llm` extra) and the only writer of `LLMUsageRecord` — rules L1–L8. LLM triage (`ingestion/triage.py`, rules T1–T9) sits between the pre-filter and the ticket write, imports only `services.llm`, and fails open to accept. No provider SDK is imported anywhere; static guards in `tests/test_guards.py` enforce all of this. Agents, MCP, and RAG are later phases and deliberately absent.
 
 ## Development commands
 

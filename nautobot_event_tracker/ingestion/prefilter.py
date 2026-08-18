@@ -26,8 +26,8 @@ from nautobot_event_tracker.services.tickets import effective_severity
 class Decision:
     """What to do with a message, and the counter key that explains why.
 
-    Phase 3's LLM triage returns this same type, so the pipeline's call site does not change when
-    triage arrives - only what stands between the pre-filter and the ticket.
+    LLM triage (`ingestion.triage`) returns this same type, which is why the pipeline reads one
+    dispatch whether a decision came from these rules or from a model.
     """
 
     action: str

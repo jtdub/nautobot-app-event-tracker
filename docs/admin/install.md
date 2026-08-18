@@ -117,37 +117,26 @@ Two permissions are easy to forget because their absence degrades a page rather 
 - **`view_eventtype`** — without it the event type picker on the ticket form has nothing to offer,
   so tickets cannot be created.
 
-### Planning ahead: the AI service account
+### The AI actor, and why triage has no account
 
-!!! note "Forward-looking — nothing to do yet"
-    This release contains no AI functionality. The section below describes the account you will
-    need when event triage arrives, so that a rollout can be planned now rather than discovered
-    later. No such account is required today.
+[Event triage](llm.md) runs inside the consumer process, which already has database access, so it
+needs **no Nautobot user, no API token, and no permissions** — there is nothing to set up. Its
+actions are attributed by kind, not by account: every update it writes carries source *AI* and no
+user, and the domain rules *require* that combination, so triage could not act through an account
+even if you made one.
 
-When automated triage lands it will act through its own Nautobot user, not through a person's
-account, so that its actions are attributable and its reach is bounded. That account will need:
+Two guarantees hold regardless of configuration, because they are enforced in the service layer
+rather than by permissions:
 
-| Model | Permissions |
-| --- | --- |
-| Event Ticket | `view`, `add`, `change`, `transition_eventticket` |
-| Event Type | `view` |
-| Ticket Update | `view` |
-
-And explicitly **not**:
-
-- `delete` on any of the three models. Nothing in the AI path ever needs to remove a record.
-- `add` or `change` on Event Type. The catalogue of event types is an operator decision.
-- Any permission on Ticket Update beyond `view`. The trail is written by the service layer as a
-  side effect of ticket actions; nothing writes to it directly, including automation.
-
-Two guarantees will hold regardless of how that account is configured, because they are enforced
-in the service layer rather than by permissions:
-
-- An AI actor cannot modify a resolved or closed ticket — not its status, not its comments, not its
-  attachments. Permissions cannot grant this.
+- An AI actor cannot modify a resolved or closed ticket — not its status, not its comments, not
+  its attachments. Permissions cannot grant this.
 - An AI action is never recorded against a person's username. The actor kind is stored on every
   update, and AI entries carry no user.
 
-Restrict the account's API token as you would any other service credential, and consider limiting
-it with a Nautobot object permission so it can only act on tickets, rather than on every object in
-Nautobot.
+!!! note "Forward-looking — agents in a later phase"
+    A service account becomes relevant when AI **agents** arrive (a later phase) and reach
+    Nautobot over its REST API or MCP tools, where a token must authenticate the *transport* even
+    though the recorded actor stays AI-with-no-user. Plan that account with `view`, `add`,
+    `change` and `transition_eventticket` on Event Ticket, `view` on Event Type and Ticket
+    Update — and explicitly no `delete` on anything: nothing in the AI path ever needs to remove
+    a record. Restrict its token as you would any service credential.
