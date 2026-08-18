@@ -10,7 +10,7 @@ attach, a suppression - carry `source=ai`, so the trail says who decided what (T
 import logging
 import time
 
-from django.db import transaction
+from django.db import DatabaseError, transaction
 
 from nautobot_event_tracker.choices import TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.ingestion.constants import (
@@ -91,9 +91,13 @@ def handle_message(message, *, rules, recorder, config, triage=None, write=True)
     ai_decided = False
 
     if triage is not None and write:
-        result = triage.decide(event, topic_config, result, offset=message.offset)
+        result = triage.decide(event, topic_config, result, identity=message.identity)
         if result.triaged:
-            recorder.record(message.topic, triaged=1, triage_errors=1 if result.errored else 0)
+            if not result.from_memo:
+                # Counted only when a call actually happened. `received` is counted outside the
+                # retry loop for the same reason: a retry re-enters here, and `triaged` is the
+                # number of model calls an operator is paying for.
+                recorder.record(message.topic, triaged=1, triage_errors=1 if result.errored else 0)
             usage_record_ids = result.usage_record_ids
             # T4's fallback returns the pre-filter's own decision, so the model decided this one
             # only when the call actually produced an answer.
@@ -105,10 +109,30 @@ def handle_message(message, *, rules, recorder, config, triage=None, write=True)
 
     if write:
         ticket = _apply(event, result, recorder, config, ai_decided=ai_decided)
-        # Linked after the write's transaction, not inside it: a rolled-back ticket must leave
-        # the usage record standing (L1) with no ticket to point at.
-        llm_service.link_usage_records(usage_record_ids, ticket)
+        _link_usage_records(usage_record_ids, ticket)
     return result.decision
+
+
+def _link_usage_records(usage_record_ids, ticket):
+    """Point this event's spend at the ticket it produced, without putting the ticket at risk.
+
+    The link runs after the write's transaction, not inside it: a rolled-back ticket must leave
+    the usage record standing (L1) with no ticket to point at. That places it after the commit but
+    still inside the caller's retry loop, so it must not raise - a retry would re-run the whole
+    message and, for an event with no dedup key, open a second ticket for it. An unlinked usage
+    record is a gap in the cost report; a duplicate ticket is a gap in somebody's day.
+    """
+    if not usage_record_ids:
+        return
+    try:
+        llm_service.link_usage_records(usage_record_ids, ticket)
+    except DatabaseError:
+        logger.warning(
+            "Could not link LLM usage records %s to ticket %s; the spend is recorded but unattributed",
+            ", ".join(str(record_id) for record_id in usage_record_ids),
+            ticket.pk if ticket is not None else None,
+            exc_info=True,
+        )
 
 
 def _warn_about_an_unresolvable_dedup_key(event, topic_config, clock=time.monotonic):

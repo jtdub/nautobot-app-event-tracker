@@ -4,6 +4,8 @@ Every test here asserts on the *message*, not just the exception: an operator re
 is the only reason the validation exists at all.
 """
 
+from unittest import mock
+
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -337,6 +339,22 @@ class TestTriageDatabaseValidation(TestCase):
         fixtures.create_event_types()
         fixtures.create_llmmodel()
         self.assertEqual(config.database_problems(self._load()), [])
+
+    def test_a_missing_llm_extra_is_reported(self):
+        """The client is not an LLMError when it is absent, so nothing on the path would catch it.
+
+        Without this check the consumer starts cleanly and then dies on its first accepted event.
+        """
+        fixtures.create_event_types()
+        fixtures.create_llmmodel()
+        with mock.patch(
+            "nautobot_event_tracker.services.llm.require_client",
+            side_effect=ImproperlyConfigured("litellm is not installed. Install the app with the 'llm' extra"),
+        ):
+            problems = config.database_problems(self._load())
+        self.assertEqual(len(problems), 1)
+        self.assertIn("litellm", problems[0])
+        self.assertIn("llm", problems[0])
 
     def test_a_missing_model_is_reported(self):
         """Consuming with a model that does not exist would fail on the first survivor."""

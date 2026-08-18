@@ -155,6 +155,9 @@ class IngestionStatsSerializer(BaseModelSerializer):
             "tickets_opened",
             "tickets_joined",
             "suppressed",
+            "triaged",
+            "triage_attached",
+            "triage_errors",
             "drops_by_reason",
             "last_message_at",
         ]

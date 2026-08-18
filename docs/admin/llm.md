@@ -86,8 +86,8 @@ suppress it, or drop it. Configure it inside the `ingestion` block:
 },
 ```
 
-The consumer refuses to start when the named provider or model does not exist or is disabled,
-alongside every other configuration fault.
+The consumer refuses to start when the named provider or model does not exist or is disabled, or
+when the app was installed without the `llm` extra, alongside every other configuration fault.
 
 What to know before you turn it on:
 

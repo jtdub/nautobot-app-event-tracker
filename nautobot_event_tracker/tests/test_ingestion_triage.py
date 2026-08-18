@@ -186,19 +186,42 @@ class TestWhatNeverReachesTheModel(TriageTestCase):
         self.assertEqual(result.decision.reason, "known-flapper")
 
     def test_a_database_retry_reuses_the_paid_decision(self):
-        """T5 - same topic and offset, one model call."""
+        """T5 - same message identity, one model call."""
         triage = self.build()
-        first = self.decide(triage, offset=7)
-        second = self.decide(triage, offset=7)
+        identity = fixtures.broker_message({}, partition=0, offset=7).identity
+        first = self.decide(triage, identity=identity)
+        second = self.decide(triage, identity=identity)
         self.assertEqual(len(self.fake.calls), 1)
-        self.assertEqual(first, second)
+        self.assertEqual(first.decision, second.decision)
 
-    def test_a_new_offset_is_a_new_decision(self):
+    def test_a_reused_decision_says_it_came_from_the_memo(self):
+        """The pipeline counts model calls, and a retry is not one of them."""
+        triage = self.build()
+        identity = fixtures.broker_message({}, partition=0, offset=7).identity
+        self.assertFalse(self.decide(triage, identity=identity).from_memo)
+        self.assertTrue(self.decide(triage, identity=identity).from_memo)
+
+    def test_a_new_message_is_a_new_decision(self):
         """The memo holds one entry: the message in flight."""
         triage = self.build()
-        self.decide(triage, offset=7)
-        self.decide(triage, offset=8)
+        self.decide(triage, identity=fixtures.broker_message({}, partition=0, offset=7).identity)
+        self.decide(triage, identity=fixtures.broker_message({}, partition=0, offset=8).identity)
         self.assertEqual(len(self.fake.calls), 2)
+
+    def test_the_same_offset_on_another_partition_is_another_message(self):
+        """Kafka numbers offsets per partition, so an offset alone names no particular message."""
+        triage = self.build()
+        self.decide(triage, identity=fixtures.broker_message({}, partition=0, offset=7).identity)
+        self.decide(triage, identity=fixtures.broker_message({}, partition=1, offset=7).identity)
+        self.assertEqual(len(self.fake.calls), 2)
+
+    def test_a_broker_without_offsets_still_memoizes(self):
+        """Redis pub/sub numbers nothing, and a retry there must not pay twice either."""
+        triage = self.build()
+        identity = fixtures.broker_message({"host": "leaf-01"}).identity
+        self.decide(triage, identity=identity)
+        self.decide(triage, identity=identity)
+        self.assertEqual(len(self.fake.calls), 1)
 
 
 class TestThePrompt(TriageTestCase):
@@ -258,6 +281,16 @@ class TestThePrompt(TriageTestCase):
         """The model must not be invited to attach to nothing."""
         kwargs = self.call_kwargs()
         self.assertIn("attach is not available", kwargs["messages"][1]["content"])
+
+    def test_the_shortlist_uses_the_type_the_ticket_will_get(self):
+        """Under `unknown_event_type: "default"` the payload's name is not the ticket's type.
+
+        Matching on the raw name would leave exactly these events shown other types' tickets.
+        """
+        same_type = fixtures.create_ticket(title="Same type ticket")
+        triage = self.build()
+        self.decide(triage, event=self.event(event_type_name="Something The Catalogue Never Heard Of"))
+        self.assertIn(same_type.title, self.fake.calls[0]["messages"][1]["content"])
 
 
 class TestAttribution(TriageTestCase):

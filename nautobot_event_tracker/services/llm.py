@@ -117,6 +117,18 @@ def get_model(provider_name, model_name):
     return model
 
 
+def require_client():
+    """Resolve the client now, so a missing `llm` extra is a startup fault rather than a crash loop.
+
+    `complete()` resolves it per call and raises `ImproperlyConfigured` when litellm is absent -
+    deliberately outside the `LLMError` family (section 5.2), which is the family triage fails open
+    on. Nothing would catch it on the ingestion path, so a deployment that enabled triage without
+    the extra would start cleanly and then die on its first accepted event. Startup validation
+    calls this instead, and the operator reads one line before any of that happens.
+    """
+    _litellm_completion()
+
+
 def complete(  # pylint: disable=too-many-arguments,too-many-locals
     *,
     model,

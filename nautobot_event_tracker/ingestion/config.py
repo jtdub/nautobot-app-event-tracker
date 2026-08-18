@@ -322,6 +322,13 @@ def database_problems(config):
         except LLMConfigurationError as error:
             problems.append(f"triage: {error}")
 
+        try:
+            llm_service.require_client()
+        except ImproperlyConfigured as error:
+            # Not an LLMError, and so not something triage's fail-open would catch: without this
+            # the consumer would start and then die on its first accepted event.
+            problems.append(f"triage: {error}")
+
     return problems
 
 

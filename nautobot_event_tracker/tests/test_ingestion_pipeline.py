@@ -451,6 +451,43 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         self.assertTrue(ticket.was_created)
         self.assertEqual(self.counts().tickets_opened, 1)
 
+    def test_a_database_retry_pays_and_counts_once(self):
+        """The retry loop re-enters here, and `triaged` counts model calls rather than attempts."""
+        from nautobot_event_tracker.ingestion.triage import TriageFilter  # pylint: disable=import-outside-toplevel
+
+        with fixtures.ingestion_settings(triage=self.TRIAGE, topics={"network.events": TOPIC}):
+            loaded = config.load()
+        rules = prefilter.PreFilter(loaded, clock=self.clock)
+        fake = fixtures.FakeComplete()
+        triage = TriageFilter(loaded, complete=fake)
+        message = fixtures.broker_message(self.payload(), partition=0, offset=11)
+        handle = {"rules": rules, "recorder": self.recorder, "config": loaded, "triage": triage}
+
+        self.recorder.record(message.topic, received=1, message_time=message.timestamp)
+        with mock.patch(
+            "nautobot_event_tracker.services.tickets.create_ticket",
+            side_effect=DatabaseError("connection lost"),
+        ):
+            with self.assertRaises(DatabaseError):
+                pipeline.handle_message(message, **handle)
+        pipeline.handle_message(message, **handle)
+
+        self.assertEqual(len(fake.calls), 1)
+        counts = self.counts()
+        self.assertEqual(counts.triaged, 1)
+        self.assertEqual(counts.received, counts.accounted_for)
+
+    def test_a_failed_usage_link_does_not_cost_the_ticket(self):
+        """The ticket has committed by then; raising would retry the message and open a second."""
+        with mock.patch(
+            "nautobot_event_tracker.services.llm.link_usage_records",
+            side_effect=DatabaseError("connection lost"),
+        ):
+            decision = self.handle_triaged()
+
+        self.assertEqual(decision.action, ACTION_ACCEPT)
+        self.assertEqual(EventTicket.objects.count(), 1)
+
     def test_a_rolled_back_write_leaves_the_usage_record_standing(self):
         """L1 - the money was spent whatever became of the transaction."""
         from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel

@@ -14,13 +14,15 @@ Rules implemented here, referenced by number from the Phase 3 spec:
   anything else reads as accept.
 * **T4** - any failure yields accept and is counted; the consumer never crashes on a model.
 * **T5** - the model runs outside any transaction, and a database retry of the same message
-  reuses the memoized decision rather than paying twice.
+  reuses the memoized decision rather than paying twice. The memo is keyed on
+  `BrokerMessage.identity`, which every broker can answer, rather than on an offset only one of
+  them has.
 * **T7** - the prompt carries the capped payload and the shortlist, nothing else.
 """
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from nautobot_event_tracker.choices import TERMINAL_STATUSES, LLMPurposeChoices
 from nautobot_event_tracker.ingestion.constants import (
@@ -62,6 +64,9 @@ class TriageResult:
     triaged: bool = False
     #: Whether T4's fallback happened.
     errored: bool = False
+    #: Whether this is the memo answering a retry rather than a call that just happened. The
+    #: decision is the same either way; what differs is that nobody paid for it twice.
+    from_memo: bool = False
 
 
 def _passthrough(filter_result):
@@ -85,8 +90,12 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         self._memo_key = None
         self._memo_result = None
 
-    def decide(self, event, topic_config, filter_result, *, offset=None):
-        """One survivor in, one `TriageResult` out. Never raises (T4)."""
+    def decide(self, event, topic_config, filter_result, *, identity=None):
+        """One survivor in, one `TriageResult` out. Never raises (T4).
+
+        `identity` is what makes this message this message (`BrokerMessage.identity`), which is
+        what the T5 memo is keyed on.
+        """
         if not topic_config.triage:
             return _passthrough(filter_result)
 
@@ -101,19 +110,19 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
             return _passthrough(filter_result)
 
         # T5 - a database retry re-enters the pipeline with the same message; the decision has
-        # been paid for once and is not paid for again.
-        memo_key = (event.topic, offset)
-        if offset is not None and self._memo_key == memo_key:
-            return self._memo_result
+        # been paid for once and is not paid for again. The hit is marked so that the counter of
+        # model calls counts calls rather than attempts.
+        if identity is not None and self._memo_key == identity:
+            return replace(self._memo_result, from_memo=True)
 
         result = self._ask_the_model(event, filter_result)
-        if offset is not None:
-            self._memo_key, self._memo_result = memo_key, result
+        if identity is not None:
+            self._memo_key, self._memo_result = identity, result
         return result
 
     def _ask_the_model(self, event, filter_result):
         """Build the prompt, make the call, and read the answer with appropriate suspicion."""
-        shortlist = self._shortlist(event)
+        shortlist = self._shortlist(filter_result.event_type)
         try:
             response = self._complete(
                 model=self._get_model(),
@@ -159,11 +168,15 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         """
         return ticket_service.open_tickets_for_dedup_key(dedup_key).exists()
 
-    def _shortlist(self, event):
+    def _shortlist(self, event_type):
         """The open tickets the model may attach to (spec 6.4): bounded and boring on purpose.
 
         Same event type first; the newest open tickets overall when the type has none. Returns a
         list of (ticket_id, description line) pairs; the model sees only the line's index.
+
+        The type is the pre-filter's resolved `EventType`, not the name the payload carried. Under
+        `unknown_event_type: "default"` the two differ, and matching on the raw name would leave
+        exactly those events without the same-type candidates they most need.
         """
         from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
 
@@ -176,7 +189,7 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
             .only("title", "severity", "last_seen", "event_type__name")
             .order_by("-last_seen")
         )
-        candidates = list(open_tickets.filter(event_type__name=event.event_type_name)[: self.triage.attach_candidates])
+        candidates = list(open_tickets.filter(event_type=event_type)[: self.triage.attach_candidates])
         if not candidates:
             candidates = list(open_tickets[: self.triage.attach_candidates])
         return [

@@ -5,6 +5,7 @@ declares what one of them cannot: `supports_replay` is a property a caller can r
 guarantee it has to assume.
 """
 
+import hashlib
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -26,8 +27,24 @@ class BrokerMessage:
     topic: str
     value: bytes
     key: str = None
+    partition: int = None
     offset: int = None
     timestamp: datetime = None
+
+    @property
+    def identity(self):
+        """What makes this message this message, for a step that must not pay for it twice.
+
+        Kafka numbers offsets per partition, so an offset alone is not an identity: partition 0
+        offset 42 and partition 1 offset 42 are different messages, and they arrive next to each
+        other. A broker with no offsets at all - Redis pub/sub - has nothing to number, so the
+        payload stands in. Two consecutive identical payloads are the same event as far as a
+        model's verdict goes, which makes reusing that verdict right rather than merely cheap.
+        """
+        if self.offset is not None:
+            return (self.topic, self.partition, self.offset)
+        payload = self.value if isinstance(self.value, bytes) else str(self.value).encode("utf-8", "replace")
+        return (self.topic, hashlib.sha256(payload).hexdigest())
 
 
 class EventConsumer(ABC):

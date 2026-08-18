@@ -77,6 +77,9 @@ class KafkaEventConsumer(EventConsumer):
             topic=raw.topic(),
             value=raw.value(),
             key=raw.key().decode("utf-8", "replace") if raw.key() else None,
+            # Both, always: an offset counts within its partition, so one without the other names
+            # no particular message (`BrokerMessage.identity`).
+            partition=raw.partition(),
             offset=raw.offset(),
             timestamp=_timestamp(raw),
         )

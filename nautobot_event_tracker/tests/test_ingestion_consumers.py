@@ -28,10 +28,13 @@ from nautobot_event_tracker.tests import fixtures
 class StubKafkaMessage:
     """What confluent-kafka hands back from `poll()`."""
 
-    def __init__(self, *, value=b"{}", topic="network.events", offset=7, key=None, timestamp=(1, 1786763640000)):
+    def __init__(  # pylint: disable=too-many-arguments
+        self, *, value=b"{}", topic="network.events", partition=0, offset=7, key=None, timestamp=(1, 1786763640000)
+    ):
         """Record what the stub should report."""
         self._value = value
         self._topic = topic
+        self._partition = partition
         self._offset = offset
         self._key = key
         self._timestamp = timestamp
@@ -44,6 +47,10 @@ class StubKafkaMessage:
     def topic(self):
         """The topic it arrived on."""
         return self._topic
+
+    def partition(self):
+        """The partition it arrived on, which is what its offset counts within."""
+        return self._partition
 
     def offset(self):
         """Its offset."""
@@ -112,6 +119,34 @@ class TestConsumerRegistry(SimpleTestCase):
     def test_the_kafka_class_imports_without_its_extra(self):
         """The module must load on a deployment that never installed the client."""
         self.assertTrue(issubclass(KafkaEventConsumer, EventConsumer))
+
+
+class TestMessageIdentity(SimpleTestCase):
+    """What names one message, for the step (T5) that must not pay for it twice."""
+
+    @staticmethod
+    def message(**kwargs):
+        """A message carrying whatever the broker would have filled in."""
+        return BrokerMessage(topic="network.events", value=b'{"host": "leaf-01"}', **kwargs)
+
+    def test_the_same_message_has_the_same_identity(self):
+        """Two reads of one message are one message."""
+        self.assertEqual(self.message(partition=0, offset=7).identity, self.message(partition=0, offset=7).identity)
+
+    def test_two_partitions_at_one_offset_are_two_messages(self):
+        """Kafka numbers offsets per partition, so an offset alone is not an identity."""
+        self.assertNotEqual(self.message(partition=0, offset=7).identity, self.message(partition=1, offset=7).identity)
+
+    def test_a_broker_without_offsets_falls_back_to_the_payload(self):
+        """Redis pub/sub numbers nothing, so identity comes from what arrived."""
+        self.assertEqual(self.message().identity, self.message().identity)
+        other = BrokerMessage(topic="network.events", value=b'{"host": "leaf-02"}')
+        self.assertNotEqual(self.message().identity, other.identity)
+
+    def test_one_payload_on_two_topics_is_two_messages(self):
+        """The topic decides which configuration judged it, so it is part of the identity."""
+        other = BrokerMessage(topic="other.events", value=b'{"host": "leaf-01"}')
+        self.assertNotEqual(self.message().identity, other.identity)
 
 
 class ConsumerConformanceTests:  # pylint: disable=no-member
@@ -220,6 +255,12 @@ class TestKafkaConsumer(ConsumerConformanceTests, SimpleTestCase):
         message = consumer.poll(0.01)
         self.assertEqual(message.offset, 7)
         self.assertEqual(message.timestamp, datetime(2026, 8, 15, 3, 14, tzinfo=timezone.utc))
+
+    def test_polling_carries_the_partition(self):
+        """An offset counts within its partition, so one without the other names no message."""
+        consumer, _ = self.build()
+        consumer._consumer.messages.append(StubKafkaMessage(partition=3))  # pylint: disable=protected-access
+        self.assertEqual(consumer.poll(0.01).partition, 3)
 
     def test_a_partition_event_is_not_a_message(self):
         """End-of-partition and rebalance notices are not events; the loop goes round again."""
