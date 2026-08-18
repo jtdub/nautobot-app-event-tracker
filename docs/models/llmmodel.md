@@ -20,7 +20,7 @@ own accounting says a token costs you — including zero.
 | Input Cost per Million | USD per one million prompt tokens. |
 | Output Cost per Million | USD per one million completion tokens. |
 | Max Output Tokens | A default cap on completion length, applied when a caller does not set its own. |
-| Default Parameters | Extra request parameters (`temperature` and friends) passed through on every call. A specific call's own arguments win over these. |
+| Default Parameters | Extra request parameters (`temperature` and friends) passed through on every call. A specific call's own arguments win over these, so a `timeout` here applies whenever the caller does not set one. `api_key`, `api_base`, `model` and `messages` are refused: credentials and the endpoint belong to the provider's external integration, and the model and messages belong to the call. |
 
 ## Elsewhere
 

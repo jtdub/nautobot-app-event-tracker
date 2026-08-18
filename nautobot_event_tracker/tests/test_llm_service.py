@@ -226,12 +226,22 @@ class TestCallParameters(TestCase):
         self.assertEqual(client.calls[0]["max_tokens"], 64)
 
     def test_default_parameters_pass_through_underneath(self):
-        """The registry's parameters reach the call; the service's own arguments beat them."""
+        """The registry's parameters reach the call; the caller's own arguments beat them."""
         model = fixtures.create_llmmodel(name="tuned-model", default_parameters={"temperature": 0.1, "timeout": 999})
         client = FakeLLMClient()
         call(model, client)
         self.assertEqual(client.calls[0]["temperature"], 0.1)
-        self.assertEqual(client.calls[0]["timeout"], llm_service.DEFAULT_TIMEOUT_SECONDS)
+
+        client = FakeLLMClient()
+        call(model, client, timeout=5)
+        self.assertEqual(client.calls[0]["timeout"], 5)
+
+    def test_the_registrys_timeout_applies_when_the_caller_states_none(self):
+        """Otherwise a slow self-hosted model has no configuration escape hatch at all."""
+        model = fixtures.create_llmmodel(name="slow-model", default_parameters={"timeout": 120})
+        client = FakeLLMClient()
+        call(model, client)
+        self.assertEqual(client.calls[0]["timeout"], 120)
 
     def test_response_format_passes_through(self):
         """Structured-output requests reach the client untouched."""
@@ -259,6 +269,31 @@ class TestRefusals(TestCase):
     def test_a_disabled_model_refuses(self):
         """The model's own switch works too."""
         model = fixtures.create_llmmodel(name="disabled-model", enabled=False)
+        client = FakeLLMClient()
+
+        with self.assertRaises(LLMConfigurationError):
+            call(model, client)
+
+        self.assertEqual(client.calls, [])
+
+    def test_an_unmapped_provider_type_is_refused_as_configuration(self):
+        """L4 - a routing gap must not escape the family; triage's fail-open catches only that."""
+        model = fixtures.create_llmmodel()
+        model.provider.provider_type = "some-new-service"
+        client = FakeLLMClient()
+
+        with self.assertRaises(LLMConfigurationError):
+            call(model, client)
+
+        self.assertEqual(client.calls, [])
+        # A refusal is not a call, so it leaves no charge behind (L1 covers calls only).
+        self.assertEqual(LLMUsageRecord.objects.count(), 0)
+
+    def test_an_openai_compatible_provider_without_a_url_is_refused(self):
+        """With no api_base, litellm's openai prefix would post this deployment's key elsewhere."""
+        integration = fixtures.create_external_integration(name="Blanked", remote_url="")
+        provider = fixtures.create_llmprovider(name="Blanked Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
         client = FakeLLMClient()
 
         with self.assertRaises(LLMConfigurationError):

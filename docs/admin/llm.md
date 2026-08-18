@@ -10,7 +10,7 @@ All calls go through [litellm](https://docs.litellm.ai/), which is an optional d
 the app with the `llm` extra to get it:
 
 ```shell
-pip install nautobot-app-event-tracker[llm]
+pip install nautobot-event-tracker[llm]
 ```
 
 Without the extra, any attempt to call a model fails with a message naming that command.
@@ -31,8 +31,9 @@ stored and rotated where every other credential in your deployment is.
     - **OpenAI-compatible** — any self-hosted or third-party endpoint speaking the OpenAI
       protocol: vLLM, Ollama, llama.cpp, a gateway. The integration must carry a remote URL.
       This is the first-class path for deployments that cannot send event data to a third party.
-    - **OpenAI** / **Anthropic** — the hosted services. The remote URL may be left empty; litellm
-      knows where they live.
+    - **OpenAI** / **Anthropic** — the hosted services. Nautobot requires a remote URL on every
+      external integration, so give it the service's own base URL
+      (`https://api.openai.com/v1`, `https://api.anthropic.com`).
 4. Create one or more **LLM Models** on the provider. The model name is what goes on the wire.
    Enter the input and output costs so usage records carry real prices — they are your numbers,
    and zero is a fine answer for a model you run yourself.

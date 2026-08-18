@@ -12,6 +12,7 @@ from nautobot.apps.forms import (
     StaticSelect2Multiple,
     TagsBulkEditFormMixin,
 )
+from nautobot.extras.models import ExternalIntegration
 
 from nautobot_event_tracker.choices import (
     LLMProviderTypeChoices,
@@ -258,6 +259,8 @@ class IngestionStatsFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
 class LLMProviderForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
     """LLMProvider creation/edit form."""
 
+    external_integration = DynamicModelChoiceField(queryset=ExternalIntegration.objects.all())
+
     class Meta:
         """Meta attributes."""
 
@@ -344,10 +347,23 @@ class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
     """
 
     model = LLMUsageRecord
-    field_order = ["q", "purpose", "success"]
+    field_order = ["q", "model", "purpose", "success"]
 
-    # No model picker: a form field named `model` would collide with the attribute above, and the
-    # model detail page already links here pre-filtered. The filterset still accepts `model=`.
     q = forms.CharField(required=False, label="Search", help_text="Search within model name, purpose and error.")
     purpose = forms.MultipleChoiceField(choices=LLMPurposeChoices, required=False, widget=StaticSelect2Multiple)
     success = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+    def __init__(self, *args, **kwargs):
+        """Add the model picker after construction.
+
+        Declared here rather than as a class attribute because `model` already names the Django
+        model on every NautobotFilterForm. The collision is class-level only, so the field goes
+        into `self.fields` - which is what the page exists to filter by, and worth more than
+        leaving operators to hand-edit `?model=` into the URL.
+        """
+        super().__init__(*args, **kwargs)
+        self.fields["model"] = DynamicModelChoiceField(
+            queryset=LLMModel.objects.all(),
+            required=False,
+            label="Model",
+        )

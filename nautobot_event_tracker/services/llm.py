@@ -34,7 +34,7 @@ from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.utils import deepmerge
 from nautobot.extras.choices import SecretsGroupSecretTypeChoices
 
-from nautobot_event_tracker.choices import LITELLM_PROVIDER_PREFIXES
+from nautobot_event_tracker.choices import LITELLM_PROVIDER_PREFIXES, LLMProviderTypeChoices
 from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
 from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
@@ -144,16 +144,26 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
     call_kwargs = dict(model.default_parameters or {})
     call_kwargs.update(_credential_kwargs(model.provider))
-    call_kwargs["timeout"] = timeout if timeout is not None else DEFAULT_TIMEOUT_SECONDS
+    if timeout is not None:
+        call_kwargs["timeout"] = timeout
+    else:
+        # The registry's own timeout applies when the caller states none, which is what
+        # `default_parameters` advertises: passed through on every call, beaten only by the
+        # call's own arguments. `setdefault` still guarantees rule L6 - a call always has one.
+        call_kwargs.setdefault("timeout", DEFAULT_TIMEOUT_SECONDS)
     effective_max_tokens = max_tokens if max_tokens is not None else model.max_output_tokens
     if effective_max_tokens is not None:
         call_kwargs["max_tokens"] = effective_max_tokens
     if response_format is not None:
         call_kwargs["response_format"] = response_format
 
+    # Resolved before the try, like the client above: a routing fault is a refusal, and inside
+    # the block it would be recorded and re-raised as a failed call it never became.
+    model_string = _model_string(model)
+
     started = time.monotonic()
     try:
-        raw = call(_model_string(model), messages, **call_kwargs)
+        raw = call(model_string, messages, **call_kwargs)
     except Exception as error:  # pylint: disable=broad-except
         # L4 - whatever the client raised, the caller sees one family, and the failure is on the
         # record first (L1).
@@ -204,8 +214,19 @@ def _check_enabled(model):
 
 
 def _model_string(model):
-    """The litellm model string for this registry entry. litellm routes on the prefix."""
-    return f"{LITELLM_PROVIDER_PREFIXES[model.provider.provider_type]}/{model.name}"
+    """The litellm model string for this registry entry. litellm routes on the prefix.
+
+    An unmapped provider type is a configuration fault, not a crash: a bare KeyError would
+    escape the LLMError family rule L4 promises, and triage's fail-open catches that family
+    alone - so the consumer would die on the message rather than accept it.
+    """
+    prefix = LITELLM_PROVIDER_PREFIXES.get(model.provider.provider_type)
+    if prefix is None:
+        raise LLMConfigurationError(
+            f"Provider type '{model.provider.provider_type}' has no litellm routing prefix. "
+            "Add it to LITELLM_PROVIDER_PREFIXES beside the choice."
+        )
+    return f"{prefix}/{model.name}"
 
 
 def _credential_kwargs(provider):
@@ -220,6 +241,14 @@ def _credential_kwargs(provider):
     kwargs = {}
     if integration.remote_url:
         kwargs["api_base"] = integration.remote_url
+    elif provider.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE:
+        # `clean()` demands this URL at save time, but a shared integration can be blanked
+        # afterwards without revalidating the providers pointing at it. Refusing here matters
+        # more than tidiness: with no api_base, litellm's `openai/` prefix would send this
+        # deployment's key and its event payload to api.openai.com.
+        raise LLMConfigurationError(
+            f"LLM provider '{provider}' is OpenAI-compatible but its external integration has no remote URL."
+        )
     for secret_type in (SecretsGroupSecretTypeChoices.TYPE_TOKEN, SecretsGroupSecretTypeChoices.TYPE_SECRET):
         key = read_secret(integration, secret_type)
         if key:
@@ -234,7 +263,7 @@ def _litellm_completion():
         import litellm  # pylint: disable=import-outside-toplevel
     except ImportError as error:
         raise ImproperlyConfigured(
-            "litellm is not installed. Install the app with the 'llm' extra: nautobot-app-event-tracker[llm]."
+            "litellm is not installed. Install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
     return litellm.completion
 

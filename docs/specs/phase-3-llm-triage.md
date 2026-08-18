@@ -1,7 +1,7 @@
 # Phase 3 — LLM Service Layer and Triage
 
 !!! warning "Draft — not yet approved"
-    This is the execution spec for Phase 3. Section 12 lists the calls made while writing it that most need a second opinion — in particular 12.2, which accepts a synchronous model call in the consumer's message loop, and 12.5, which lets a model drop an event outright. Nothing in this spec has been implemented.
+    This is the execution spec for Phase 3. Section 12 lists the calls made while writing it that most need a second opinion — in particular 12.2, which accepts a synchronous model call in the consumer's message loop, and 12.5, which lets a model drop an event outright. The phase lands in the two PRs described below; section 13 records, per PR, where the implementation departed from what is written here.
 
 Phases 1 and 2 are implemented and merged; this spec builds on them and cites their rules by number (S1–S5, C1–C3, F1–F6, I1–I8) rather than restating them. [ADR 0006](../decisions/0006-litellm-service-layer-and-credential-storage.md) made the load-bearing decisions for this phase; this spec executes them.
 
@@ -299,5 +299,7 @@ Appended as each PR lands, per the Phase 2 precedent.
 
 ### PR A
 
-- `LLMProviderForm` exposes `default_parameters` as a JSON field; the UI usage-record filter form omits a model picker (the field name would collide with Nautobot's filter-form `model` attribute) — the filterset still accepts `model=`, and the model detail page links to its usage pre-filtered.
+- `LLMModelForm` exposes `default_parameters` as a JSON field, and `LLMModel.clean()` refuses the keys the service layer owns (`api_key`, `api_base`, `model`, `messages`): a credential there would be change-logged and served over REST and GraphQL, against rule L3, and a duplicated call argument would surface as a failed model call rather than as the configuration mistake it is.
+- The usage-record filter form declares its model picker in `__init__` rather than as a class attribute, because `model` already names the Django model on every `NautobotFilterForm`.
+- `default_parameters` may set `timeout`, which applies when a caller states none; rule L6's 30 seconds is the floor beneath both, not above them.
 - `complete()` lets `ImproperlyConfigured` (the missing-extra refusal) propagate rather than wrapping it in `LLMCallError`: a deployment fault is not a failed call, and nothing left the process (section 5.2).

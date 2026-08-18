@@ -447,8 +447,13 @@ class TestLLMProvider(ModelTestCases.BaseModelTestCase):
             provider.full_clean()
         self.assertIn("external_integration", raised.exception.message_dict)
 
-    def test_a_hosted_provider_needs_no_remote_url(self):
-        """OpenAI and Anthropic have well-known endpoints litellm already knows."""
+    def test_a_hosted_provider_passes_the_apps_own_url_check(self):
+        """The app's extra demand applies to self-hosted endpoints only.
+
+        Nautobot requires a remote URL on every external integration regardless, so this is
+        about which provider types the app adds a check of its own for - not about a hosted
+        provider being usable without a URL.
+        """
         integration = fixtures.create_external_integration(name="Hosted", remote_url="")
         provider = models.LLMProvider(
             name="Hosted Provider",
