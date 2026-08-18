@@ -194,6 +194,18 @@ class TemplateGuardTest(SimpleTestCase):
         self.assertEqual([str(path) for path in html_files], [])
 
 
+def _is_forbidden_package(name, forbidden):
+    """Whether this distribution or module name belongs to a forbidden project.
+
+    Matches the project's companion packages too - `langchain_core` and `langchain-community`
+    are langchain - because a banned SDK that arrives under a suffixed name is the same SDK.
+    Hyphens and underscores are the same character for this purpose: one spells the
+    distribution, the other the module.
+    """
+    stem = name.split(".")[0].replace("-", "_")
+    return any(stem == entry or stem.startswith(f"{entry}_") for entry in forbidden)
+
+
 def _import_offenders(paths, forbidden):
     """Yield `path:line imports name` for every import of a forbidden package in these files.
 
@@ -209,7 +221,7 @@ def _import_offenders(paths, forbidden):
             elif isinstance(node, ast.ImportFrom):
                 names = [node.module or ""]
             for name in names:
-                if name.split(".")[0] in forbidden:
+                if _is_forbidden_package(name, forbidden):
                     yield f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}"
 
 
@@ -282,10 +294,18 @@ class IngestionGuardTest(SimpleTestCase):
             return tomllib.load(handle)["tool"]["poetry"]
 
     def test_the_app_declares_no_provider_sdk_dependency(self):
-        """The no-SDK rule at the packaging level, where it is equally easy to break."""
-        dependencies = self._poetry()["dependencies"]
-        for name in self.PROVIDER_SDKS:
-            self.assertNotIn(name, dependencies, f"'{name}' must not be a runtime dependency; use litellm")
+        """The no-SDK rule at the packaging level, where it is equally easy to break.
+
+        Matched by project rather than by exact name: `langchain-core` is langchain, and an
+        exact-key check would wave it through.
+        """
+        offenders = [name for name in self._poetry()["dependencies"] if _is_forbidden_package(name, self.PROVIDER_SDKS)]
+        self.assertEqual(
+            offenders,
+            [],
+            "Provider SDKs must not be runtime dependencies; every call goes through litellm. "
+            "Offending dependencies: " + ", ".join(offenders),
+        )
 
     def test_litellm_is_an_optional_dependency(self):
         """litellm stays behind the `llm` extra: a deployment without triage installs no client."""

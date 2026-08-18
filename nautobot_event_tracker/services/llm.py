@@ -280,8 +280,11 @@ def _record_usage(  # pylint: disable=too-many-arguments
 ):
     """L1 - the one place a usage record is written; success and failure both land here.
 
-    Runs in its own transaction so the record survives whatever the caller's transaction later
-    does: a rolled-back ticket write must not unwrite the money it spent. No `full_clean()`:
+    Commits on its own so the record survives what the caller does next: a ticket write that
+    rolls back afterwards must not unwrite the money it spent. That holds because callers call
+    the model *outside* a transaction (rule T5 says so for triage, and a network call inside one
+    would be a fault of its own); called inside an enclosing atomic block this is only a
+    savepoint, and the record would roll back with it. No `full_clean()`:
     every value is service-constructed or capped here, and validating the FKs the service just
     fetched would cost three queries per call on the consumer's hot path.
     """

@@ -495,6 +495,40 @@ class TestLLMModel(ModelTestCases.BaseModelTestCase):
         models.LLMModel.objects.create(provider=other, name="model-one")
         self.assertEqual(models.LLMModel.objects.filter(name="model-one").count(), 2)
 
+    def test_a_credential_in_the_default_parameters_is_refused(self):
+        """Rule L3: a key here would be change-logged and served over REST and GraphQL."""
+        model = models.LLMModel(
+            provider=fixtures.create_llmprovider(),
+            name="smuggler",
+            default_parameters={"api_key": "sk-not-here", "temperature": 0.1},
+        )
+        with self.assertRaises(ValidationError) as raised:
+            model.full_clean()
+        self.assertIn("default_parameters", raised.exception.message_dict)
+        self.assertIn("api_key", str(raised.exception))
+
+    def test_the_calls_own_arguments_are_refused(self):
+        """Passing `model` or `messages` here fails the call rather than configuring it."""
+        model = models.LLMModel(
+            provider=fixtures.create_llmprovider(),
+            name="confuser",
+            default_parameters={"model": "something-else", "messages": []},
+        )
+        with self.assertRaises(ValidationError) as raised:
+            model.full_clean()
+        # Both are named, so one edit fixes the object rather than one per attempt.
+        self.assertIn("messages", str(raised.exception))
+        self.assertIn("model", str(raised.exception))
+
+    def test_ordinary_parameters_are_allowed(self):
+        """The field's actual purpose still works."""
+        model = models.LLMModel(
+            provider=fixtures.create_llmprovider(),
+            name="tuned",
+            default_parameters={"temperature": 0.1, "top_p": 0.9},
+        )
+        model.full_clean()
+
 
 class TestLLMUsageRecord(TestCase):
     """The accounting row. Constructed directly only here, as the guard tests allow."""

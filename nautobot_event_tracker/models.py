@@ -464,8 +464,17 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
     default_parameters = models.JSONField(
         default=dict,
         blank=True,
-        help_text="Extra request parameters (temperature and friends), passed through on every call.",
+        help_text=(
+            "Extra request parameters (temperature and friends), passed through on every call. "
+            "Cannot carry credentials or the request's own subject: see the reserved keys below."
+        ),
     )
+
+    #: Keys the service layer owns, refused here rather than passed through. `api_key` and
+    #: `api_base` would put a credential and an endpoint on a change-logged, API-readable model,
+    #: which is what rule L3 exists to prevent; `model` and `messages` are the call's own
+    #: arguments, and passing them twice fails the call rather than configuring it.
+    RESERVED_PARAMETERS = ("api_key", "api_base", "model", "messages")
 
     natural_key_field_names = ["provider", "name"]
 
@@ -485,6 +494,26 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
     def __str__(self):
         """Stringify instance."""
         return f"{self.provider.name}: {self.name}"
+
+    def clean(self):
+        """Refuse parameters that belong to the service layer, not to the registry.
+
+        Caught here rather than at call time: a credential in this field would already have been
+        written to a change-logged row and served over REST and GraphQL by the time a call read
+        it, and a duplicated call argument would surface as a failed model call rather than as
+        the configuration mistake it is.
+        """
+        super().clean()
+        offenders = sorted(key for key in (self.default_parameters or {}) if key in self.RESERVED_PARAMETERS)
+        if offenders:
+            raise ValidationError(
+                {
+                    "default_parameters": (
+                        f"{', '.join(offenders)} cannot be set here. Credentials and the endpoint come from the "
+                        "provider's external integration, and the model and messages come from the call itself."
+                    )
+                }
+            )
 
 
 @extras_features("graphql")

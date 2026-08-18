@@ -2,6 +2,7 @@
 
 import os
 import sys
+from urllib.parse import quote
 
 from nautobot.core.settings import *  # noqa: F403  # pylint: disable=wildcard-import,unused-wildcard-import
 from nautobot.core.settings_funcs import is_truthy
@@ -161,7 +162,9 @@ if LAB_INGESTION is not None and is_truthy(os.getenv("EVENT_TRACKER_LAB", "false
 elif LAB_INGESTION is not None:
     # The password rides in the URL: the consumer reads only `url` (or an external integration),
     # so a separate `password` key would be dead configuration - and the schema rejects it.
-    _REDIS_PASSWORD = os.getenv("NAUTOBOT_REDIS_PASSWORD", "")
+    # Percent-encoded, because a password containing '@', '/', ':' or '#' would otherwise be
+    # parsed as part of the host and the connection would fail somewhere far from here.
+    _REDIS_PASSWORD = quote(os.getenv("NAUTOBOT_REDIS_PASSWORD", ""), safe="")
     _REDIS_AUTH = f":{_REDIS_PASSWORD}@" if _REDIS_PASSWORD else ""
     PLUGINS_CONFIG["nautobot_event_tracker"]["ingestion"] = {
         "consumer": "redis",
