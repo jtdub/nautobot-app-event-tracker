@@ -15,6 +15,8 @@ from nautobot.apps.models import BaseModel, ChangeLoggedModel, OrganizationalMod
 from nautobot_event_tracker.choices import (
     ATTACHMENT_UPDATE_TYPES,
     TERMINAL_STATUSES,
+    LLMProviderTypeChoices,
+    LLMPurposeChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
@@ -366,3 +368,213 @@ class IngestionStats(BaseModel):
         or joined a ticket, so it is already counted there.
         """
         return self.errored + self.dropped + self.tickets_opened + self.tickets_joined
+
+
+@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
+class LLMProvider(PrimaryModel):  # pylint: disable=too-many-ancestors
+    """An LLM endpoint the app may call, registered by an operator (ADR 0006).
+
+    Carries no credentials of its own: the ExternalIntegration it points at holds the endpoint URL,
+    and that integration's SecretsGroup holds the API key. Nothing key-shaped lives on this model,
+    in PLUGINS_CONFIG, or in a log line (rule L3 from the Phase 3 spec).
+    """
+
+    name = models.CharField(max_length=CHARFIELD_MAX_LENGTH, unique=True)
+    description = models.CharField(max_length=CHARFIELD_MAX_LENGTH, blank=True)
+    provider_type = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        choices=LLMProviderTypeChoices,
+        default=LLMProviderTypeChoices.OPENAI_COMPATIBLE,
+        help_text="Which API protocol the endpoint speaks. Selects how the service layer addresses it.",
+    )
+    external_integration = models.ForeignKey(
+        to="extras.ExternalIntegration",
+        on_delete=models.PROTECT,
+        related_name="llm_providers",
+        help_text="Carries the endpoint URL and, through its secrets group, the API key.",
+    )
+    enabled = models.BooleanField(
+        default=True,
+        help_text="A disabled provider refuses every call before any network traffic (rule L8).",
+    )
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["name"]
+        verbose_name = "LLM Provider"
+        verbose_name_plural = "LLM Providers"
+
+    def __str__(self):
+        """Stringify instance."""
+        return self.name
+
+    def clean(self):
+        """An OpenAI-compatible endpoint is unreachable without a URL to reach it at."""
+        super().clean()
+        if (
+            self.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE
+            and self.external_integration_id is not None
+            and not self.external_integration.remote_url
+        ):
+            raise ValidationError(
+                {
+                    "external_integration": (
+                        "An OpenAI-compatible provider needs an external integration with a remote URL."
+                    )
+                }
+            )
+
+
+@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
+class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
+    """One model available from a provider, with its parameters and cost metadata (ADR 0006)."""
+
+    provider = models.ForeignKey(
+        to=LLMProvider,
+        on_delete=models.PROTECT,
+        related_name="models",
+    )
+    name = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        help_text="The model identifier sent on the wire, e.g. 'gpt-4o-mini' or 'llama-3.1-70b'.",
+    )
+    description = models.CharField(max_length=CHARFIELD_MAX_LENGTH, blank=True)
+    enabled = models.BooleanField(
+        default=True,
+        help_text="A disabled model refuses every call before any network traffic (rule L8).",
+    )
+    input_cost_per_million = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=0,
+        help_text="USD per one million prompt tokens. Used to compute each call's recorded cost.",
+    )
+    output_cost_per_million = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=0,
+        help_text="USD per one million completion tokens.",
+    )
+    max_output_tokens = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Default completion cap for calls that do not set their own.",
+    )
+    default_parameters = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Extra request parameters (temperature and friends), passed through on every call. "
+            "Cannot carry credentials or the request's own subject: see the reserved keys below."
+        ),
+    )
+
+    #: Keys the service layer owns, refused here rather than passed through. `api_key` and
+    #: `api_base` would put a credential and an endpoint on a change-logged, API-readable model,
+    #: which is what rule L3 exists to prevent; `model` and `messages` are the call's own
+    #: arguments, and passing them twice fails the call rather than configuring it.
+    RESERVED_PARAMETERS = ("api_key", "api_base", "model", "messages")
+
+    natural_key_field_names = ["provider", "name"]
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["provider__name", "name"]
+        verbose_name = "LLM Model"
+        verbose_name_plural = "LLM Models"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "name"],
+                name="event_tracker_llmmodel_provider_name_unique",
+            ),
+        ]
+
+    def __str__(self):
+        """Stringify instance."""
+        return f"{self.provider.name}: {self.name}"
+
+    def clean(self):
+        """Refuse parameters that belong to the service layer, not to the registry.
+
+        Caught here rather than at call time: a credential in this field would already have been
+        written to a change-logged row and served over REST and GraphQL by the time a call read
+        it, and a duplicated call argument would surface as a failed model call rather than as
+        the configuration mistake it is.
+        """
+        super().clean()
+        offenders = sorted(key for key in (self.default_parameters or {}) if key in self.RESERVED_PARAMETERS)
+        if offenders:
+            raise ValidationError(
+                {
+                    "default_parameters": (
+                        f"{', '.join(offenders)} cannot be set here. Credentials and the endpoint come from the "
+                        "provider's external integration, and the model and messages come from the call itself."
+                    )
+                }
+            )
+
+
+@extras_features("graphql")
+class LLMUsageRecord(BaseModel):
+    """The accounting row for one LLM call, successful or not.
+
+    Deliberately neither a PrimaryModel nor change-logged, for the IngestionStats reason: a busy
+    consumer writes one of these per surviving event, and change logging them would write an
+    ObjectChange per model call and bury the change log under a record of bookkeeping.
+
+    Written only by `services.llm` (rule L1). No UI or API route offers a write method.
+    """
+
+    model = models.ForeignKey(
+        to=LLMModel,
+        on_delete=models.PROTECT,
+        related_name="usage_records",
+    )
+    ticket = models.ForeignKey(
+        to=EventTicket,
+        on_delete=models.SET_NULL,
+        related_name="llm_usage",
+        null=True,
+        blank=True,
+        help_text="The ticket this call was about, when there was one. Spend history survives ticket deletion.",
+    )
+    purpose = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        choices=LLMPurposeChoices,
+        db_index=True,
+        help_text="What the call was for.",
+    )
+    request_id = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        blank=True,
+        help_text="The provider's response identifier, for finding the call in provider-side logs.",
+    )
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    cost = models.DecimalField(
+        max_digits=12,
+        decimal_places=6,
+        default=0,
+        help_text="USD, computed from the model's registered costs and the provider's reported usage.",
+    )
+    latency_ms = models.PositiveIntegerField(default=0)
+    success = models.BooleanField(db_index=True)
+    error = models.TextField(blank=True, help_text="Why the call failed, when it did. Capped by the service.")
+    called_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    # An accounting row is identified by nothing but itself.
+    natural_key_field_names = ["pk"]
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["-called_at"]
+        get_latest_by = "called_at"
+        verbose_name = "LLM Usage Record"
+        verbose_name_plural = "LLM Usage Records"
+
+    def __str__(self):
+        """Stringify instance."""
+        return f"{self.purpose} call at {self.called_at:%Y-%m-%d %H:%M:%S}"

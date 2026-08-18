@@ -22,6 +22,20 @@
                 "circuits.circuit"
             ]
         },
+        "llm": {
+            "type": "object",
+            "description": "LLM service layer settings. Providers, models and credentials are registry objects managed in the UI, never settings, so this block holds almost nothing.",
+            "default": {},
+            "properties": {
+                "usage_retention_days": {
+                    "type": "integer",
+                    "description": "LLM usage records older than this are deleted automatically by the service itself, at most once per process per day.",
+                    "minimum": 1,
+                    "default": 90
+                }
+            },
+            "additionalProperties": false
+        },
         "ingestion": {
             "type": "object",
             "description": "Event ingestion. An empty object means the consumer subscribes to nothing, which is the default until a deployment points it at a broker.",

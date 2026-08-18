@@ -117,24 +117,11 @@ def connection_details(settings, *, url_key):
 
 def _credentials(integration):
     """Read the username and password out of an integration's secrets group, if it has one."""
-    from nautobot.extras.choices import (  # pylint: disable=import-outside-toplevel
-        SecretsGroupAccessTypeChoices,
-        SecretsGroupSecretTypeChoices,
+    from nautobot.extras.choices import SecretsGroupSecretTypeChoices  # pylint: disable=import-outside-toplevel
+
+    from nautobot_event_tracker.secrets import read_secret  # pylint: disable=import-outside-toplevel
+
+    return (
+        read_secret(integration, SecretsGroupSecretTypeChoices.TYPE_USERNAME),
+        read_secret(integration, SecretsGroupSecretTypeChoices.TYPE_PASSWORD),
     )
-    from nautobot.extras.secrets.exceptions import SecretError  # pylint: disable=import-outside-toplevel
-
-    if integration.secrets_group is None:
-        return None, None
-
-    def secret(secret_type):
-        """One secret, or None when the group does not carry it."""
-        try:
-            return integration.secrets_group.get_secret_value(
-                access_type=SecretsGroupAccessTypeChoices.TYPE_GENERIC,
-                secret_type=secret_type,
-                obj=integration,
-            )
-        except (SecretError, ObjectDoesNotExist):
-            return None
-
-    return secret(SecretsGroupSecretTypeChoices.TYPE_USERNAME), secret(SecretsGroupSecretTypeChoices.TYPE_PASSWORD)

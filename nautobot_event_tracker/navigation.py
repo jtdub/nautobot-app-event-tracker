@@ -30,6 +30,33 @@ items = (
             ),
         ),
     ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:llmprovider_list",
+        name="LLM Providers",
+        permissions=["nautobot_event_tracker.view_llmprovider"],
+        buttons=(
+            NavMenuAddButton(
+                link="plugins:nautobot_event_tracker:llmprovider_add",
+                permissions=["nautobot_event_tracker.add_llmprovider"],
+            ),
+        ),
+    ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:llmmodel_list",
+        name="LLM Models",
+        permissions=["nautobot_event_tracker.view_llmmodel"],
+        buttons=(
+            NavMenuAddButton(
+                link="plugins:nautobot_event_tracker:llmmodel_add",
+                permissions=["nautobot_event_tracker.add_llmmodel"],
+            ),
+        ),
+    ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:llmusagerecord_list",
+        name="LLM Usage",
+        permissions=["nautobot_event_tracker.view_llmusagerecord"],
+    ),
 )
 
 menu_items = (

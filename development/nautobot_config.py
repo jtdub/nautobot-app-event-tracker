@@ -2,6 +2,7 @@
 
 import os
 import sys
+from urllib.parse import quote
 
 from nautobot.core.settings import *  # noqa: F403  # pylint: disable=wildcard-import,unused-wildcard-import
 from nautobot.core.settings_funcs import is_truthy
@@ -159,14 +160,22 @@ LAB_INGESTION = _lab_ingestion()
 if LAB_INGESTION is not None and is_truthy(os.getenv("EVENT_TRACKER_LAB", "false")):
     PLUGINS_CONFIG["nautobot_event_tracker"]["ingestion"] = LAB_INGESTION
 elif LAB_INGESTION is not None:
+    # The password rides in the URL: the consumer reads only `url` (or an external integration),
+    # so a separate `password` key would be dead configuration - and the schema rejects it.
+    # Percent-encoded, because a password containing '@', '/', ':' or '#' would otherwise be
+    # parsed as part of the host and the connection would fail somewhere far from here.
+    _REDIS_PASSWORD = quote(os.getenv("NAUTOBOT_REDIS_PASSWORD", ""), safe="")
+    _REDIS_AUTH = f":{_REDIS_PASSWORD}@" if _REDIS_PASSWORD else ""
     PLUGINS_CONFIG["nautobot_event_tracker"]["ingestion"] = {
         "consumer": "redis",
         "consumer_name": "development",
         "redis": {
             # Database 2: Nautobot's cache and Celery have 0 and 1, and a consumer subscribing over
             # the top of either is a debugging session nobody enjoys.
-            "url": f"redis://{os.getenv('NAUTOBOT_REDIS_HOST', 'redis')}:{os.getenv('NAUTOBOT_REDIS_PORT', '6379')}/2",
-            "password": os.getenv("NAUTOBOT_REDIS_PASSWORD", ""),
+            "url": (
+                f"redis://{_REDIS_AUTH}"
+                f"{os.getenv('NAUTOBOT_REDIS_HOST', 'redis')}:{os.getenv('NAUTOBOT_REDIS_PORT', '6379')}/2"
+            ),
         },
         # Short, so a developer watching the stats page sees a bucket roll while still looking.
         "stats_bucket_seconds": 60,

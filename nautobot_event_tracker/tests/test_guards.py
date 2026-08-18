@@ -16,6 +16,10 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 SERVICES_DIR = APP_ROOT / "services"
 MIGRATIONS_DIR = APP_ROOT / "migrations"
 
+#: Every manager method that writes. One set for every sole-writer guard, so strengthening the
+#: matcher strengthens all of them at once rather than the one someone happened to be editing.
+WRITE_METHODS = frozenset({"create", "get_or_create", "update_or_create", "bulk_create", "update"})
+
 
 def _python_files_outside_services():
     """Yield every app module that is not part of the service layer."""
@@ -27,11 +31,11 @@ def _python_files_outside_services():
         yield path
 
 
-def _manager_call_offenders(paths, models, methods):
+def _manager_call_offenders(paths, models, methods=WRITE_METHODS):
     """Yield `path:line` for every `<Model>.objects.<method>()` call in these files.
 
     The AST rather than a string search: a docstring mentioning the call is not the call. Shared by
-    both write guards so a fix to the matcher cannot land in one copy only.
+    every write guard so a fix to the matcher cannot land in one copy only.
     """
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -46,6 +50,19 @@ def _manager_call_offenders(paths, models, methods):
                 and isinstance(value.value, ast.Name)
                 and value.value.id in models
             ):
+                yield f"{path.relative_to(APP_ROOT)}:{node.lineno}"
+
+
+def _constructor_call_offenders(paths, class_names):
+    """Yield `path:line` for every direct `<Model>(...)` construction in these files.
+
+    The companion to `_manager_call_offenders`, shared for the same reason: the sole-writer
+    guards need both shapes, and two copies of a matcher drift.
+    """
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in class_names:
                 yield f"{path.relative_to(APP_ROOT)}:{node.lineno}"
 
 
@@ -84,14 +101,8 @@ class StatusAssignmentGuardTest(SimpleTestCase):
         """
         allowed = {"tests/test_models.py"}
         paths = [path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in allowed]
-        offenders = list(_manager_call_offenders(paths, {"TicketUpdate"}, {"create"}))
-
-        # Direct construction, which the manager matcher cannot see.
-        for path in paths:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "TicketUpdate":
-                    offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno}")
+        offenders = list(_manager_call_offenders(paths, {"TicketUpdate"}))
+        offenders += list(_constructor_call_offenders(paths, {"TicketUpdate"}))
 
         self.assertEqual(
             offenders,
@@ -183,15 +194,52 @@ class TemplateGuardTest(SimpleTestCase):
         self.assertEqual([str(path) for path in html_files], [])
 
 
+def _is_forbidden_package(name, forbidden):
+    """Whether this distribution or module name belongs to a forbidden project.
+
+    Matches the project's companion packages too - `langchain_core` and `langchain-community`
+    are langchain - because a banned SDK that arrives under a suffixed name is the same SDK.
+    Hyphens and underscores are the same character for this purpose: one spells the
+    distribution, the other the module.
+    """
+    stem = name.split(".")[0].replace("-", "_")
+    return any(stem == entry or stem.startswith(f"{entry}_") for entry in forbidden)
+
+
+def _import_offenders(paths, forbidden):
+    """Yield `path:line imports name` for every import of a forbidden package in these files.
+
+    Walks the whole AST, so an import buried in a function body is found too. Shared by the
+    import guards so a fix to the matcher cannot land in one copy only.
+    """
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            for name in names:
+                if _is_forbidden_package(name, forbidden):
+                    yield f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}"
+
+
 class IngestionGuardTest(SimpleTestCase):
     """Phase 2's two rules, asserted rather than trusted.
 
     The ingestion package writes tickets only through the service layer, and calls no language
-    model. Both are the kind of rule a well-meaning change breaks silently.
+    model. Both are the kind of rule a well-meaning change breaks silently. Phase 3 narrowed the
+    second rule rather than removing it: litellm now exists, but only behind `services/llm.py`,
+    and ingestion still talks to a model exclusively through that service (rule L2).
     """
 
-    #: Anything that would mean an LLM had arrived in a phase that is meant to have none.
-    FORBIDDEN_IMPORTS = ("litellm", "openai", "anthropic", "langchain", "transformers")
+    #: SDKs that must appear nowhere: every call goes through litellm (ADR 0006).
+    PROVIDER_SDKS = ("openai", "anthropic", "langchain", "transformers")
+
+    #: The one LLM client the app uses, importable only where `test_litellm_is_imported_only_in_the_llm_service`
+    #: allows.
+    LLM_LIBRARY = "litellm"
 
     def _ingestion_modules(self):
         """Every module in the ingestion package and the consumer command."""
@@ -201,13 +249,7 @@ class IngestionGuardTest(SimpleTestCase):
 
     def test_no_direct_ticket_writes_in_the_ingestion_package(self):
         """`EventTicket.objects.create()` there would bypass the trail and the dedup rule."""
-        offenders = list(
-            _manager_call_offenders(
-                self._ingestion_modules(),
-                {"EventTicket", "TicketUpdate"},
-                {"create", "get_or_create", "update_or_create", "bulk_create"},
-            )
-        )
+        offenders = list(_manager_call_offenders(self._ingestion_modules(), {"EventTicket", "TicketUpdate"}))
 
         self.assertEqual(
             offenders,
@@ -216,19 +258,9 @@ class IngestionGuardTest(SimpleTestCase):
         )
 
     def test_the_ingestion_package_imports_no_language_model(self):
-        """Phase 2 is AI-free by design; triage is Phase 3 and plugs in at a named seam."""
-        offenders = []
-        for path in self._ingestion_modules():
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                names = []
-                if isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                elif isinstance(node, ast.ImportFrom):
-                    names = [node.module or ""]
-                for name in names:
-                    if name.split(".")[0] in self.FORBIDDEN_IMPORTS:
-                        offenders.append(f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}")
+        """Ingestion reaches a model only through `services.llm`, never through a client library."""
+        forbidden = self.PROVIDER_SDKS + (self.LLM_LIBRARY,)
+        offenders = list(_import_offenders(self._ingestion_modules(), forbidden))
 
         self.assertEqual(
             offenders,
@@ -236,9 +268,69 @@ class IngestionGuardTest(SimpleTestCase):
             "No module under ingestion/ may import a language model client. Offending lines: " + ", ".join(offenders),
         )
 
-    def test_the_app_declares_no_language_model_dependency(self):
-        """The same rule at the packaging level, where it is equally easy to break."""
-        pyproject = (APP_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
-        dependencies = pyproject.split("[tool.poetry.group.dev.dependencies]")[0]
-        for name in self.FORBIDDEN_IMPORTS:
-            self.assertNotIn(name, dependencies, f"'{name}' must not be a runtime dependency in Phase 2")
+    def test_litellm_is_imported_only_in_the_llm_service(self):
+        """L2 - one import site for litellm, and no provider SDK anywhere in the app."""
+        allowed = {"services/llm.py"}
+        paths = [path for path in sorted(APP_ROOT.rglob("*.py")) if str(path.relative_to(APP_ROOT)) not in allowed]
+        offenders = list(_import_offenders(paths, self.PROVIDER_SDKS + (self.LLM_LIBRARY,)))
+        offenders += list(_import_offenders([APP_ROOT / "services" / "llm.py"], self.PROVIDER_SDKS))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "litellm belongs in services/llm.py alone, and provider SDKs belong nowhere. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    @staticmethod
+    def _poetry():
+        """The parsed `[tool.poetry]` table, so the guards read data rather than source strings."""
+        try:
+            import tomllib  # pylint: disable=import-outside-toplevel
+        except ImportError:  # Python 3.10
+            import tomli as tomllib  # pylint: disable=import-outside-toplevel
+
+        with open(APP_ROOT.parent / "pyproject.toml", "rb") as handle:
+            return tomllib.load(handle)["tool"]["poetry"]
+
+    def test_the_app_declares_no_provider_sdk_dependency(self):
+        """The no-SDK rule at the packaging level, where it is equally easy to break.
+
+        Matched by project rather than by exact name: `langchain-core` is langchain, and an
+        exact-key check would wave it through.
+        """
+        offenders = [name for name in self._poetry()["dependencies"] if _is_forbidden_package(name, self.PROVIDER_SDKS)]
+        self.assertEqual(
+            offenders,
+            [],
+            "Provider SDKs must not be runtime dependencies; every call goes through litellm. "
+            "Offending dependencies: " + ", ".join(offenders),
+        )
+
+    def test_litellm_is_an_optional_dependency(self):
+        """litellm stays behind the `llm` extra: a deployment without triage installs no client."""
+        poetry = self._poetry()
+        self.assertIs(
+            poetry["dependencies"].get("litellm", {}).get("optional"),
+            True,
+            "litellm must be a runtime dependency marked optional",
+        )
+        self.assertIn("litellm", poetry["extras"].get("llm", ()), "the 'llm' extra must install litellm")
+        self.assertIn("litellm", poetry["extras"].get("all", ()), "the 'all' extra must include litellm")
+
+
+class LLMUsageGuardTest(SimpleTestCase):
+    """Rule L1's mechanical half: only `services/llm.py` writes usage records."""
+
+    def test_no_direct_llm_usage_record_writes_outside_the_service_layer(self):
+        """The model test suite is exempt, as for TicketUpdate, and for the same reason."""
+        allowed = {"tests/test_models.py"}
+        paths = [path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in allowed]
+        offenders = list(_manager_call_offenders(paths, {"LLMUsageRecord"}))
+        offenders += list(_constructor_call_offenders(paths, {"LLMUsageRecord"}))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "LLMUsageRecord rows must only be written by services/llm.py. Offending lines: " + ", ".join(offenders),
+        )

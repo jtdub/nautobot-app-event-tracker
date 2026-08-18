@@ -1,0 +1,4 @@
+Added the LLM service layer (`services/llm.py`): every model call goes through litellm behind one `complete()` function, with credentials resolved from an ExternalIntegration and its secrets group at call time.
+Added the `LLMProvider` and `LLMModel` registry models with UI, REST and GraphQL surfaces, so providers and models are managed as objects rather than settings.
+Added the `LLMUsageRecord` model recording every model call, including failures, with token counts, computed cost and latency, plus an automatic retention policy and a read-only UI, REST and GraphQL surface.
+Added an LLM Usage panel to the ticket detail page.

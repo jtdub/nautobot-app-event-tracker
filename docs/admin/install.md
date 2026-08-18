@@ -73,6 +73,7 @@ PLUGINS_CONFIG = {
 | Setting | Default | Description |
 | --- | --- | --- |
 | `attachable_object_types` | The seven DCIM/IPAM/Circuits models above | `app_label.model` strings naming the object types that may be attached to a ticket. Attaching anything else is refused, and the object picker only offers types on this list. |
+| `llm` | `{}` | Settings for the LLM service layer — currently only `usage_retention_days`. Providers, models and credentials are registry objects, not settings; see [Configuring LLM Providers](llm.md). |
 
 Widening the list is a deliberate act: it decides what a ticket — and, in later phases, an AI
 triage step — is allowed to point at. Adding `extras.secret` would be a poor idea.

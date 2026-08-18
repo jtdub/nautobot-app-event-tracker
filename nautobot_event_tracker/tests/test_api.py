@@ -2,14 +2,21 @@
 
 # pylint: disable=too-many-ancestors,duplicate-code
 
+from decimal import Decimal
+
 from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 from nautobot.apps.choices import CustomFieldTypeChoices
 from nautobot.apps.testing import APITestCase, APIViewTestCases
 from nautobot.extras.models import CustomField
 
-from nautobot_event_tracker.choices import SeverityChoices, TicketStatusChoices, UpdateTypeChoices
-from nautobot_event_tracker.models import EventTicket, EventType
+from nautobot_event_tracker.choices import (
+    LLMProviderTypeChoices,
+    SeverityChoices,
+    TicketStatusChoices,
+    UpdateTypeChoices,
+)
+from nautobot_event_tracker.models import EventTicket, EventType, LLMModel, LLMProvider
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -407,6 +414,87 @@ class TicketUpdateAPITest(APITestCase):
     def test_delete_is_rejected(self):
         """Nor a delete route."""
         self.add_permissions("nautobot_event_tracker.delete_ticketupdate")
+        response = self.client.delete(self.detail_url, **self.header)
+        self.assertHttpStatus(response, 405)
+
+
+class LLMProviderAPITest(APIViewTestCases.APIViewTestCase):
+    """Standard API test cases for LLMProvider."""
+
+    model = LLMProvider
+    bulk_update_data = {"description": "Bulk updated"}
+    choices_fields = ["provider_type"]
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        fixtures.create_llmprovider(name="Provider One")
+        fixtures.create_llmprovider(name="Provider Two")
+        fixtures.create_llmprovider(name="Provider Three")
+        integration = fixtures.create_external_integration()
+        cls.create_data = [
+            {
+                "name": f"API Provider {suffix}",
+                "provider_type": LLMProviderTypeChoices.OPENAI_COMPATIBLE,
+                # The pk itself, not str(pk): the generic tests compare this dict against the
+                # saved instance, which holds a UUID.
+                "external_integration": integration.pk,
+            }
+            for suffix in ("One", "Two", "Three")
+        ]
+
+
+class LLMModelAPITest(APIViewTestCases.APIViewTestCase):
+    """Standard API test cases for LLMModel."""
+
+    model = LLMModel
+    bulk_update_data = {"description": "Bulk updated"}
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        provider = fixtures.create_llmprovider()
+        fixtures.create_llmmodel(name="model-one", provider=provider)
+        fixtures.create_llmmodel(name="model-two", provider=provider)
+        fixtures.create_llmmodel(name="model-three", provider=provider)
+        cls.create_data = [
+            {"provider": provider.pk, "name": f"api-model-{suffix}", "input_cost_per_million": Decimal("0.5000")}
+            for suffix in ("one", "two", "three")
+        ]
+
+
+class LLMUsageRecordAPITest(APITestCase):
+    """The llm-usage endpoint must be read-only, like the ticket updates and for the same reason."""
+
+    def setUp(self):
+        """Create a usage record the sole-writer way."""
+        super().setUp()
+        self.record = fixtures.create_llmusagerecord()
+        self.list_url = reverse("plugins-api:nautobot_event_tracker-api:llmusagerecord-list")
+        self.detail_url = reverse("plugins-api:nautobot_event_tracker-api:llmusagerecord-detail", args=[self.record.pk])
+
+    def test_list_is_readable(self):
+        """Reading the accounting works."""
+        self.add_permissions("nautobot_event_tracker.view_llmusagerecord")
+        response = self.client.get(self.list_url, **self.header)
+        self.assertHttpStatus(response, 200)
+        self.assertEqual(response.data["count"], 1)
+
+    def test_post_is_rejected(self):
+        """There is no create route: records are written by the service layer alone (rule L1)."""
+        self.add_permissions("nautobot_event_tracker.add_llmusagerecord")
+        response = self.client.post(self.list_url, {"purpose": "triage"}, format="json", **self.header)
+        self.assertHttpStatus(response, 405)
+
+    def test_patch_is_rejected(self):
+        """Accounting is not editable."""
+        self.add_permissions("nautobot_event_tracker.change_llmusagerecord")
+        response = self.client.patch(self.detail_url, {"cost": "0"}, format="json", **self.header)
+        self.assertHttpStatus(response, 405)
+
+    def test_delete_is_rejected(self):
+        """Nor deletable through the API."""
+        self.add_permissions("nautobot_event_tracker.delete_llmusagerecord")
         response = self.client.delete(self.detail_url, **self.header)
         self.assertHttpStatus(response, 405)
 

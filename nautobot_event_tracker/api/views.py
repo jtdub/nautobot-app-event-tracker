@@ -17,7 +17,15 @@ from rest_framework.serializers import ListSerializer
 from nautobot_event_tracker import filters
 from nautobot_event_tracker.api import serializers
 from nautobot_event_tracker.choices import TicketSourceChoices
-from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
+from nautobot_event_tracker.models import (
+    EventTicket,
+    EventType,
+    IngestionStats,
+    LLMModel,
+    LLMProvider,
+    LLMUsageRecord,
+    TicketUpdate,
+)
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import (
     InvalidActorError,
@@ -96,30 +104,57 @@ class EventTypeViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancest
     filterset_class = filters.EventTypeFilterSet
 
 
-class TicketUpdateViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-ancestors
-    """TicketUpdate viewset.
+class RecordViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-ancestors
+    """A viewset for rows that are records of what happened, which no client may rewrite.
 
-    Read-only by construction: updates are append-only, so there is no create, update or delete
-    route to offer. New updates appear as a side effect of ticket actions.
+    Read-only by construction - GET, HEAD and OPTIONS, everything else a 405 regardless of
+    permissions. The posture is declared once here so a fourth record-like model cannot forget
+    half of it: the trail (append-only, service-written), the ingestion counters (consumer-
+    written), and the LLM usage accounting (rule L1, service-written) all mean the same thing
+    by "read-only".
     """
+
+    http_method_names = ["get", "head", "options"]
+
+
+class TicketUpdateViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
+    """TicketUpdate viewset. New updates appear as a side effect of ticket actions."""
 
     queryset = TicketUpdate.objects.select_related("ticket", "user", "related_object_type")
     serializer_class = serializers.TicketUpdateSerializer
     filterset_class = filters.TicketUpdateFilterSet
-    http_method_names = ["get", "head", "options"]
 
 
-class IngestionStatsViewSet(ReadOnlyModelViewSet):  # pylint: disable=too-many-ancestors
-    """IngestionStats viewset.
-
-    Read-only by construction, like TicketUpdate and for the same reason: the rows are written by
-    one process, as a record of what it saw, and there is nothing for a client to change.
-    """
+class IngestionStatsViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
+    """IngestionStats viewset. The rows are one process's record of what it saw."""
 
     queryset = IngestionStats.objects.all()
     serializer_class = serializers.IngestionStatsSerializer
     filterset_class = filters.IngestionStatsFilterSet
-    http_method_names = ["get", "head", "options"]
+
+
+class LLMProviderViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
+    """LLMProvider viewset."""
+
+    queryset = LLMProvider.objects.select_related("external_integration")
+    serializer_class = serializers.LLMProviderSerializer
+    filterset_class = filters.LLMProviderFilterSet
+
+
+class LLMModelViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
+    """LLMModel viewset."""
+
+    queryset = LLMModel.objects.select_related("provider")
+    serializer_class = serializers.LLMModelSerializer
+    filterset_class = filters.LLMModelFilterSet
+
+
+class LLMUsageRecordViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
+    """LLMUsageRecord viewset. The rows are the service layer's accounting of calls it made."""
+
+    queryset = LLMUsageRecord.objects.select_related("model__provider", "ticket")
+    serializer_class = serializers.LLMUsageRecordSerializer
+    filterset_class = filters.LLMUsageRecordFilterSet
 
 
 class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors

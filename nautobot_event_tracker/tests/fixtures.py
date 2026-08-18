@@ -9,6 +9,8 @@ would be the first violation of the rule the whole app exists to enforce.
 import json
 from datetime import datetime, timedelta
 from datetime import timezone as datetime_timezone
+from decimal import Decimal
+from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -18,9 +20,15 @@ from nautobot.dcim.models import Location, LocationType
 from nautobot.extras.models import Status
 
 from nautobot_event_tracker import dcim_fixtures
-from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices
+from nautobot_event_tracker.choices import (
+    LLMProviderTypeChoices,
+    LLMPurposeChoices,
+    SeverityChoices,
+    TicketSourceChoices,
+)
 from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
-from nautobot_event_tracker.models import EventType, IngestionStats
+from nautobot_event_tracker.models import EventType, IngestionStats, LLMModel, LLMProvider
+from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services import tickets as ticket_service
 
 
@@ -228,6 +236,90 @@ def create_ingestionstats(**overrides):
         "bucket_start": timezone.now().replace(second=0, microsecond=0),
     }
     return IngestionStats.objects.create(**{**defaults, **overrides})
+
+
+def create_external_integration(name="Test LLM Endpoint", remote_url="http://llm.example.test/v1"):
+    """An ExternalIntegration for an LLM provider to point at."""
+    from nautobot.extras.models import ExternalIntegration  # pylint: disable=import-outside-toplevel
+
+    integration, _ = ExternalIntegration.objects.get_or_create(name=name, defaults={"remote_url": remote_url})
+    return integration
+
+
+def create_llmprovider(name="Test Provider", **overrides):
+    """One LLM provider, pointing at a test integration."""
+    defaults = {
+        "provider_type": LLMProviderTypeChoices.OPENAI_COMPATIBLE,
+        "external_integration": create_external_integration(),
+    }
+    provider, _ = LLMProvider.objects.get_or_create(name=name, defaults={**defaults, **overrides})
+    return provider
+
+
+def create_llmmodel(name="test-model", provider=None, **overrides):
+    """One LLM model on a provider."""
+    if provider is None:
+        provider = create_llmprovider()
+    defaults = {
+        # Decimal, not string: get_or_create leaves the given value on the in-memory instance,
+        # and the service does arithmetic with it before any refresh from the database.
+        "input_cost_per_million": Decimal("1.0000"),
+        "output_cost_per_million": Decimal("2.0000"),
+    }
+    model, _ = LLMModel.objects.get_or_create(provider=provider, name=name, defaults={**defaults, **overrides})
+    return model
+
+
+class FakeLLMResponse:  # pylint: disable=too-few-public-methods
+    """The shape `litellm.completion` returns, as far as the service reads it."""
+
+    def __init__(self, content="ok", *, prompt_tokens=10, completion_tokens=5, request_id="req-1", usage=True):
+        """A successful-looking response carrying this content and usage."""
+        self.id = request_id
+        self.choices = [SimpleNamespace(message=SimpleNamespace(content=content))] if content is not None else []
+        self.usage = (
+            SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens) if usage else None
+        )
+
+
+class FakeLLMClient:  # pylint: disable=too-few-public-methods
+    """The `client` seam of `services.llm.complete()`: records calls, returns canned responses.
+
+    Raises whatever `error` it was given instead, when the test wants a failing call. Tests inject
+    this rather than mocking litellm internals, so they exercise everything up to the wire.
+    """
+
+    def __init__(self, response=None, *, error=None):
+        """Answer every call with this response, or raise this error."""
+        self.response = response if response is not None else FakeLLMResponse()
+        self.error = error
+        self.calls = []
+
+    def __call__(self, model_string, messages, **kwargs):
+        """Record the call, then answer or refuse."""
+        self.calls.append({"model_string": model_string, "messages": messages, **kwargs})
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+def create_llmusagerecord(model=None, ticket=None, **complete_kwargs):
+    """One usage record, written the only way one may be: by the service making a call.
+
+    The guard tests forbid constructing LLMUsageRecord anywhere else, fixtures included, so this
+    goes through `complete()` with a fake client rather than the ORM.
+    """
+    if model is None:
+        model = create_llmmodel()
+    complete_kwargs.setdefault("client", FakeLLMClient())
+    response = llm_service.complete(
+        model=model,
+        ticket=ticket,
+        messages=[{"role": "user", "content": "fixture"}],
+        purpose=LLMPurposeChoices.TRIAGE,
+        **complete_kwargs,
+    )
+    return response.record
 
 
 class RefusalAssertions:  # pylint: disable=too-few-public-methods

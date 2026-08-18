@@ -351,6 +351,27 @@ class EventTicketUIViewSet(NautobotUIViewSet):
                 enable_related_link=False,
                 include_columns=["created", "update_type", "source", "user", "message", "related_object"],
             ),
+            ObjectsTablePanel(
+                weight=600,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.LLMUsageRecordTable,
+                table_filter="ticket",
+                label="LLM Usage",
+                select_related_fields=["model__provider"],
+                enable_bulk_actions=False,
+                # Usage records are written by the service layer alone, so there is nothing to add
+                # from here.
+                add_button_route=None,
+                include_columns=[
+                    "called_at",
+                    "model",
+                    "purpose",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "cost",
+                    "success",
+                ],
+            ),
         ],
         extra_buttons=[
             AttachObjectButton(weight=100, label="Attach Object", icon="mdi-link-variant"),
@@ -536,26 +557,32 @@ class DropsByReasonPanel(KeyValueTablePanel):
         return key
 
 
-class IngestionStatsUIViewSet(  # pylint: disable=too-many-ancestors,abstract-method
+class RecordUIViewSet(  # pylint: disable=too-many-ancestors,abstract-method
     ObjectListViewMixin,
     ObjectDetailViewMixin,
 ):
-    """Read-only views for the ingestion counters.
+    """List and detail only, for rows that are records of what happened.
 
-    List and detail only: there is no add, edit or delete route, because the consumer is the only
-    thing that writes these rows. Same posture as the update trail, for the same reason.
+    No add, edit or delete route exists, because nothing outside the process that writes these
+    rows has any business changing them. The posture is declared once here, as its API twin
+    `api.views.RecordViewSet` does for REST.
 
     `abstract-method` is disabled deliberately: `NautobotViewSetMixin` declares the form-processing
     hooks for creating, updating and destroying objects, and a viewset offering none of those
     routes has no form to process.
     """
 
+    action_buttons = ()
+
+
+class IngestionStatsUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
+    """Read-only views for the ingestion counters: the consumer is the only writer."""
+
     queryset = models.IngestionStats.objects.all()
     table_class = tables.IngestionStatsTable
     filterset_class = filters.IngestionStatsFilterSet
     filterset_form_class = forms.IngestionStatsFilterForm
     serializer_class = serializers.IngestionStatsSerializer
-    action_buttons = ()
 
     object_detail_content = ObjectDetailContent(
         panels=(
@@ -570,6 +597,94 @@ class IngestionStatsUIViewSet(  # pylint: disable=too-many-ancestors,abstract-me
                 weight=200,
                 section=SectionChoices.RIGHT_HALF,
                 label="Drops by reason",
+            ),
+        ),
+    )
+
+
+class LLMProviderUIViewSet(NautobotUIViewSet):
+    """ViewSet for LLMProvider views."""
+
+    bulk_update_form_class = forms.LLMProviderBulkEditForm
+    filterset_class = filters.LLMProviderFilterSet
+    filterset_form_class = forms.LLMProviderFilterForm
+    form_class = forms.LLMProviderForm
+    lookup_field = "pk"
+    # Annotated so the table's model count is one query rather than one per row.
+    queryset = models.LLMProvider.objects.select_related("external_integration").annotate(
+        model_count=count_related(models.LLMModel, "provider")
+    )
+    serializer_class = serializers.LLMProviderSerializer
+    table_class = tables.LLMProviderTable
+
+    object_detail_content = ObjectDetailContent(
+        panels=[
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=["name", "description", "provider_type", "external_integration", "enabled"],
+            ),
+            ObjectsTablePanel(
+                weight=200,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.LLMModelTable,
+                table_filter="provider",
+                related_field_name="provider",
+                label="Models",
+                select_related_fields=["provider"],
+            ),
+        ],
+    )
+
+
+class LLMModelUIViewSet(NautobotUIViewSet):
+    """ViewSet for LLMModel views."""
+
+    bulk_update_form_class = forms.LLMModelBulkEditForm
+    filterset_class = filters.LLMModelFilterSet
+    filterset_form_class = forms.LLMModelFilterForm
+    form_class = forms.LLMModelForm
+    lookup_field = "pk"
+    queryset = models.LLMModel.objects.select_related("provider")
+    serializer_class = serializers.LLMModelSerializer
+    table_class = tables.LLMModelTable
+
+    object_detail_content = ObjectDetailContent(
+        panels=[
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=list(forms.LLM_MODEL_FIELDS),
+            ),
+            ObjectsTablePanel(
+                weight=200,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.LLMUsageRecordTable,
+                table_filter="model",
+                label="Recent Usage",
+                select_related_fields=["model__provider", "ticket"],
+                enable_bulk_actions=False,
+                add_button_route=None,
+            ),
+        ],
+    )
+
+
+class LLMUsageRecordUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
+    """Read-only views for the LLM usage records: the service layer is the only writer (rule L1)."""
+
+    queryset = models.LLMUsageRecord.objects.select_related("model__provider", "ticket")
+    table_class = tables.LLMUsageRecordTable
+    filterset_class = filters.LLMUsageRecordFilterSet
+    filterset_form_class = forms.LLMUsageRecordFilterForm
+    serializer_class = serializers.LLMUsageRecordSerializer
+
+    object_detail_content = ObjectDetailContent(
+        panels=(
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=(*tables.LLM_USAGE_FIELDS, "request_id", "error"),
             ),
         ),
     )

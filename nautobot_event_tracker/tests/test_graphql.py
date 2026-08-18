@@ -73,3 +73,32 @@ class EventTrackerGraphQLTest(TestCase):
         data = self._query("{ event_tickets { title updates { update_type message } } }")
         ticket = next(t for t in data["event_tickets"] if t["title"] == "GraphQL ticket")
         self.assertGreaterEqual(len(ticket["updates"]), 2)
+
+
+class LLMGraphQLTest(TestCase):
+    """The Phase 3 registry and accounting models must be queryable through GraphQL."""
+
+    def setUp(self):
+        """One provider, one model, one usage record."""
+        super().setUp()
+        self.record = fixtures.create_llmusagerecord()
+
+    def _query(self, query):
+        """Run a GraphQL query as a superuser and assert it did not error."""
+        self.user.is_superuser = True
+        self.user.save()
+        result = execute_query(query, user=self.user)
+        self.assertIsNone(result.errors, f"GraphQL errors: {result.errors}")
+        return result.data
+
+    def test_providers_and_models_are_queryable(self):
+        """Both registry models are exposed through extras_features."""
+        data = self._query("{ llm_providers { name provider_type enabled models { name } } }")
+        provider = next(entry for entry in data["llm_providers"] if entry["name"] == "Test Provider")
+        self.assertEqual(provider["models"][0]["name"], "test-model")
+
+    def test_usage_records_are_queryable(self):
+        """LLMUsageRecord needs its own type because it is not a PrimaryModel."""
+        data = self._query("{ llm_usage_records { purpose prompt_tokens completion_tokens success } }")
+        self.assertTrue(data["llm_usage_records"])
+        self.assertTrue(data["llm_usage_records"][0]["success"])

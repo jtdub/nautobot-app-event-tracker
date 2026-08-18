@@ -15,7 +15,15 @@ from nautobot.apps.filters import (
 )
 
 from nautobot_event_tracker.choices import TERMINAL_STATUSES
-from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, TicketUpdate
+from nautobot_event_tracker.models import (
+    EventTicket,
+    EventType,
+    IngestionStats,
+    LLMModel,
+    LLMProvider,
+    LLMUsageRecord,
+    TicketUpdate,
+)
 from nautobot_event_tracker.services import tickets as ticket_service
 
 
@@ -173,3 +181,59 @@ class IngestionStatsFilterSet(NautobotFilterSet):
 
         model = IngestionStats
         fields = ["consumer_name", "topic", "bucket_start"]  # pylint: disable=nb-use-fields-all
+
+
+class LLMProviderFilterSet(NautobotFilterSet):
+    """Filter for LLMProvider."""
+
+    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains"})
+    provider_type = MultiValueCharFilter(label="Provider type")
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        # Explicit rather than "__all__": the filter surface is specified deliberately.
+        model = LLMProvider
+        fields = ["name", "description", "provider_type", "enabled"]  # pylint: disable=nb-use-fields-all
+
+
+class LLMModelFilterSet(NautobotFilterSet):
+    """Filter for LLMModel."""
+
+    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains", "provider__name": "icontains"})
+    provider = NaturalKeyOrPKMultipleChoiceFilter(
+        queryset=LLMProvider.objects.all(),
+        to_field_name="name",
+        label="Provider (name or ID)",
+    )
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = LLMModel
+        fields = ["provider", "name", "description", "enabled"]  # pylint: disable=nb-use-fields-all
+
+
+class LLMUsageRecordFilterSet(NautobotFilterSet):
+    """Filter for LLMUsageRecord.
+
+    The questions the page exists to answer: what did one model or ticket cost, and what failed.
+    """
+
+    q = SearchFilter(filter_predicates={"model__name": "icontains", "purpose": "icontains", "error": "icontains"})
+    model = django_filters.ModelMultipleChoiceFilter(
+        queryset=LLMModel.objects.all(),
+        label="Model",
+    )
+    ticket = django_filters.ModelMultipleChoiceFilter(
+        queryset=EventTicket.objects.all(),
+        label="Ticket",
+    )
+    purpose = MultiValueCharFilter(label="Purpose")
+    called_at = MultiValueDateTimeFilter(label="Called at")
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = LLMUsageRecord
+        fields = ["model", "ticket", "purpose", "success"]  # pylint: disable=nb-use-fields-all
