@@ -302,7 +302,7 @@ Appended as each PR lands, per the Phase 2 precedent.
 
 ### PR A
 
-- `LLMModelForm` exposes `default_parameters` as a JSON field, and `LLMModel.clean()` refuses the keys the service layer owns (`api_key`, `api_base`, `model`, `messages`): a credential there would be change-logged and served over REST and GraphQL, against rule L3, and a duplicated call argument would surface as a failed model call rather than as the configuration mistake it is.
+- `LLMModelForm` exposes `default_parameters` as a JSON field, and `LLMModel.clean()` refuses the keys the service layer owns: a credential there would be change-logged and served over REST and GraphQL, against rule L3, and a duplicated call argument would surface as a failed model call rather than as the configuration mistake it is. **Superseded by the follow-up:** PR A refused four keys by name, which was not enough, and the field is an allowlist now.
 - The usage-record filter form declares its model picker in `__init__` rather than as a class attribute, because `model` already names the Django model on every `NautobotFilterForm`.
 - `default_parameters` may set `timeout`, which applies when a caller states none; rule L6's 30 seconds is the floor beneath both, not above them.
 - `complete()` lets `ImproperlyConfigured` (the missing-extra refusal) propagate rather than wrapping it in `LLMCallError`: a deployment fault is not a failed call, and nothing left the process (section 5.2).

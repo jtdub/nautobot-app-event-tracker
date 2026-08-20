@@ -446,7 +446,7 @@ Each was raised as an open question with a proposed reading, and each was decide
 
 **13.7 Suppression does not re-suppress a joined ticket (8.2).** *Decided:* as written; a rule governs what a ticket starts as, not what it stays, and the alternative lets a rule pull a ticket out from under someone working it. *Cost:* a ticket triaged by mistake and then matched by a suppression rule stays open until a person suppresses it.
 
-**13.8 Broker credentials in an `ExternalIntegration` (3.3).** This generalizes ADR 0006's rule beyond LLM credentials. *Decided:* done, and recorded as a paragraph in ADR 0004 rather than as ADR 0009 — it is the same decision applied to a second kind of credential, not a new one. `ingestion/consumers/base.py` reads the named integration's secrets group at connection time; no broker credential appears in `PLUGINS_CONFIG`.
+**13.8 Broker credentials in an `ExternalIntegration` (3.3).** This generalizes ADR 0006's rule beyond LLM credentials. *Decided:* done, and recorded as a paragraph in ADR 0004 rather than as ADR 0009 — it is the same decision applied to a second kind of credential, not a new one. `ingestion/consumers/base.py` reads the named integration's secrets group at connection time, and on that path no broker credential appears in `PLUGINS_CONFIG`. The plain `url`/`bootstrap_servers` settings stay for lab use and can carry one in a URL; ADR 0004 says why that is tolerated rather than supported.
 
 **13.9 The payload cap defaults to 64 KiB (section 6).** *Decided:* keep a cap, because an uncapped `JSONField` fed by telemetry is a table that grows unpredictably. The number is a guess; if typical events are larger, raise it in configuration rather than removing the cap.
 

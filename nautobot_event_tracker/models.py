@@ -475,8 +475,8 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
         default=dict,
         blank=True,
         help_text=(
-            "Extra request parameters (temperature and friends), passed through on every call. "
-            "Only the generation parameters listed below are accepted."
+            "Extra request parameters, passed through on every call. Only these are accepted: "
+            "frequency_penalty, presence_penalty, seed, stop, temperature, timeout, top_p."
         ),
     )
 

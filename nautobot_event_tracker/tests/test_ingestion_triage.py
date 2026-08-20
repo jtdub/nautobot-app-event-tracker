@@ -15,6 +15,7 @@ from nautobot_event_tracker.ingestion.normalize import NormalizedEvent
 from nautobot_event_tracker.ingestion.prefilter import ACCEPT, Decision, FilterResult
 from nautobot_event_tracker.ingestion.triage import TriageFilter
 from nautobot_event_tracker.models import EventType, LLMModel, LLMProvider, LLMUsageRecord
+from nautobot_event_tracker.services.exceptions import LLMConfigurationError
 from nautobot_event_tracker.tests import fixtures
 from nautobot_event_tracker.tests.fixtures import TRIAGE_SETTINGS, FakeComplete
 
@@ -357,6 +358,39 @@ class TestTheModelCache(TriageTestCase):
 
         with self.assertNumQueries(0):
             triage._get_model()  # pylint: disable=protected-access
+
+    def test_a_refusal_is_cached_for_the_ttl_like_an_answer(self):
+        """A disabled model is the case this cache exists to notice, not the case it stops helping.
+
+        With the timestamp stamped only on a successful read, the TTL check stays expired for as
+        long as the model is disabled: a query, an exception and a log line for every event, on the
+        path an operator has just told to stop working.
+        """
+        clock = StoppedClock()
+        triage = self.build(clock=clock)
+        self.decide(triage, identity="first")
+
+        LLMModel.objects.filter(name="test-model").update(enabled=False)
+        clock.now = 61.0
+        self.decide(triage, identity="second")
+
+        with self.assertNumQueries(0):
+            with self.assertRaises(LLMConfigurationError):
+                triage._get_model()  # pylint: disable=protected-access
+
+    def test_a_refused_call_is_an_error_but_not_a_call(self):
+        """`triaged` counts what an operator pays for, and nothing was sent."""
+        clock = StoppedClock()
+        triage = self.build(clock=clock)
+        self.decide(triage, identity="first")
+
+        LLMModel.objects.filter(name="test-model").update(enabled=False)
+        clock.now = 61.0
+        result = self.decide(triage, identity="second")
+
+        self.assertTrue(result.errored)
+        self.assertFalse(result.triaged, "a refusal before any network traffic is not a model call")
+        self.assertEqual(result.usage_record_ids, ())
 
     def test_a_disabled_provider_stops_the_calls_too(self):
         """L8 covers the provider as well, and the cached model carries a cached provider with it."""

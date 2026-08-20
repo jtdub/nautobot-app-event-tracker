@@ -2,7 +2,12 @@
 
 from nautobot.apps.testing import FilterTestCases
 
-from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.choices import (
+    LLMProviderTypeChoices,
+    SeverityChoices,
+    TicketSourceChoices,
+    TicketStatusChoices,
+)
 from nautobot_event_tracker.filters import (
     EventTicketFilterSet,
     EventTypeFilterSet,
@@ -244,7 +249,11 @@ class LLMProviderFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=
         """Create test data."""
         fixtures.create_llmprovider(name="Local Lab", description="the on-prem endpoint")
         fixtures.create_llmprovider(name="Disabled Provider", description="switched off", enabled=False)
-        fixtures.create_llmprovider(name="Spare Provider", description="a third, for the generic suite")
+        fixtures.create_llmprovider(
+            name="Spare Provider",
+            description="a third, for the generic suite",
+            provider_type=LLMProviderTypeChoices.ANTHROPIC,
+        )
 
     def test_q_matches_name_and_description(self):
         """Search covers both text fields."""
@@ -257,9 +266,16 @@ class LLMProviderFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=
         self.assertFalse(self.filterset({"enabled": True}, self.queryset).qs.filter(enabled=False).exists())
 
     def test_provider_type(self):
-        """Type filter."""
-        params = {"provider_type": ["openai_compatible"]}
-        self.assertEqual(self.filterset(params, self.queryset).qs.count(), self.queryset.count())
+        """Type filter, asserted against a queryset that holds more than one type.
+
+        The counts have to differ from the unfiltered total, or the assertion passes just as well
+        when the filter matches everything.
+        """
+        params = {"provider_type": [LLMProviderTypeChoices.OPENAI_COMPATIBLE]}
+        self.assertEqual(self.filterset(params, self.queryset).qs.count(), 2)
+        params = {"provider_type": [LLMProviderTypeChoices.ANTHROPIC]}
+        self.assertEqual(self.filterset(params, self.queryset).qs.count(), 1)
+        self.assertEqual(self.queryset.count(), 3)
 
 
 class LLMModelFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors

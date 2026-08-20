@@ -3,3 +3,5 @@ Documented `model_cache_seconds`, the limits on an LLM Model's `Default paramete
 Marked the Phase 3 specification implemented, and recorded the follow-up review's findings and what closing them changed.
 Marked the Phase 1, Phase 2 and Phase 2.5 specifications implemented, whose banners still said that nothing in them had been built, and reworded their open questions as the decisions taken.
 Recorded in ADR 0004 that broker credentials live in an ExternalIntegration's secrets group, the rule the Phase 2 specification said belonged there.
+Corrected the claim, made in ADR 0004 and repeated in two guides, that no broker credential ever reaches `PLUGINS_CONFIG` or a log line: it holds for an ExternalIntegration, and the lab-only plain `url` setting is the exception it did not admit.
+Corrected the LLM Model reference page and the Phase 3 specification, which still described the four-key denylist that the allowlist replaced, and the compatibility matrix, which claimed every import comes from `nautobot.apps.*` when core models are imported from their own apps, as Nautobot directs.

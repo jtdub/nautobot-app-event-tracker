@@ -5,8 +5,11 @@ Nautobot's own REST and GraphQL APIs, which other systems use to reach the app. 
 each connection, what crosses it, and where its credential lives.
 
 Every credential is a Nautobot [Secret](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/secret/),
-reached through an `ExternalIntegration` and its secrets group. Nothing key-shaped is ever stored
-in `PLUGINS_CONFIG`, on an app model, or in a log line.
+reached through an `ExternalIntegration` and its secrets group. On that path nothing key-shaped is
+stored in `PLUGINS_CONFIG` or on an app model, and no credential reaches a log line. The one way
+round it is the broker's plain `url` setting, kept for labs, which can carry a password in the URL
+— [ADR 0004](../decisions/0004-pluggable-event-broker-consumers.md) says why that is tolerated and
+not supported.
 
 ## From the App to Other Systems
 
@@ -36,7 +39,7 @@ only module that imports litellm and the only writer of the usage records.
 | --- | --- |
 | **Direction** | Outbound HTTPS, one request per triaged event |
 | **Protocol** | Whatever litellm speaks to the configured provider; OpenAI-compatible endpoints are first-class |
-| **Endpoint** | The provider's `ExternalIntegration.remote_url`. It cannot be set from a model's parameters |
+| **Endpoint** | The provider's `ExternalIntegration.remote_url`. No model parameter can change it; changing it needs `change_llmprovider`, or the rights to edit that integration |
 | **Credential** | That integration's secrets group, read at call time; secret type `token`, falling back to `secret` |
 | **What is sent** | A fixed system prompt, the event payload capped at `max_context_chars`, and the titles and severities of up to `attach_candidates` open tickets |
 | **What is recorded** | One `LLMUsageRecord` per call — including failed calls — with token counts, cost and latency |

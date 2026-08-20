@@ -6,12 +6,30 @@ Kafka, and no amount of interface tidiness changes it.
 """
 
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
 from nautobot_event_tracker.ingestion.consumers.base import BrokerMessage, EventConsumer, connection_details
 
 logger = logging.getLogger(__name__)
+
+
+def _redacted(url):
+    """The URL with any userinfo removed, for a log line.
+
+    The supported way to hold a Redis credential is an ExternalIntegration and its secrets group,
+    but the plain `url` setting is documented for lab use and `redis://user:password@host` is a
+    legal thing to put in it. A log line is a place a password must never reach, whichever way it
+    arrived.
+    """
+    split = urlsplit(url)
+    if not split.username and not split.password:
+        return url
+    host = split.hostname or ""
+    if split.port:
+        host = f"{host}:{split.port}"
+    return urlunsplit((split.scheme, host, split.path, split.query, split.fragment))
 
 
 class RedisEventConsumer(EventConsumer):
@@ -42,7 +60,7 @@ class RedisEventConsumer(EventConsumer):
         self._client = redis.Redis.from_url(url, **credentials)
         self._pubsub = self._client.pubsub(ignore_subscribe_messages=True)
         self._pubsub.subscribe(*self.topics)
-        logger.info("Subscribed to %s on %s", ", ".join(self.topics), url)
+        logger.info("Subscribed to %s on %s", ", ".join(self.topics), _redacted(url))
 
     def poll(self, timeout):
         """Return the next message, or None on a timeout."""
