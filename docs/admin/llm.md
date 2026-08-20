@@ -79,6 +79,7 @@ suppress it, or drop it. Configure it inside the `ingestion` block:
         "max_output_tokens": 256,
         "max_context_chars": 4000,      # payload cap in the prompt
         "attach_candidates": 5,         # open tickets the model may attach to
+        "model_cache_seconds": 60,      # how long a running consumer holds the model row
     },
     "topics": {
         "network.events": {..., "triage": True},   # per-topic; default True
@@ -87,7 +88,13 @@ suppress it, or drop it. Configure it inside the `ingestion` block:
 ```
 
 The consumer refuses to start when the named provider or model does not exist or is disabled, or
-when the app was installed without the `llm` extra, alongside every other configuration fault.
+when the app was installed without the `llm` extra, alongside every other configuration fault. A
+`--dry-run` skips that last check, because a dry run makes no model call at all.
+
+`model_cache_seconds` is how stale a running consumer's copy of the model row may be. It reads the
+row once and holds it for that long rather than joining before every event, which means unticking
+**Enabled** — or correcting a price — takes up to that long to reach a consumer that is already
+running. Lower it if you want the off switch to bite sooner; raise it on a very busy consumer.
 
 What to know before you turn it on:
 
@@ -95,6 +102,15 @@ What to know before you turn it on:
   event's payload (capped at `max_context_chars`). Set `triage: False` on a topic whose payloads
   must not leave the box, or point the provider at a self-hosted endpoint. Recurrences are free:
   an event whose dedup key matches an open ticket joins it without a model call.
+- **Triage is a filter, not a control.** The prompt carries text that whoever emits the events
+  controls, so an event can try to argue for its own verdict. The app constrains the *shape* of
+  the answer — four actions, and a ticket the app itself shortlisted — but not its reasoning.
+  Read a triage `drop` as "the model judged this noise", never as evidence the event was harmless.
+- **A model's parameters are limited on purpose.** `Default parameters` on an LLM Model takes
+  generation parameters only — `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`,
+  `seed`, `stop`, `timeout`. Anything that would choose *who* answers, an endpoint or a key above
+  all, is refused: the endpoint and the credential come from the provider's external integration
+  and from nowhere else.
 - **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event — a
   ticket too many, never an event lost — and shows up in the `triage_errors` counter and on the
   failed call's usage record. The consumer never exits because a model misbehaved.

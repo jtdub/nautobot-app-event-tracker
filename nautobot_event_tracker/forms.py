@@ -367,3 +367,7 @@ class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
             required=False,
             label="Model",
         )
+        # `field_order` is applied by `super().__init__()`, which ran before the field existed, so
+        # ordering it takes a second pass. Without this the picker renders last, below the fields
+        # a reader is meant to reach after it.
+        self.order_fields(self.field_order)

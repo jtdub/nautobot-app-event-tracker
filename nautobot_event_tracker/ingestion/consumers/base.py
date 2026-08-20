@@ -134,7 +134,7 @@ def connection_details(settings, *, url_key):
 
 def _credentials(integration):
     """Read the username and password out of an integration's secrets group, if it has one."""
-    from nautobot.extras.choices import SecretsGroupSecretTypeChoices  # pylint: disable=import-outside-toplevel
+    from nautobot.apps.choices import SecretsGroupSecretTypeChoices  # pylint: disable=import-outside-toplevel
 
     from nautobot_event_tracker.secrets import read_secret  # pylint: disable=import-outside-toplevel
 

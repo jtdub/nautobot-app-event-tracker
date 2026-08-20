@@ -7,6 +7,7 @@ on a broker or on a signal being delivered for real.
 from io import StringIO
 from unittest import mock
 
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import DatabaseError
@@ -314,6 +315,60 @@ class TestStartupValidation(fixtures.RefusalAssertions, TestCase):
             with self.assertRaises(CommandError) as caught:
                 call_command("eventconsumer", topics="netwrok.events", stdout=StringIO(), stderr=StringIO())
         self.assertIn("netwrok.events", str(caught.exception))
+
+
+class TestDryRunStartup(TestCase):
+    """A dry run makes no model call, so it must not be refused for want of the means to make one."""
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        fixtures.create_event_types()
+        fixtures.create_llmmodel()
+
+    def run_command(self, **kwargs):
+        """Run the command with triage on, the `llm` extra absent, and the loop stubbed out."""
+        from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=import-outside-toplevel
+
+        stdout = StringIO()
+        with ingestion(**TRIAGE_ON):
+            with mock.patch.object(
+                llm_service, "require_client", side_effect=ImproperlyConfigured("litellm is not installed")
+            ):
+                with mock.patch.object(ConsumerRunner, "run", return_value=None):
+                    call_command("eventconsumer", stdout=stdout, stderr=StringIO(), **kwargs)
+        return stdout.getvalue()
+
+    def test_a_dry_run_starts_without_the_llm_extra(self):
+        """`_build_triage` returns None for every dry run (T9), so there is nothing to check.
+
+        Refusing here would deny an operator the decide-only pass over live traffic that dry runs
+        exist for, on a box that never intended to call a model.
+        """
+        output = self.run_command(dry_run=True)
+        self.assertIn("triage skipped", output.lower())
+
+    def test_a_real_run_is_still_refused(self):
+        """The check that matters is the one before a run that will actually call a model."""
+        from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=import-outside-toplevel
+
+        with ingestion(**TRIAGE_ON):
+            with mock.patch.object(
+                llm_service, "require_client", side_effect=ImproperlyConfigured("litellm is not installed")
+            ):
+                with self.assertRaises(CommandError) as caught:
+                    call_command("eventconsumer", stdout=StringIO(), stderr=StringIO())
+        self.assertIn("litellm is not installed", str(caught.exception))
+
+    def test_a_dry_run_still_refuses_a_missing_event_type(self):
+        """Only the triage half is skipped: a dry run reports decisions, and those name types."""
+        with fixtures.ingestion_settings(
+            consumer="redis",
+            topics={"network.events": {**TOPIC, "defaults": {"event_type": "No Such Type"}}},
+        ):
+            with self.assertRaises(CommandError) as caught:
+                call_command("eventconsumer", dry_run=True, stdout=StringIO(), stderr=StringIO())
+        self.assertIn("does not exist", str(caught.exception))
 
 
 class TestCommandWiring(TestCase):

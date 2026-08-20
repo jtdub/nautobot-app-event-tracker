@@ -22,6 +22,7 @@ from nautobot_event_tracker.ingestion.consumers import (
     get_consumer_class,
 )
 from nautobot_event_tracker.ingestion.consumers import kafka as kafka_module
+from nautobot_event_tracker.ingestion.consumers.redis import _redacted
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -379,3 +380,18 @@ class TestConnectionDetails(TestCase):
         self.assertEqual(url, "kafka://broker:9092")
         self.assertIsNone(username)
         self.assertIsNone(password)
+
+
+class TestTheLoggedUrl(SimpleTestCase):
+    """A password in a lab URL is still a password, and a log line is still a log line."""
+
+    def test_userinfo_is_stripped(self):
+        """The one place a plain `url` setting can leak a credential."""
+        self.assertEqual(
+            _redacted("redis://someone:hunter2@broker.example.com:6379/0"),
+            "redis://broker.example.com:6379/0",
+        )
+
+    def test_a_url_without_credentials_is_left_alone(self):
+        """The ordinary case reads exactly as it did."""
+        self.assertEqual(_redacted("redis://redis:6379/0"), "redis://redis:6379/0")

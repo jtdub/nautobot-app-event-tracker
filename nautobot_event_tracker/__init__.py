@@ -15,8 +15,15 @@ class EventTrackerConfig(NautobotAppConfig):
     verbose_name = "Event Tracker"
     version = __version__
     author = "James Williams"
+    author_email = "james.williams@jtdub.com"
     description = "Network event ticketing and AI-assisted network operations for Nautobot."
     base_url = "event-tracker"
+    # Checked by Nautobot at startup, which is the case the pyproject pin cannot cover: a Nautobot
+    # upgraded in place underneath an installed app. The app uses v3-only APIs throughout - the UI
+    # Component Framework above all - so an older core does not merely warn, it fails to render.
+    # Keep in step with `docs/admin/compatibility_matrix.md` and the pin in `pyproject.toml`.
+    min_version = "3.2.0"
+    max_version = "3.99.99"
     required_settings = []
     default_settings = {
         # Object types that may be attached to a ticket. Anything outside this list is rejected by

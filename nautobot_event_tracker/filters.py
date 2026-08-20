@@ -194,7 +194,9 @@ class LLMProviderFilterSet(NautobotFilterSet):
 
         # Explicit rather than "__all__": the filter surface is specified deliberately.
         model = LLMProvider
-        fields = ["name", "description", "provider_type", "enabled"]  # pylint: disable=nb-use-fields-all
+        # `tags` because a PrimaryModel is taggable and Nautobot's generic filter suite expects
+        # the filter to exist, as EventTicket's does.
+        fields = ["name", "description", "provider_type", "enabled", "tags"]  # pylint: disable=nb-use-fields-all
 
 
 class LLMModelFilterSet(NautobotFilterSet):
@@ -211,7 +213,7 @@ class LLMModelFilterSet(NautobotFilterSet):
         """Meta attributes for filter."""
 
         model = LLMModel
-        fields = ["provider", "name", "description", "enabled"]  # pylint: disable=nb-use-fields-all
+        fields = ["provider", "name", "description", "enabled", "tags"]  # pylint: disable=nb-use-fields-all
 
 
 class LLMUsageRecordFilterSet(NautobotFilterSet):

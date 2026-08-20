@@ -30,9 +30,9 @@ from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured, ObjectDoesNotExist
 from django.db import transaction
 from django.utils import timezone
+from nautobot.apps.choices import SecretsGroupSecretTypeChoices
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.utils import deepmerge
-from nautobot.extras.choices import SecretsGroupSecretTypeChoices
 
 from nautobot_event_tracker.choices import LITELLM_PROVIDER_PREFIXES, LLMProviderTypeChoices
 from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
@@ -100,9 +100,26 @@ class LLMResponse:
 
 
 def get_settings():
-    """The `llm` settings block with defaults applied per key."""
+    """The `llm` settings block with defaults applied per key, refusing a value that cannot work.
+
+    `usage_retention_days` is checked here rather than left to `app-config-schema.json`, which
+    Nautobot does not enforce against `PLUGINS_CONFIG`. It is the one key where a wrong value is
+    destructive rather than merely wrong: `_maybe_prune` would read 0 as "keep nothing" and empty
+    the accounting table, including the record the call that triggered it had just written. The
+    `bool` clause is the half that is easy to leave out - in Python `True` is an `int`, so without
+    it `usage_retention_days: True` validates as one day. `ingestion.config` makes the same three
+    checks for the same reason; they are restated rather than shared because a service must not
+    depend on the ingestion package.
+    """
     configured = django_settings.PLUGINS_CONFIG.get("nautobot_event_tracker", {}).get("llm") or {}
-    return deepmerge(DEFAULTS, configured)
+    settings = deepmerge(DEFAULTS, configured)
+
+    retention_days = settings["usage_retention_days"]
+    if not isinstance(retention_days, int) or isinstance(retention_days, bool) or retention_days < 1:
+        raise ImproperlyConfigured(
+            f"nautobot_event_tracker: llm 'usage_retention_days' must be a positive integer, got {retention_days!r}"
+        )
+    return settings
 
 
 def get_model(provider_name, model_name):
@@ -154,8 +171,13 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     _check_enabled(model)
     call = client if client is not None else _litellm_completion()
 
-    call_kwargs = dict(model.default_parameters or {})
-    call_kwargs.update(_credential_kwargs(model.provider))
+    # Filtered, not trusted. `LLMModel.clean()` already refuses everything outside the allowlist,
+    # but a fixture, a migration or a direct ORM write never runs it, and one wrong key here sends
+    # the call - and the credential with it - to an address the registry chose. The same tuple
+    # backs both layers, so the two cannot drift apart.
+    call_kwargs = {
+        key: value for key, value in (model.default_parameters or {}).items() if key in LLMModel.ALLOWED_PARAMETERS
+    }
     if timeout is not None:
         call_kwargs["timeout"] = timeout
     else:
@@ -173,9 +195,14 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     # the block it would be recorded and re-raised as a failed call it never became.
     model_string = _model_string(model)
 
+    # Splatted last and kept out of `call_kwargs`, so the endpoint and the key are decided here
+    # and nowhere else (L3). A registry parameter colliding with one of them is a TypeError from
+    # the call itself rather than a silent redirection - the allowlist above makes it unreachable.
+    credentials = _credential_kwargs(model.provider)
+
     started = time.monotonic()
     try:
-        raw = call(model_string, messages, **call_kwargs)
+        raw = call(model_string, messages, **call_kwargs, **credentials)
     except Exception as error:  # pylint: disable=broad-except
         # L4 - whatever the client raised, the caller sees one family, and the failure is on the
         # record first (L1).
@@ -358,16 +385,29 @@ def _maybe_prune():
     today = timezone.now().date()
     if _last_pruned_on == today:
         return
-    _last_pruned_on = today
 
     try:
-        retention_days = int(get_settings()["usage_retention_days"])
+        retention_days = get_settings()["usage_retention_days"]
+    except ImproperlyConfigured:
+        # A settings fault does not repair itself between two calls. The day is marked done so the
+        # operator reads this once rather than once per model call, and nothing is deleted.
+        _last_pruned_on = today
+        logger.exception("Could not prune LLM usage records")
+        return
+
+    try:
         cutoff = timezone.now() - timedelta(days=retention_days)
         deleted, _ = LLMUsageRecord.objects.filter(called_at__lt=cutoff).delete()
-        if deleted:
-            logger.info("Pruned %d LLM usage records older than %d days", deleted, retention_days)
     except Exception:  # pylint: disable=broad-except
+        # The day is deliberately left unmarked. A lock or a statement timeout on the first prune
+        # of a large table is transient, and marking it here would stop the retry for 24 hours
+        # and let the table grow through all of them.
         logger.exception("Could not prune LLM usage records")
+        return
+
+    _last_pruned_on = today
+    if deleted:
+        logger.info("Pruned %d LLM usage records older than %d days", deleted, retention_days)
 
 
 def _elapsed_ms(started):

@@ -421,6 +421,46 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         self.assertEqual(len(self.fake.calls), 0)
         self.assertEqual(EventTicket.objects.get().event_count, 2)
 
+    def test_the_attach_target_is_read_under_a_row_lock(self):
+        """`join_ticket` writes the whole row, so the row it wrote must be the row it read.
+
+        Read outside the transaction, the instance would be saved back over whatever a human or a
+        second consumer did in between - reverting their status change and losing their
+        `event_count`. This path holds neither the advisory dedup lock nor a unique constraint, so
+        the row lock is the only thing serializing two consumers onto one ticket.
+        """
+        from django.db import connection  # pylint: disable=import-outside-toplevel
+        from django.test.utils import CaptureQueriesContext  # pylint: disable=import-outside-toplevel
+
+        fixtures.create_ticket(title="The open incident")
+        with CaptureQueriesContext(connection) as captured:
+            self.handle_triaged(answer='{"action": "attach", "reason": "same incident", "ticket": 0}')
+
+        selects = [query["sql"] for query in captured.captured_queries if "FOR UPDATE" in query["sql"]]
+        self.assertTrue(selects, "the attach target was read without a row lock")
+
+    def test_a_terminal_attach_target_falls_back_to_opening(self):
+        """S3 refuses an AI actor on a resolved ticket, and the event still gets a home."""
+        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=import-outside-toplevel
+
+        target = fixtures.create_ticket(title="Already closed")
+        # `closed` rather than `resolved`: both are terminal, and closed is reachable from `new`
+        # in one step of the transition graph.
+        ticket_service.transition(
+            ticket=target,
+            to_status=TicketStatusChoices.CLOSED,
+            source=TicketSourceChoices.HUMAN,
+            user=fixtures.create_user(),
+            resolution="fixed by hand",
+        )
+
+        self.handle_triaged(answer='{"action": "attach", "reason": "same incident", "ticket": 0}')
+
+        self.assertEqual(EventTicket.objects.count(), 2)
+        target.refresh_from_db()
+        self.assertEqual(target.event_count, 1)
+        self.assertEqual(self.counts().triage_attached, 0)
+
     def test_a_vanished_attach_target_falls_back_to_opening(self):
         """A ticket too many beats an event lost (spec 6.3)."""
         import uuid  # pylint: disable=import-outside-toplevel

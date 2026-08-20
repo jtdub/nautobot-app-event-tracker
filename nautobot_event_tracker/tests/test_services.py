@@ -765,6 +765,44 @@ class JoinTicketTest(TestCase):
         with self.assertRaises(InvalidActorError):
             self.join(user=self.user)
 
+    def test_the_joined_row_is_read_under_a_row_lock(self):
+        """This writes the whole row, so it must be the row it just read - both ways in.
+
+        `create_ticket`'s advisory lock is keyed on the dedup string, which keeps two consumers off
+        the same key and does nothing about a human editing that ticket in the UI. The row lock
+        lives in `join_ticket` so that the dedup branch and triage's attach both get it.
+        """
+        from django.db import connection  # pylint: disable=import-outside-toplevel
+        from django.test.utils import CaptureQueriesContext  # pylint: disable=import-outside-toplevel
+
+        keyed = fixtures.create_ticket(user=self.user, title="Locked", dedup_key="lock-key")
+        with CaptureQueriesContext(connection) as captured:
+            ticket_service.create_ticket(
+                title="A recurrence",
+                event_type=keyed.event_type,
+                source=TicketSourceChoices.SYSTEM,
+                dedup_key="lock-key",
+            )
+
+        locked = [query["sql"] for query in captured.captured_queries if "FOR UPDATE" in query["sql"]]
+        self.assertTrue(locked, "the dedup join read its ticket without a row lock")
+
+    def test_a_stale_instance_does_not_revert_the_row(self):
+        """The caller's copy is a handle on a ticket, not the ticket's contents."""
+        stale = EventTicket.objects.get(pk=self.ticket.pk)
+        ticket_service.transition(
+            ticket=self.ticket,
+            to_status=TicketStatusChoices.TRIAGED,
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+        )
+
+        self.join(ticket=stale)
+
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, TicketStatusChoices.TRIAGED)
+        self.assertEqual(self.ticket.event_count, 2)
+
     def test_create_ticket_still_joins_through_it(self):
         """The dedup branch and the public function are one implementation."""
         keyed = fixtures.create_ticket(user=self.user, title="Keyed", dedup_key="join-key")

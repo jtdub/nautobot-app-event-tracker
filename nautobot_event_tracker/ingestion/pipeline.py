@@ -92,12 +92,18 @@ def handle_message(message, *, rules, recorder, config, triage=None, write=True)
 
     if triage is not None and write:
         result = triage.decide(event, topic_config, result, identity=message.identity)
-        if result.triaged:
+        if result.triaged or result.errored:
             if not result.from_memo:
                 # Counted only when a call actually happened. `received` is counted outside the
                 # retry loop for the same reason: a retry re-enters here, and `triaged` is the
-                # number of model calls an operator is paying for.
-                recorder.record(message.topic, triaged=1, triage_errors=1 if result.errored else 0)
+                # number of model calls an operator is paying for. A failure that never reached a
+                # provider - a disabled model, a missing credential - is counted as an error and
+                # not as a call, which is why the two are read separately rather than together.
+                recorder.record(
+                    message.topic,
+                    triaged=1 if result.triaged else 0,
+                    triage_errors=1 if result.errored else 0,
+                )
             usage_record_ids = result.usage_record_ids
             # T4's fallback returns the pre-filter's own decision, so the model decided this one
             # only when the call actually produced an answer.
@@ -178,22 +184,27 @@ def _attach(event, result, recorder):
     """Join the ticket triage chose, as the AI actor that chose it (T6). None when it cannot be."""
     from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
 
-    # Terminal status is not filtered out here: `join_ticket` refuses an AI actor on one (S3), and
-    # that refusal is caught below. One gate, in the layer that owns the rule.
+    # This existence check is not the safety: `join_ticket` re-reads the row under a lock inside
+    # its own transaction, which is what stops a stale write, and this path holds nothing else -
+    # no advisory dedup lock, no unique constraint. Terminal status is not filtered out here
+    # either, because `join_ticket` refuses an AI actor on one (S3). One gate, in the layer that
+    # owns the rule; both of its refusals land in the handlers below.
     ticket = EventTicket.objects.filter(pk=result.target_ticket_id).first()
     if ticket is None:
         return None
 
     try:
-        with transaction.atomic():
-            ticket = ticket_service.join_ticket(
-                ticket=ticket,
-                source=TicketSourceChoices.AI,
-                occurred_at=event.occurred_at,
-                message=f"Attached by LLM triage: {result.decision.reason}",
-            )
+        ticket = ticket_service.join_ticket(
+            ticket=ticket,
+            source=TicketSourceChoices.AI,
+            occurred_at=event.occurred_at,
+            message=f"Attached by LLM triage: {result.decision.reason}",
+        )
     except TicketImmutableError:
-        # S3 - the ticket reached a terminal status between the read above and the write.
+        # S3 - the ticket reached a terminal status before the join took its lock.
+        return None
+    except EventTicket.DoesNotExist:
+        # Deleted in the same window. Same answer: the event opens its own ticket.
         return None
 
     recorder.record(event.topic, joined=1, triage_attached=1)

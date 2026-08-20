@@ -7,8 +7,8 @@ different access type, masked-failure logging) cannot land in one copy only.
 """
 
 from django.core.exceptions import ObjectDoesNotExist
-from nautobot.extras.choices import SecretsGroupAccessTypeChoices
-from nautobot.extras.secrets.exceptions import SecretError
+from nautobot.apps.choices import SecretsGroupAccessTypeChoices
+from nautobot.apps.exceptions import SecretError
 
 
 def read_secret(integration, secret_type, access_type=SecretsGroupAccessTypeChoices.TYPE_GENERIC):

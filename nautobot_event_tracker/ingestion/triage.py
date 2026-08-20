@@ -22,6 +22,7 @@ Rules implemented here, referenced by number from the Phase 3 spec:
 
 import json
 import logging
+import time
 from dataclasses import dataclass, replace
 
 from nautobot_event_tracker.choices import TERMINAL_STATUSES, LLMPurposeChoices
@@ -74,11 +75,11 @@ def _passthrough(filter_result):
     return TriageResult(decision=filter_result.decision, event_type=filter_result.event_type)
 
 
-class TriageFilter:  # pylint: disable=too-few-public-methods
+class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-attributes
     """The triage step, shaped like `PreFilter`: built once, `decide()` called per event."""
 
-    def __init__(self, config, *, complete=None):
-        """Hold the configuration and the call seam; resolve the model lazily.
+    def __init__(self, config, *, complete=None, clock=time.monotonic):
+        """Hold the configuration and the call seam; resolve the model lazily and re-read it.
 
         `complete` is the test seam, defaulting to `services.llm.complete`. The model is resolved
         on first use rather than here: startup validation (`config.database_problems`) has already
@@ -86,7 +87,10 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         """
         self.triage = config.triage
         self._complete = complete if complete is not None else llm_service.complete
+        self._clock = clock
         self._model = None
+        self._model_error = None
+        self._model_read_at = None
         self._memo_key = None
         self._memo_result = None
 
@@ -135,13 +139,19 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         except LLMError as error:
             # T4 - fail open. The call is already on the usage record (L1); the counter and the
             # log line are the operator-facing symptoms.
-            logger.warning("LLM triage failed (%s); accepting the event", error)
             record = getattr(error, "record", None)
+            if error is not self._model_error:
+                # The cached refusal has been logged once for this TTL already; anything else is
+                # this event's own failure and is worth a line.
+                logger.warning("LLM triage failed (%s); accepting the event", error)
             return TriageResult(
                 decision=filter_result.decision,
                 event_type=filter_result.event_type,
                 usage_record_ids=(record.pk,) if record is not None else (),
-                triaged=True,
+                # T8 - `triaged` counts events the model judged, and the usage record is the
+                # evidence that a call was attempted at all (L1). A refusal before any network
+                # traffic carries none, and counting it would price calls nobody made.
+                triaged=record is not None,
                 errored=True,
             )
 
@@ -155,9 +165,32 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         )
 
     def _get_model(self):
-        """The configured LLMModel, resolved once and cached for the life of the process."""
-        if self._model is None:
-            self._model = llm_service.get_model(self.triage.provider, self.triage.model)
+        """The configured LLMModel, re-read on a TTL rather than held for the life of the process.
+
+        Cached at all because the alternative is a join in front of every triaged event; re-read
+        because rule L8 promises the operator's off switch "works everywhere at once", and a model
+        pinned in memory at startup makes that promise false on the one process the switch is
+        meant to stop. The registered prices, the token cap and the allowed parameters go stale
+        the same way. `EventTypeCache` makes the same trade for the same reason; the cost is the
+        same and stated the same way: unticking *Enabled* takes up to `model_cache_seconds` to
+        reach a running consumer.
+        """
+        now = self._clock()
+        if self._model_read_at is None or now - self._model_read_at >= self.triage.model_cache_seconds:
+            # Stamped before the read, not after, so a refusal is rate-limited by the same TTL as
+            # a success. Disabling a model is the case this cache exists to notice; leaving the
+            # stamp behind on the failure would make that case the expensive one - a query, and a
+            # log line, for every event until somebody enables it again.
+            self._model_read_at = now
+            try:
+                self._model, self._model_error = llm_service.get_model(self.triage.provider, self.triage.model), None
+            except LLMError as error:
+                # Said once per TTL rather than once per event: the operator turned triage off, or
+                # broke it, and repeating that per message buries whatever else the log holds.
+                logger.warning("LLM triage is not callable (%s); accepting events until it is", error)
+                self._model, self._model_error = None, error
+        if self._model_error is not None:
+            raise self._model_error
         return self._model
 
     @staticmethod

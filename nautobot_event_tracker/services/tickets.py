@@ -279,6 +279,8 @@ def create_ticket(  # pylint: disable=too-many-arguments,too-many-locals
     with transaction.atomic():
         if dedup_key:
             _lock_dedup_key(dedup_key)
+            # `join_ticket` re-reads this row under a row lock before writing it; the advisory
+            # lock above only keeps two consumers off the same dedup key.
             existing = open_tickets_for_dedup_key(dedup_key).first()
             if existing is not None:
                 return join_ticket(
@@ -333,13 +335,26 @@ def join_ticket(  # pylint: disable=too-many-arguments
     `recurrence` update (S1); `message` overrides the stock occurrence line when the caller has
     something better to say.
 
+    The ticket is re-read under a row lock here rather than trusted as handed over, because this
+    writes the whole row: a stale instance saves back over whatever happened between the caller's
+    read and this write - a human's status change, another consumer's own recurrence. The lock
+    lives here rather than at each call site so that both callers get it, and because neither has
+    one that covers this: `create_ticket`'s advisory lock is keyed on the dedup string, which
+    serializes two consumers on that key and nothing else, and triage's attach path holds nothing
+    at all. Raises `EventTicket.DoesNotExist` if the ticket was deleted in that window.
+
     Returns the ticket with `was_created=False`, matching what `create_ticket` returns for a join.
     """
+    # Checked twice on purpose. Here, so that a refusal costs no lock and the error a caller sees
+    # is the same one it saw before the lock existed; again below on the locked row, because that
+    # is the copy this writes, and only that check cannot go stale (S3).
     _check_mutable(ticket, source)
     _validate_actor(source, user)
     occurred_at = occurred_at or timezone.now()
 
     with transaction.atomic():
+        ticket = EventTicket.objects.select_for_update().get(pk=ticket.pk)
+        _check_mutable(ticket, source)
         ticket.event_count += 1
         # max() keeps last_seen monotonic under out-of-order delivery, which at-least-once
         # brokers make normal (ADR 0004).

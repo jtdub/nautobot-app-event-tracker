@@ -1,7 +1,7 @@
 # Phase 3 — LLM Service Layer and Triage
 
-!!! warning "Draft — not yet approved"
-    This is the execution spec for Phase 3. Section 12 lists the calls made while writing it that most need a second opinion — in particular 12.2, which accepts a synchronous model call in the consumer's message loop, and 12.5, which lets a model drop an event outright. The phase lands in the two PRs described below; section 13 records, per PR, where the implementation departed from what is written here.
+!!! info "Implemented"
+    Phase 3 is implemented and merged: PR A and PR B below, and the follow-up recorded at the end of section 13. Section 12's eight questions were decided as each proposed, and now read as the decisions taken rather than as open ones. Section 13 records, per PR, where the implementation departed from what is written here.
 
 Phases 1 and 2 are implemented and merged; this spec builds on them and cites their rules by number (S1–S5, C1–C3, F1–F6, I1–I8) rather than restating them. [ADR 0006](../decisions/0006-litellm-service-layer-and-credential-storage.md) made the load-bearing decisions for this phase; this spec executes them.
 
@@ -79,6 +79,7 @@ PLUGINS_CONFIG = {
                 "max_output_tokens": 256,
                 "max_context_chars": 4000,      # payload cap into the prompt (T7)
                 "attach_candidates": 5,         # shortlist size (section 6.4)
+                "model_cache_seconds": 60,      # how stale the consumer's model row may be (L8)
             },
             "topics": {
                 "network.events": {..., "triage": True},   # per-topic participation, default True
@@ -96,8 +97,8 @@ The model is named by two keys, `provider` and `model`, rather than one joined s
 
 `ingestion/config.py` extends its two-halved validation (Phase 2 section 3.1), reporting every problem rather than the first:
 
-- Settings alone: `triage.enabled` implies non-empty `provider` and `model`; `timeout_seconds`, `max_output_tokens`, `max_context_chars` and `attach_candidates` are positive numbers; every per-topic `triage` is a boolean.
-- Database (`database_problems()`): when triage is enabled, the named provider and model exist and both are enabled — checked through `services.llm.get_model()`, which imports no litellm.
+- Settings alone: `triage.enabled` implies non-empty `provider` and `model`; `timeout_seconds`, `max_output_tokens`, `max_context_chars`, `attach_candidates` and `model_cache_seconds` are positive numbers; every per-topic `triage` is a boolean.
+- Database (`database_problems()`): when triage is enabled, the named provider and model exist and both are enabled — checked through `services.llm.get_model()`, which imports no litellm. A dry run skips this half: `_build_triage` returns `None` for every dry run (T9), so a dry run has no model call to be wrong about.
 
 ### 3.2 Credentials
 
@@ -273,25 +274,27 @@ The Phase 2 AI-free guards are narrowed, not removed:
 
 House rules hold: clocks injected, no test sleeps, no test opens a network connection — the `client` seam is the boundary, and no test mocks litellm internals.
 
-## 12. Open questions
+## 12. Decisions taken
 
-Each states a proposed reading, so that silence can be taken as agreement.
+Each of these was raised as an open question with a proposed reading, and each was decided as proposed. They are kept here as the record of what was decided and what it costs, not as questions still awaiting an answer.
 
-**12.1 Retention default.** *Proposed reading:* 90 days, against `IngestionStats`' 30 — usage rows are money and the input to Phase 5's analytics. *Cost:* a busy deployment stores ~90 days × its triage rate in rows; they are small.
+**12.1 Retention default.** *Decided:* 90 days, against `IngestionStats`' 30 — usage rows are money and the input to Phase 5's analytics. *Cost:* a busy deployment stores ~90 days × its triage rate in rows; they are small.
 
-**12.2 A synchronous model call in the message loop.** One call of 1–3 seconds serializes the consumer; a burst backs up behind it. *Proposed reading:* accept for Phase 3. F6 rate-limits the flood, T2 makes recurrences free, and Kafka partitions already scale consumers horizontally. Concurrency inside one process is real work and belongs to a phase with evidence it is needed. *Cost:* triage latency bounds throughput at roughly `1/timeout` events per second per process, worst case.
+**12.2 A synchronous model call in the message loop.** One call of 1–3 seconds serializes the consumer; a burst backs up behind it. *Decided:* accept for Phase 3. F6 rate-limits the flood, T2 makes recurrences free, and Kafka partitions already scale consumers horizontally. Concurrency inside one process is real work and belongs to a phase with evidence it is needed. *Cost:* triage latency bounds throughput at roughly `1/timeout` events per second per process, worst case.
 
-**12.3 Payload privacy.** The capped payload goes to whatever model is configured. *Proposed reading:* acceptable, because on-premises endpoints are first-class (ADR 0006) and a topic can opt out with `triage: False`. A redaction map is named future work, not designed here.
+**12.3 Payload privacy.** The capped payload goes to whatever model is configured. *Decided:* acceptable, because on-premises endpoints are first-class (ADR 0006) and a topic can opt out with `triage: False`. A redaction map is named future work, not designed here.
 
-**12.4 Shortlist scope.** *Proposed reading:* same event type first, newest open tickets as fallback, `attach_candidates` either way. A bounded prompt beats a clever one. *Cost:* the model cannot attach across event types when the type has open tickets of its own.
+**12.3a Triage is an efficiency filter, not a security control.** The prompt carries text that whoever emits the events controls, so an event can argue for its own verdict. `_parse` constrains the *shape* of the answer — one of four actions, and a ticket index the app itself shortlisted (T3) — which is why a hostile answer cannot name an arbitrary ticket or run anything. It does not constrain the answer's *reasoning*: an attacker who can put a line on a consumed topic can attempt to steer their own events toward `drop`, or toward `attach` on an unrelated ticket. *Decided:* accept for Phase 3, and state it rather than leave it implied. A triage `drop` means the model judged the event noise; it is never evidence that the event was harmless, and no later phase may read it as one. A deployment that cannot accept the steering risk turns triage off for that topic. Narrowing the vocabulary per topic — `suppress` as the strongest downgrade, so every event still leaves a ticket — is the obvious next lever if one is wanted.
 
-**12.5 May triage drop outright?** Suppression leaves a ticket on the record; drop leaves only a counter. *Proposed reading:* yes — `drop` exists for pure noise, is visible under `llm_triage`, and a conservative deployment simply prompts the model to prefer suppress. *Cost:* a wrong drop loses the event; T4 and T3 confine that to cases where the model affirmatively chose it.
+**12.4 Shortlist scope.** *Decided:* same event type first, newest open tickets as fallback, `attach_candidates` either way. A bounded prompt beats a clever one. *Cost:* the model cannot attach across event types when the type has open tickets of its own.
 
-**12.6 Spend caps.** *Proposed reading:* none in Phase 3. A cap needs shared state across processes (the Phase 2 section 13.6 distributed-limiter argument), and `LLMUsageRecord` already makes spend visible. Deferred to the analytics phase.
+**12.5 May triage drop outright?** Suppression leaves a ticket on the record; drop leaves only a counter. *Decided:* yes — `drop` exists for pure noise, is visible under `llm_triage`, and a conservative deployment simply prompts the model to prefer suppress. *Cost:* a wrong drop loses the event; T4 and T3 confine that to cases where the model affirmatively chose it.
 
-**12.7 The litellm pin.** *Proposed reading:* `>=1.74.0,<2.0.0` — the tested floor, the semver ceiling. litellm releases fast; the upstream-testing workflow is the early-warning system ADR 0006 asked for.
+**12.6 Spend caps.** *Decided:* none in Phase 3. A cap needs shared state across processes (the Phase 2 section 13.6 distributed-limiter argument), and `LLMUsageRecord` already makes spend visible. Deferred to the analytics phase.
 
-**12.8 No triage comment on accepted tickets.** *Proposed reading:* an accept writes nothing extra. A per-ticket AI comment is timeline noise and a second write per event; the model's reasoning surfaces where it acted — in the suppress and attach messages — and its cost surfaces in the usage panel.
+**12.7 The litellm pin.** *Decided:* `>=1.74.0,<2.0.0` — the tested floor, the semver ceiling. litellm releases fast; the upstream-testing workflow is the early-warning system ADR 0006 asked for.
+
+**12.8 No triage comment on accepted tickets.** *Decided:* an accept writes nothing extra. A per-ticket AI comment is timeline noise and a second write per event; the model's reasoning surfaces where it acted — in the suppress and attach messages — and its cost surfaces in the usage panel.
 
 ## 13. What the implementation changed
 
@@ -299,7 +302,7 @@ Appended as each PR lands, per the Phase 2 precedent.
 
 ### PR A
 
-- `LLMModelForm` exposes `default_parameters` as a JSON field, and `LLMModel.clean()` refuses the keys the service layer owns (`api_key`, `api_base`, `model`, `messages`): a credential there would be change-logged and served over REST and GraphQL, against rule L3, and a duplicated call argument would surface as a failed model call rather than as the configuration mistake it is.
+- `LLMModelForm` exposes `default_parameters` as a JSON field, and `LLMModel.clean()` refuses the keys the service layer owns: a credential there would be change-logged and served over REST and GraphQL, against rule L3, and a duplicated call argument would surface as a failed model call rather than as the configuration mistake it is. **Superseded by the follow-up:** PR A refused four keys by name, which was not enough, and the field is an allowlist now.
 - The usage-record filter form declares its model picker in `__init__` rather than as a class attribute, because `model` already names the Django model on every `NautobotFilterForm`.
 - `default_parameters` may set `timeout`, which applies when a caller states none; rule L6's 30 seconds is the floor beneath both, not above them.
 - `complete()` lets `ImproperlyConfigured` (the missing-extra refusal) propagate rather than wrapping it in `LLMCallError`: a deployment fault is not a failed call, and nothing left the process (section 5.2).
@@ -312,3 +315,16 @@ Appended as each PR lands, per the Phase 2 precedent.
 - A rule-decided suppression passes through triage untouched — the model judges only clean accepts. The spec's "accept / suppress reach triage" diagram is honest about what flows *past* the pre-filter, but the model is not given a vote over an operator's rule.
 - Triage drops return `Decision(drop, "llm_triage")` — the fixed counter key — while the model's own reason goes to the log line, so the printed decision and the counter agree.
 - The vanished-attach-target fallback lives in the pipeline's `_apply()`/`_attach()` pair; `join_ticket` raising S3's `TicketImmutableError` is one of the two ways a target can be gone, a re-read finding nothing is the other.
+
+### Follow-up
+
+What a review of the merged phase found, and what closing it changed.
+
+- `LLMModel.default_parameters` is an **allowlist**, not the denylist PR A shipped. The denylist named `api_base`; litellm also accepts `base_url`, which overrides `api_base` inside litellm, so a user holding only `change_llmmodel` could redirect a call and send the provider's key with it — the exact outcome rule L3 exists to prevent. A denylist would have to track every alias litellm accepts in every release. The field now takes generation parameters only, and `complete()` filters against the same tuple immediately before the call, because a fixture, a data migration or an `nbshell` write never runs `clean()`. The endpoint and the key are splatted separately and last.
+- `TriageFilter` re-reads its `LLMModel` on a TTL (`triage.model_cache_seconds`, default 60) rather than holding it for the life of the process. Cached for the process, the `enabled` flag `_check_enabled` tested was the one that was true at startup, which made rule L8's promise that the switch "works everywhere at once" false on the one process making the calls. The registered prices and the token cap went stale the same way. `EventTypeCache` makes the same trade for the same reason, and the cost is stated the same way.
+- `_attach()` reads its target inside the transaction and under `select_for_update()`. Read outside it, the instance `join_ticket` saved was a whole stale row, written back over any concurrent human edit or second consumer — and the `TicketImmutableError` handler did not cover the window its comment claimed, because `_check_mutable` inspected the same stale status.
+- A dry run skips the triage half of `database_problems`, and its banner says `triage skipped (dry run)` rather than naming a model nothing will call.
+- `get_settings()` refuses a `usage_retention_days` that is not a positive integer. `app-config-schema.json` says `minimum: 1`, but Nautobot does not enforce that schema against `PLUGINS_CONFIG`, and `0` read as "keep nothing" would have emptied the accounting table — including the record the triggering call had just written. `_maybe_prune` also marks the day done only after the DELETE succeeds, so a transient lock does not stop retention for 24 hours.
+- `TicketUpdate`, `IngestionStats` and `LLMUsageRecord` no longer carry `@extras_features("graphql")` beside their explicit GraphQL types: a model takes exactly one of Nautobot's two ways onto the schema, and carrying both registered two competing types for one model.
+- The `LLMProvider` and `LLMModel` filtersets gained the `tags` filter every taggable model's filterset is expected to carry, found by moving the filter tests onto `FilterTestCases.FilterTestCase`.
+- Six imports moved from internal Nautobot paths to `nautobot.apps.*`. `TokenPermissions` in `api/views.py` stays internal — it is not re-exported — and now carries a comment saying so.

@@ -1,0 +1,4 @@
+Removed the duplicate GraphQL registration on Ticket Update, Ingestion Stats and LLM Usage Record, which carried both the `graphql` extras feature and an explicit GraphQL type for the same model.
+Moved six imports from internal Nautobot paths to the `nautobot.apps.*` public API, and noted the one deliberate internal import that has no public equivalent.
+Set `author_email`, `min_version` and `max_version` on the app configuration, so Nautobot checks the supported version range at startup rather than leaving it to the packaging pin.
+Moved the filterset and model test suites onto Nautobot's own test base classes, which added generic filter coverage the app's hand-written tests did not have.

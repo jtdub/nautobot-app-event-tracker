@@ -7,6 +7,11 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from nautobot.apps.api import NautobotModelViewSet, ReadOnlyModelViewSet
+
+# The one deliberate internal import in the app. `TokenPermissions` is not re-exported from
+# `nautobot.apps.api`, so there is no public path to it and no substitute that enforces token
+# write-permissions the same way. Anything outside `nautobot.apps.*` may move in a patch release:
+# re-check this import on every Nautobot upgrade, minor or otherwise.
 from nautobot.core.api.authentication import TokenPermissions
 from rest_framework import status as http_status
 from rest_framework.decorators import action
