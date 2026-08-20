@@ -14,7 +14,7 @@ from nautobot_event_tracker.ingestion.constants import ACTION_ACCEPT, ACTION_ATT
 from nautobot_event_tracker.ingestion.normalize import NormalizedEvent
 from nautobot_event_tracker.ingestion.prefilter import ACCEPT, Decision, FilterResult
 from nautobot_event_tracker.ingestion.triage import TriageFilter
-from nautobot_event_tracker.models import EventType, LLMUsageRecord
+from nautobot_event_tracker.models import EventType, LLMModel, LLMProvider, LLMUsageRecord
 from nautobot_event_tracker.tests import fixtures
 from nautobot_event_tracker.tests.fixtures import TRIAGE_SETTINGS, FakeComplete
 
@@ -34,7 +34,7 @@ class TriageTestCase(TestCase):
         self.fake = None
         self.topic_config = None
 
-    def build(self, *, fake=None, triage_settings=None, topic_settings=None):
+    def build(self, *, fake=None, triage_settings=None, topic_settings=None, clock=None):
         """A TriageFilter over a loaded configuration, and the loaded topic to go with it."""
         self.fake = fake if fake is not None else FakeComplete()
         with fixtures.ingestion_settings(
@@ -43,7 +43,9 @@ class TriageTestCase(TestCase):
         ):
             loaded = config.load()
         self.topic_config = loaded.topics["network.events"]
-        return TriageFilter(loaded, complete=self.fake)
+        if clock is None:
+            return TriageFilter(loaded, complete=self.fake)
+        return TriageFilter(loaded, complete=self.fake, clock=clock)
 
     @staticmethod
     def event(**overrides):
@@ -308,3 +310,64 @@ class TestAttribution(TriageTestCase):
     def test_the_ai_source_constant_is_what_the_pipeline_applies(self):
         """One spelling of the actor, shared with the service layer."""
         self.assertEqual(TicketSourceChoices.AI, "ai")
+
+
+class StoppedClock:  # pylint: disable=too-few-public-methods
+    """A monotonic clock a test moves by hand. No sleeps, per the spec's house rules."""
+
+    def __init__(self):
+        """Start at zero."""
+        self.now = 0.0
+
+    def __call__(self):
+        """The time the test last set."""
+        return self.now
+
+
+class TestTheModelCache(TriageTestCase):
+    """L8 from the consumer's side: the operator's off switch has to reach a running process."""
+
+    def test_the_model_is_re_read_after_the_ttl(self):
+        """Unticking Enabled must stop the calls without a restart.
+
+        This is the whole point of the cache having a TTL. Held for the life of the process, the
+        `enabled` flag `services.llm` checks is the one that was true at startup, and rule L8's
+        promise that a disabled model "refuses every call" is false on the one process that is
+        making them.
+        """
+        clock = StoppedClock()
+        triage = self.build(clock=clock)
+        self.decide(triage, identity="first")
+        self.assertEqual(len(self.fake.calls), 1)
+
+        LLMModel.objects.filter(name="test-model").update(enabled=False)
+        clock.now = 61.0
+
+        result = self.decide(triage, identity="second")
+
+        self.assertEqual(len(self.fake.calls), 1, "the disabled model was called anyway")
+        self.assertTrue(result.errored)
+        self.assertEqual(result.decision.action, ACTION_ACCEPT, "T4 still fails open")
+
+    def test_the_model_is_not_re_read_within_the_ttl(self):
+        """The cache is still a cache: a join in front of every event is what it exists to avoid."""
+        clock = StoppedClock()
+        triage = self.build(clock=clock)
+        self.decide(triage, identity="first")
+
+        with self.assertNumQueries(0):
+            triage._get_model()  # pylint: disable=protected-access
+
+    def test_a_disabled_provider_stops_the_calls_too(self):
+        """L8 covers the provider as well, and the cached model carries a cached provider with it."""
+        clock = StoppedClock()
+        triage = self.build(clock=clock)
+        self.decide(triage, identity="first")
+
+        LLMProvider.objects.filter(name="Test Provider").update(enabled=False)
+        clock.now = 61.0
+
+        result = self.decide(triage, identity="second")
+
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertTrue(result.errored)

@@ -8,15 +8,18 @@ connection.
 import os
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.core.exceptions import ImproperlyConfigured
+from django.db import DatabaseError
+from django.test import override_settings
 from django.utils import timezone
+from nautobot.apps.choices import SecretsGroupAccessTypeChoices, SecretsGroupSecretTypeChoices
 from nautobot.apps.testing import TestCase
-from nautobot.extras.choices import SecretsGroupAccessTypeChoices, SecretsGroupSecretTypeChoices
 from nautobot.extras.models import Secret, SecretsGroup, SecretsGroupAssociation
 
 from nautobot_event_tracker.choices import LLMProviderTypeChoices, LLMPurposeChoices
-from nautobot_event_tracker.models import LLMUsageRecord
+from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
 from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
 from nautobot_event_tracker.tests import fixtures
@@ -250,6 +253,27 @@ class TestCallParameters(TestCase):
         call(model, client, response_format={"type": "json_object"})
         self.assertEqual(client.calls[0]["response_format"], {"type": "json_object"})
 
+    def test_a_parameter_outside_the_allowlist_never_reaches_the_client(self):
+        """The second layer, and the one that matters: `clean()` is not on this path.
+
+        The row is written with `update()`, which is how a fixture, a data migration or an
+        operator at `nbshell` would write it - none of them runs model validation. If the filter
+        lived only in `clean()`, this call would carry `base_url` and the provider's key to
+        whatever address the row named.
+        """
+        model = fixtures.create_llmmodel(name="smuggled-model")
+        LLMModel.objects.filter(pk=model.pk).update(
+            default_parameters={"base_url": "https://somewhere.example/v1", "temperature": 0.2}
+        )
+        model.refresh_from_db()
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertNotIn("base_url", client.calls[0])
+        # The legitimate parameter beside it still arrives, so this filters rather than discards.
+        self.assertEqual(client.calls[0]["temperature"], 0.2)
+
 
 class TestRefusals(TestCase):
     """L8 - disabled means disabled, before any network traffic and with no record."""
@@ -373,3 +397,48 @@ class TestRetention(TestCase):
     def test_get_settings_applies_defaults_per_key(self):
         """An absent block gets the defaults; a partial block keeps them for unstated keys."""
         self.assertEqual(llm_service.get_settings()["usage_retention_days"], 90)
+
+    def test_a_retention_window_of_zero_is_refused(self):
+        """Read as "keep nothing", zero would empty the table the accounting lives in.
+
+        `app-config-schema.json` says `minimum: 1`, but Nautobot does not enforce that schema
+        against PLUGINS_CONFIG, so the check has to be in the code that reads the value.
+        """
+        for value in (0, -1, "ninety", True):
+            with self.subTest(value=value):
+                with override_settings(
+                    PLUGINS_CONFIG={"nautobot_event_tracker": {"llm": {"usage_retention_days": value}}}
+                ):
+                    with self.assertRaises(ImproperlyConfigured) as raised:
+                        llm_service.get_settings()
+                    self.assertIn("usage_retention_days", str(raised.exception))
+
+    def test_a_refused_retention_window_deletes_nothing(self):
+        """A settings fault must not become a data-loss event, and must not break the call it rode in on."""
+        old = call(self.model, FakeLLMClient()).record
+        self._age_record(old, days=91)
+        llm_service._last_pruned_on = None  # pylint: disable=protected-access
+
+        with override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"llm": {"usage_retention_days": 0}}}):
+            kept = call(self.model, FakeLLMClient()).record
+
+        self.assertIn(old.pk, set(LLMUsageRecord.objects.values_list("pk", flat=True)))
+        self.assertIn(kept.pk, set(LLMUsageRecord.objects.values_list("pk", flat=True)))
+
+    def test_a_failed_prune_is_retried_rather_than_blocked_for_the_day(self):
+        """A lock or a statement timeout on a first prune of a large table is transient.
+
+        Marking the day before the DELETE would let the table grow for 24 hours on every such
+        failure, which is the opposite of what the retention window is for.
+        """
+        old = call(self.model, FakeLLMClient()).record
+        self._age_record(old, days=91)
+        llm_service._last_pruned_on = None  # pylint: disable=protected-access
+
+        with mock.patch("django.db.models.query.QuerySet.delete", side_effect=DatabaseError("deadlock detected")):
+            llm_service._maybe_prune()  # pylint: disable=protected-access
+        self.assertIsNone(llm_service._last_pruned_on)  # pylint: disable=protected-access
+
+        # The next call, with the database well again, prunes as it should have.
+        call(self.model, FakeLLMClient())
+        self.assertNotIn(old.pk, set(LLMUsageRecord.objects.values_list("pk", flat=True)))

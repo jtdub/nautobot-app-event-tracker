@@ -22,6 +22,7 @@ Rules implemented here, referenced by number from the Phase 3 spec:
 
 import json
 import logging
+import time
 from dataclasses import dataclass, replace
 
 from nautobot_event_tracker.choices import TERMINAL_STATUSES, LLMPurposeChoices
@@ -77,8 +78,8 @@ def _passthrough(filter_result):
 class TriageFilter:  # pylint: disable=too-few-public-methods
     """The triage step, shaped like `PreFilter`: built once, `decide()` called per event."""
 
-    def __init__(self, config, *, complete=None):
-        """Hold the configuration and the call seam; resolve the model lazily.
+    def __init__(self, config, *, complete=None, clock=time.monotonic):
+        """Hold the configuration and the call seam; resolve the model lazily and re-read it.
 
         `complete` is the test seam, defaulting to `services.llm.complete`. The model is resolved
         on first use rather than here: startup validation (`config.database_problems`) has already
@@ -86,7 +87,9 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         """
         self.triage = config.triage
         self._complete = complete if complete is not None else llm_service.complete
+        self._clock = clock
         self._model = None
+        self._model_read_at = None
         self._memo_key = None
         self._memo_result = None
 
@@ -155,9 +158,20 @@ class TriageFilter:  # pylint: disable=too-few-public-methods
         )
 
     def _get_model(self):
-        """The configured LLMModel, resolved once and cached for the life of the process."""
-        if self._model is None:
+        """The configured LLMModel, re-read on a TTL rather than held for the life of the process.
+
+        Cached at all because the alternative is a join in front of every triaged event; re-read
+        because rule L8 promises the operator's off switch "works everywhere at once", and a model
+        pinned in memory at startup makes that promise false on the one process the switch is
+        meant to stop. The registered prices, the token cap and the allowed parameters go stale
+        the same way. `EventTypeCache` makes the same trade for the same reason; the cost is the
+        same and stated the same way: unticking *Enabled* takes up to `model_cache_seconds` to
+        reach a running consumer.
+        """
+        now = self._clock()
+        if self._model is None or now - self._model_read_at >= self.triage.model_cache_seconds:
             self._model = llm_service.get_model(self.triage.provider, self.triage.model)
+            self._model_read_at = now
         return self._model
 
     @staticmethod

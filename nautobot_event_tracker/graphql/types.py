@@ -1,8 +1,11 @@
 """GraphQL types for nautobot_event_tracker.
 
-`EventType`, `EventTicket`, `LLMProvider` and `LLMModel` are exposed automatically through the
-`graphql` entry in their `extras_features`. `TicketUpdate`, `IngestionStats` and `LLMUsageRecord`
-need explicit types because none of them is a PrimaryModel.
+Nautobot offers two ways to put a model on the GraphQL schema, and a model takes exactly one of
+them. `EventType`, `EventTicket`, `LLMProvider` and `LLMModel` take the first: the `graphql` entry
+in their `extras_features`, which generates a type for them. `TicketUpdate`, `IngestionStats` and
+`LLMUsageRecord` take the second - the explicit types below - and so deliberately carry no
+`graphql` feature, which would register a second, competing type for the same model. They need
+the explicit form because each wires a `filterset_class` of its own.
 """
 
 from nautobot.apps.graphql import OptimizedNautobotObjectType

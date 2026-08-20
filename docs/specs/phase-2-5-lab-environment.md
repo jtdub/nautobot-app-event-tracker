@@ -1,7 +1,7 @@
 # Phase 2.5 — The lab environment
 
-!!! warning "Draft — not yet approved"
-    This is the execution spec for Phase 2.5. Section 10 lists the calls that most need a second opinion, and 10.1 asks whether the resource cost is acceptable before any of it is built. Nothing in this spec has been implemented.
+!!! info "Implemented"
+    Phase 2.5 is implemented and merged. Section 10's six calls were decided as each proposed — including 10.1, the resource cost, which was accepted on the condition that the lab stays opt-in — and now read as the decisions taken.
 
 ## 1. Scope
 
@@ -157,16 +157,18 @@ Developers drive this development environment with `invoke`, and the lab is part
 7. **Nothing ships.** The wheel built from this branch contains no containerlab file, no compose overlay and no Fluent Bit configuration; the only packaged change is the test-data command.
 8. **The ordinary stack is unaffected.** `invoke build`, `invoke start` and `invoke tests` behave exactly as before on a machine with no containerlab installed.
 
-## 10. Open questions
+## 10. Decisions taken
 
-**10.1 The resource cost.** Three SR Linux nodes want 8 GB of memory before Nautobot has started. *Proposed reading:* build it anyway, keep it opt-in, and document the requirement at the top of the lab guide. If the target developer machine is smaller, the topology drops to two nodes — one leaf and one spine — which still produces link-down and BGP-down events and loses only the multi-path story.
+Each was raised as an open question with a proposed reading, and each was decided as proposed. They are kept here as the record of what was decided and what it costs.
 
-**10.2 SR Linux specifically.** It is free, publicly pullable, and produces genuinely representative logs. It is also one vendor, and a field map tuned to it may fit nothing else. *Proposed reading:* start with SR Linux because it is the one that costs nothing to run, and treat the Fluent Bit parser as the seam where a second vendor would be added. A lab with FRR alongside it would be cheaper and less representative; a lab with a licensed image would be neither.
+**10.1 The resource cost.** Three SR Linux nodes want 8 GB of memory before Nautobot has started. *Decided:* build it anyway, keep it opt-in, and document the requirement at the top of the lab guide. If the target developer machine is smaller, the topology drops to two nodes — one leaf and one spine — which still produces link-down and BGP-down events and loses only the multi-path story.
 
-**10.3 The population script is not a management command.** *Proposed reading:* keep it out of the app package for the reason in section 6. *Cost:* it is invoked more awkwardly, and it cannot be tested by the app's test suite the way a command could. *Settled, partly:* the half of it that is not lab knowledge — making a Device and everything a Device requires — did move into the package, as `dcim_fixtures`, because the test data command needed exactly the same thing. What stayed outside is the topology, its interface naming and its addresses, which is the half nobody would want installed.
+**10.2 SR Linux specifically.** It is free, publicly pullable, and produces genuinely representative logs. It is also one vendor, and a field map tuned to it may fit nothing else. *Decided:* start with SR Linux because it is the one that costs nothing to run, and treat the Fluent Bit parser as the seam where a second vendor would be added. A lab with FRR alongside it would be cheaper and less representative; a lab with a licensed image would be neither.
 
-**10.4 Fluent Bit as the bridge.** Alternatives are a syslog-ng container with a Kafka destination, or having SR Linux export gNMI to a collector instead of syslog. *Proposed reading:* Fluent Bit, because it is one small container doing exactly one job and its parser is a file a person can read. gNMI would be more modern and would produce structured data with no parser at all, which is worth revisiting if the syslog parser turns out to be the fragile part.
+**10.3 The population script is not a management command.** *Decided:* keep it out of the app package for the reason in section 6. *Cost:* it is invoked more awkwardly, and it cannot be tested by the app's test suite the way a command could. *Settled, partly:* the half of it that is not lab knowledge — making a Device and everything a Device requires — did move into the package, as `dcim_fixtures`, because the test data command needed exactly the same thing. What stayed outside is the topology, its interface naming and its addresses, which is the half nobody would want installed.
 
-**10.5 Redpanda in development, Kafka in the ADR.** *Proposed reading:* fine, and say so in the lab guide. The consumer talks the Kafka protocol either way, and a development stack that boots in seconds is worth more than fidelity to a deployment nobody is running here. Swapping in real Kafka is an edit to one compose file on the day the difference matters.
+**10.4 Fluent Bit as the bridge.** Alternatives are a syslog-ng container with a Kafka destination, or having SR Linux export gNMI to a collector instead of syslog. *Decided:* Fluent Bit, because it is one small container doing exactly one job and its parser is a file a person can read. gNMI would be more modern and would produce structured data with no parser at all, which is worth revisiting if the syslog parser turns out to be the fragile part.
 
-**10.6 The phase number.** This is "2.5" because it depends on Phase 2's consumer existing and blocks nothing in Phase 3. *Proposed reading:* keep the number; it is honest about being a detour. If it should instead be part of Phase 2's own scope, it merges cleanly — the deliverables do not change, only which spec they live in.
+**10.5 Redpanda in development, Kafka in the ADR.** *Decided:* fine, and say so in the lab guide. The consumer talks the Kafka protocol either way, and a development stack that boots in seconds is worth more than fidelity to a deployment nobody is running here. Swapping in real Kafka is an edit to one compose file on the day the difference matters.
+
+**10.6 The phase number.** This is "2.5" because it depends on Phase 2's consumer existing and blocks nothing in Phase 3. *Decided:* keep the number; it is honest about being a detour. If it should instead be part of Phase 2's own scope, it merges cleanly — the deliverables do not change, only which spec they live in.

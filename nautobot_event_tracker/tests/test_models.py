@@ -6,9 +6,8 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import ProtectedError
-from django.test import TestCase
 from django.utils import timezone
-from nautobot.apps.testing import ModelTestCases
+from nautobot.apps.testing import ModelTestCases, TestCase
 
 from nautobot_event_tracker import models
 from nautobot_event_tracker.choices import (
@@ -525,6 +524,43 @@ class TestLLMModel(ModelTestCases.BaseModelTestCase):
         self.assertIn("messages", str(raised.exception))
         self.assertIn("model", str(raised.exception))
 
+    def test_an_aliased_endpoint_is_refused(self):
+        """`base_url` overrides `api_base` inside litellm, so naming `api_base` alone was not enough.
+
+        The whole reason this field is an allowlist: a denylist has to know every alias litellm
+        accepts, in every release. An operator with only `change_llmmodel` would otherwise redirect
+        the call - and the provider's key with it - to an address of their choosing.
+        """
+        model = models.LLMModel(
+            provider=fixtures.create_llmprovider(),
+            name="redirector",
+            default_parameters={"base_url": "https://somewhere.example/v1"},
+        )
+        with self.assertRaises(ValidationError) as raised:
+            model.full_clean()
+        self.assertIn("default_parameters", raised.exception.message_dict)
+        self.assertIn("base_url", str(raised.exception))
+
+    def test_every_key_that_decides_who_answers_is_refused(self):
+        """Routing, fallbacks, headers and canned responses all choose the responder, not the answer."""
+        for key, value in (
+            ("custom_llm_provider", "openai"),
+            ("model_list", [{"model_name": "anything"}]),
+            ("fallbacks", ["another-model"]),
+            ("extra_headers", {"authorization": "Bearer smuggled"}),
+            ("mock_response", "a canned answer"),
+            ("api_version", "2024-01-01"),
+        ):
+            with self.subTest(key=key):
+                model = models.LLMModel(
+                    provider=fixtures.create_llmprovider(),
+                    name=f"refuses-{key}",
+                    default_parameters={key: value},
+                )
+                with self.assertRaises(ValidationError) as raised:
+                    model.full_clean()
+                self.assertIn(key, str(raised.exception))
+
     def test_ordinary_parameters_are_allowed(self):
         """The field's actual purpose still works."""
         model = models.LLMModel(
@@ -534,9 +570,28 @@ class TestLLMModel(ModelTestCases.BaseModelTestCase):
         )
         model.full_clean()
 
+    def test_a_registry_timeout_is_allowed(self):
+        """The registry's own timeout is a documented use of this field, not a smuggled argument."""
+        model = models.LLMModel(
+            provider=fixtures.create_llmprovider(),
+            name="patient",
+            default_parameters={"timeout": 45},
+        )
+        model.full_clean()
 
-class TestLLMUsageRecord(TestCase):
+
+class TestLLMUsageRecord(ModelTestCases.BaseModelTestCase):
     """The accounting row. Constructed directly only here, as the guard tests allow."""
+
+    model = models.LLMUsageRecord
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three records, so the generic suite has a queryset to work through."""
+        super().setUpTestData()
+        llm_model = fixtures.create_llmmodel()
+        for purpose in (LLMPurposeChoices.TRIAGE, LLMPurposeChoices.TRIAGE, LLMPurposeChoices.TRIAGE):
+            models.LLMUsageRecord.objects.create(model=llm_model, purpose=purpose, success=True)
 
     def _record(self, **kwargs):
         """One usage record, built directly to exercise the model itself."""
@@ -562,7 +617,8 @@ class TestLLMUsageRecord(TestCase):
         """The list view answers 'what just happened' without a sort."""
         older = self._record(called_at=timezone.now() - timedelta(minutes=5))
         newer = self._record()
-        self.assertEqual(list(models.LLMUsageRecord.objects.all()), [newer, older])
+        ordered = models.LLMUsageRecord.objects.filter(pk__in=[older.pk, newer.pk])
+        self.assertEqual(list(ordered), [newer, older])
 
     def test_a_deleted_ticket_leaves_the_spend_history(self):
         """The money was spent whether or not the ticket survived."""
@@ -574,7 +630,7 @@ class TestLLMUsageRecord(TestCase):
 
     def test_the_model_is_protected_while_records_exist(self):
         """Deleting a registry entry must not silently delete its accounting."""
-        record = self._record()
+        record = self._record(model=fixtures.create_llmmodel(name="Protected Model"))
         with self.assertRaises(ProtectedError):
             record.model.delete()
 

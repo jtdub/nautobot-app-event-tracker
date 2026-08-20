@@ -178,14 +178,20 @@ def _attach(event, result, recorder):
     """Join the ticket triage chose, as the AI actor that chose it (T6). None when it cannot be."""
     from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
 
+    # Read inside the transaction and locked, because `join_ticket` writes the whole row: an
+    # instance fetched outside it would be saved back over whatever a human or a second consumer
+    # did in between, reverting their status change and losing their `event_count`. This path
+    # holds neither the advisory dedup lock nor a unique constraint, so the row lock is the only
+    # thing serializing two consumers onto one ticket.
+    #
     # Terminal status is not filtered out here: `join_ticket` refuses an AI actor on one (S3), and
     # that refusal is caught below. One gate, in the layer that owns the rule.
-    ticket = EventTicket.objects.filter(pk=result.target_ticket_id).first()
-    if ticket is None:
-        return None
-
     try:
         with transaction.atomic():
+            ticket = EventTicket.objects.select_for_update().filter(pk=result.target_ticket_id).first()
+            if ticket is None:
+                return None
+
             ticket = ticket_service.join_ticket(
                 ticket=ticket,
                 source=TicketSourceChoices.AI,
@@ -193,7 +199,7 @@ def _attach(event, result, recorder):
                 message=f"Attached by LLM triage: {result.decision.reason}",
             )
     except TicketImmutableError:
-        # S3 - the ticket reached a terminal status between the read above and the write.
+        # S3 - the ticket reached a terminal status before this transaction took its lock.
         return None
 
     recorder.record(event.topic, joined=1, triage_attached=1)

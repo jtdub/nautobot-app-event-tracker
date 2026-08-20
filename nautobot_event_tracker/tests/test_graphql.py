@@ -1,7 +1,7 @@
 """Test the Event Tracker GraphQL surface."""
 
+from nautobot.apps.graphql import execute_query
 from nautobot.apps.testing import TestCase
-from nautobot.core.graphql import execute_query
 
 from nautobot_event_tracker.choices import TicketSourceChoices
 from nautobot_event_tracker.services import tickets as ticket_service

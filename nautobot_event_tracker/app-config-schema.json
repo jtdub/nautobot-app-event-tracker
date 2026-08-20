@@ -200,6 +200,12 @@
                             "description": "How many open tickets the model is shown as attach candidates.",
                             "minimum": 1,
                             "default": 5
+                        },
+                        "model_cache_seconds": {
+                            "type": "integer",
+                            "description": "How long a running consumer holds the resolved LLMModel before re-reading it. Bounds how long disabling a provider or model, or correcting its prices, takes to reach a consumer already running.",
+                            "minimum": 1,
+                            "default": 60
                         }
                     },
                     "additionalProperties": false

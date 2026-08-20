@@ -165,7 +165,6 @@ class EventTicket(PrimaryModel):  # pylint: disable=too-many-ancestors
             raise ValidationError(errors)
 
 
-@extras_features("graphql")
 class TicketUpdate(BaseModel, ChangeLoggedModel):
     """One append-only entry in a ticket's history.
 
@@ -294,7 +293,6 @@ class TicketUpdate(BaseModel, ChangeLoggedModel):
         raise TicketUpdateImmutableError("TicketUpdate is append-only; an update cannot be deleted.")
 
 
-@extras_features("graphql")
 class IngestionStats(BaseModel):
     """Counters for one consumer, one topic, one time bucket.
 
@@ -478,15 +476,27 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
         blank=True,
         help_text=(
             "Extra request parameters (temperature and friends), passed through on every call. "
-            "Cannot carry credentials or the request's own subject: see the reserved keys below."
+            "Only the generation parameters listed below are accepted."
         ),
     )
 
-    #: Keys the service layer owns, refused here rather than passed through. `api_key` and
-    #: `api_base` would put a credential and an endpoint on a change-logged, API-readable model,
-    #: which is what rule L3 exists to prevent; `model` and `messages` are the call's own
-    #: arguments, and passing them twice fails the call rather than configuring it.
-    RESERVED_PARAMETERS = ("api_key", "api_base", "model", "messages")
+    #: The only keys this field may carry: the parameters that shape an answer, and nothing that
+    #: decides who answers. An allowlist rather than a denylist because litellm's keyword surface
+    #: is wide, aliased and moves between releases - `base_url` alone overrides `api_base` inside
+    #: litellm, so a denylist naming `api_base` never saw it, and an operator holding only
+    #: `change_llmmodel` could redirect a call and send the provider's key with it, against rule
+    #: L3. `timeout` stays: it is the registry's own default, beaten by a call that states one.
+    #: The service layer filters against this tuple again immediately before the call, because a
+    #: fixture, a migration or a direct ORM write never runs `clean()`.
+    ALLOWED_PARAMETERS = (
+        "frequency_penalty",
+        "presence_penalty",
+        "seed",
+        "stop",
+        "temperature",
+        "timeout",
+        "top_p",
+    )
 
     natural_key_field_names = ["provider", "name"]
 
@@ -508,27 +518,28 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
         return f"{self.provider.name}: {self.name}"
 
     def clean(self):
-        """Refuse parameters that belong to the service layer, not to the registry.
+        """Refuse every parameter the service layer owns, keeping the generation parameters alone.
 
-        Caught here rather than at call time: a credential in this field would already have been
-        written to a change-logged row and served over REST and GraphQL by the time a call read
-        it, and a duplicated call argument would surface as a failed model call rather than as
-        the configuration mistake it is.
+        Caught here rather than at call time: a credential or an endpoint in this field would
+        already have been written to a change-logged row and served over REST and GraphQL by the
+        time a call read it, which is what rule L3 exists to prevent. A duplicated call argument
+        would surface as a failed model call rather than as the configuration mistake it is.
         """
         super().clean()
-        offenders = sorted(key for key in (self.default_parameters or {}) if key in self.RESERVED_PARAMETERS)
+        offenders = sorted(key for key in (self.default_parameters or {}) if key not in self.ALLOWED_PARAMETERS)
         if offenders:
             raise ValidationError(
                 {
                     "default_parameters": (
-                        f"{', '.join(offenders)} cannot be set here. Credentials and the endpoint come from the "
-                        "provider's external integration, and the model and messages come from the call itself."
+                        f"{', '.join(offenders)} cannot be set here. This field carries generation parameters "
+                        f"only ({', '.join(self.ALLOWED_PARAMETERS)}); the endpoint and the credentials come "
+                        "from the provider's external integration, and the model and messages come from the "
+                        "call itself."
                     )
                 }
             )
 
 
-@extras_features("graphql")
 class LLMUsageRecord(BaseModel):
     """The accounting row for one LLM call, successful or not.
 

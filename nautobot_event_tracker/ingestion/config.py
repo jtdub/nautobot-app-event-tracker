@@ -63,6 +63,7 @@ DEFAULTS = {
         "max_output_tokens": 256,
         "max_context_chars": 4000,
         "attach_candidates": 5,
+        "model_cache_seconds": 60,
     },
     "topics": {},
 }
@@ -115,6 +116,7 @@ class TriageConfig:  # pylint: disable=too-many-instance-attributes
     max_output_tokens: int
     max_context_chars: int
     attach_candidates: int
+    model_cache_seconds: int
 
 
 #: What "triage is off" is, so that it is one value rather than a value and a `None`. Every reader
@@ -286,8 +288,15 @@ def load(*, topics=None, consumer=None, require_topics=False):
     )
 
 
-def database_problems(config):
-    """Return the faults that only a query can find: missing event types, and the triage model."""
+def database_problems(config, *, check_triage=True):
+    """Return the faults that only a query can find: missing event types, and the triage model.
+
+    `check_triage` is false for a dry run. `ConsumerRunner._build_triage` returns None for every
+    dry run (T9), so a dry run never consults a model - and refusing to start one because the
+    optional `llm` extra is absent would deny an operator the decide-only pass over live traffic
+    that dry runs exist for. The event-type half still runs: a dry run reports decisions, and a
+    decision naming a type that does not exist is a fault worth reading before the real run.
+    """
     from nautobot_event_tracker.models import EventType  # pylint: disable=import-outside-toplevel
 
     problems = []
@@ -309,7 +318,7 @@ def database_problems(config):
             if event_type not in known
         )
 
-    if config.triage.enabled:
+    if check_triage and config.triage.enabled:
         # Through the LLM service so "exists" and "enabled" are one definition (rule L8);
         # `services.llm` imports no litellm at module level, so neither does this check.
         from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=import-outside-toplevel
@@ -407,7 +416,7 @@ def _parse_triage(triage_settings):
             if not merged.get(key):
                 problems.append(f"triage: '{key}' is required when triage is enabled")
 
-    for key in ("max_output_tokens", "max_context_chars", "attach_candidates"):
+    for key in ("max_output_tokens", "max_context_chars", "attach_candidates", "model_cache_seconds"):
         problems += _positive_int_problem(f"triage: '{key}'", merged.get(key))
 
     problems += _positive_number_problem("triage: 'timeout_seconds'", merged.get("timeout_seconds"))
@@ -424,6 +433,7 @@ def _parse_triage(triage_settings):
             max_output_tokens=merged["max_output_tokens"],
             max_context_chars=merged["max_context_chars"],
             attach_candidates=merged["attach_candidates"],
+            model_cache_seconds=merged["model_cache_seconds"],
         ),
         [],
     )

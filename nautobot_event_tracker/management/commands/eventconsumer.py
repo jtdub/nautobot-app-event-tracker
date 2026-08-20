@@ -237,7 +237,7 @@ class Command(BaseCommand):
             stdout=self.stdout,
         )
 
-        self._banner(settings, consumer)
+        self._banner(settings, consumer, dry_run=options["dry_run"])
         self._install_signal_handlers(runner)
 
         try:
@@ -257,7 +257,8 @@ class Command(BaseCommand):
 
         Everything answerable from the settings is checked in one pass, so a deployment with three
         faults sees three lines and needs one restart. The database check runs afterwards because
-        it needs a query; its faults are rendered the same way.
+        it needs a query; its faults are rendered the same way. A dry run skips the triage half of
+        it, because a dry run makes no model call to be wrong about.
         """
         topics = [topic.strip() for topic in options["topics"].split(",")] if options.get("topics") else None
         try:
@@ -269,14 +270,18 @@ class Command(BaseCommand):
         except ImproperlyConfigured as error:
             raise CommandError(str(error)) from error
 
-        problems = ingestion_config.database_problems(settings)
+        problems = ingestion_config.database_problems(settings, check_triage=not options["dry_run"])
         if problems:
             raise CommandError(ingestion_config.render_problems(problems))
         return settings
 
-    def _banner(self, settings, consumer):
+    def _banner(self, settings, consumer, dry_run=False):
         """One line naming everything an operator would otherwise have to ask for."""
-        if settings.triage.enabled:
+        if settings.triage.enabled and dry_run:
+            # T9 - a dry run consults no model whatever the configuration says, and a banner that
+            # named the model would promise decisions nothing is going to make.
+            triage = "triage skipped (dry run)"
+        elif settings.triage.enabled:
             triage = f"triage {settings.triage.provider}:{settings.triage.model}"
         else:
             triage = "triage off"

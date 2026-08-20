@@ -1,6 +1,6 @@
 """Test the Event Tracker filtersets."""
 
-from django.test import TestCase
+from nautobot.apps.testing import FilterTestCases
 
 from nautobot_event_tracker.choices import SeverityChoices, TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.filters import (
@@ -16,7 +16,7 @@ from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.tests import fixtures
 
 
-class EventTypeFilterTest(TestCase):
+class EventTypeFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
     """Filters for EventType."""
 
     queryset = EventType.objects.all()
@@ -54,7 +54,7 @@ class EventTypeFilterTest(TestCase):
         self.assertFalse(self.filterset({"enabled": True}, self.queryset).qs.filter(enabled=False).exists())
 
 
-class EventTicketFilterTest(TestCase):
+class EventTicketFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
     """Filters for EventTicket."""
 
     queryset = EventTicket.objects.all()
@@ -173,7 +173,7 @@ class EventTicketFilterTest(TestCase):
         self.assertEqual(self._filter({"related_object_type": ["dcim.location"]}).count(), 0)
 
 
-class TicketUpdateFilterTest(TestCase):
+class TicketUpdateFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
     """Filters for TicketUpdate."""
 
     queryset = TicketUpdate.objects.all()
@@ -182,19 +182,29 @@ class TicketUpdateFilterTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         """Create a ticket with a varied trail."""
-        cls.user = fixtures.create_user()
+        # `actor`, not `user`: Nautobot's TestCase.setUp() assigns `self.user` its own logged-in
+        # test user, which would shadow a class attribute of that name.
+        cls.actor = fixtures.create_user()
         fixtures.create_event_types()
-        cls.ticket = fixtures.create_ticket(user=cls.user)
+        cls.ticket = fixtures.create_ticket(user=cls.actor)
         ticket_service.add_comment(
             ticket=cls.ticket,
             message="a distinctive human comment",
             source=TicketSourceChoices.HUMAN,
-            user=cls.user,
+            user=cls.actor,
         )
         ticket_service.add_comment(ticket=cls.ticket, message="an AI note", source=TicketSourceChoices.AI)
 
     def _filter(self, params):
         return self.filterset(params, self.queryset).qs
+
+    def test_q_filter_valid(self):
+        """Not applicable: the generic version edits a row and saves it.
+
+        `TicketUpdate.save()` refuses that outright - the model is append-only, which is the point
+        of ADR 0001's audit trail. The `q` filter is covered by `test_q_matches_message` instead.
+        """
+        self.skipTest("TicketUpdate is append-only; the generic q-filter test rewrites a row.")
 
     def test_q_matches_message(self):
         """Search matches the message body."""
@@ -214,22 +224,27 @@ class TicketUpdateFilterTest(TestCase):
 
     def test_user_by_username(self):
         """Filter by acting username; AI rows have no user and must not match."""
-        results = self._filter({"user": [self.user.username]})
+        results = self._filter({"user": [self.actor.username]})
         self.assertTrue(results.exists())
         self.assertFalse(results.filter(source=TicketSourceChoices.AI).exists())
 
 
-class LLMProviderFilterTest(TestCase):
+class LLMProviderFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
     """Filters for LLMProvider."""
 
     queryset = LLMProvider.objects.all()
     filterset = LLMProviderFilterSet
+    generic_filter_tests = (
+        ["name"],
+        ["description"],
+    )
 
     @classmethod
     def setUpTestData(cls):
         """Create test data."""
         fixtures.create_llmprovider(name="Local Lab", description="the on-prem endpoint")
-        fixtures.create_llmprovider(name="Disabled Provider", enabled=False)
+        fixtures.create_llmprovider(name="Disabled Provider", description="switched off", enabled=False)
+        fixtures.create_llmprovider(name="Spare Provider", description="a third, for the generic suite")
 
     def test_q_matches_name_and_description(self):
         """Search covers both text fields."""
@@ -244,22 +259,28 @@ class LLMProviderFilterTest(TestCase):
     def test_provider_type(self):
         """Type filter."""
         params = {"provider_type": ["openai_compatible"]}
-        self.assertEqual(self.filterset(params, self.queryset).qs.count(), 2)
+        self.assertEqual(self.filterset(params, self.queryset).qs.count(), self.queryset.count())
 
 
-class LLMModelFilterTest(TestCase):
+class LLMModelFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
     """Filters for LLMModel."""
 
     queryset = LLMModel.objects.all()
     filterset = LLMModelFilterSet
+    generic_filter_tests = (
+        ["name"],
+        ["provider", "provider__name"],
+    )
 
     @classmethod
     def setUpTestData(cls):
         """Create test data."""
         cls.provider = fixtures.create_llmprovider()
         other = fixtures.create_llmprovider(name="Other Provider")
+        spare = fixtures.create_llmprovider(name="Spare Provider")
         fixtures.create_llmmodel(name="fast-model", provider=cls.provider)
         fixtures.create_llmmodel(name="smart-model", provider=other)
+        fixtures.create_llmmodel(name="spare-model", provider=spare)
 
     def test_provider_by_name_or_pk(self):
         """The provider filter takes the natural key or the ID."""
@@ -271,7 +292,7 @@ class LLMModelFilterTest(TestCase):
         self.assertEqual(self.filterset({"q": "Other"}, self.queryset).qs.count(), 1)
 
 
-class LLMUsageRecordFilterTest(TestCase):
+class LLMUsageRecordFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
     """Filters for LLMUsageRecord."""
 
     queryset = LLMUsageRecord.objects.all()
@@ -283,19 +304,21 @@ class LLMUsageRecordFilterTest(TestCase):
         from nautobot_event_tracker.services.exceptions import LLMCallError  # pylint: disable=import-outside-toplevel
 
         cls.model = fixtures.create_llmmodel()
+        cls.other_model = fixtures.create_llmmodel(name="other-model")
         fixtures.create_llmusagerecord(model=cls.model)
+        fixtures.create_llmusagerecord(model=cls.other_model)
         try:
             fixtures.create_llmusagerecord(model=cls.model, client=fixtures.FakeLLMClient(error=RuntimeError("broke")))
         except LLMCallError:
             pass
 
     def test_success(self):
-        """The success filter separates the two."""
-        self.assertEqual(self.filterset({"success": True}, self.queryset).qs.count(), 1)
+        """The success filter separates the successes from the failure."""
+        self.assertEqual(self.filterset({"success": True}, self.queryset).qs.count(), 2)
         self.assertEqual(self.filterset({"success": False}, self.queryset).qs.count(), 1)
 
     def test_model(self):
-        """The model filter finds both."""
+        """The model filter finds both of that model's calls."""
         self.assertEqual(self.filterset({"model": [self.model.pk]}, self.queryset).qs.count(), 2)
 
     def test_q_matches_the_error_text(self):

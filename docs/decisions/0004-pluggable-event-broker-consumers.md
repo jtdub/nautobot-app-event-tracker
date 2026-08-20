@@ -18,6 +18,8 @@ Two implementations ship:
 - **Kafka** is the reference implementation. Offsets are committed only after a message has been fully processed, which gives at-least-once delivery and makes replay after an outage a supported operation.
 - **Redis pub/sub** is supported for development and lab use, marked best-effort. Messages published while the consumer is down are lost, and the documentation says so without euphemism.
 
+Broker credentials follow the rule ADR 0006 sets for LLM credentials: a topic block names an `ExternalIntegration`, and the consumer reads that integration's secrets group at connection time. No broker username, password or token is ever written to `PLUGINS_CONFIG`, to an app model, or to a log line. This is the same decision applied to a second kind of credential, not a new one, which is why it is recorded here rather than in an ADR of its own.
+
 Because delivery is at-least-once rather than exactly-once, duplicate delivery is normal and the ticket layer must be idempotent about it. That is what the dedup key on ticket creation is for (see the Phase 1 spec, rule S5) — the property is built in Phase 1, before the thing that needs it exists.
 
 ## Consequences

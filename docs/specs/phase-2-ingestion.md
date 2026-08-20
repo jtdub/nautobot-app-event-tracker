@@ -1,7 +1,7 @@
 # Phase 2 — Ingestion
 
-!!! warning "Draft — not yet approved"
-    This is the execution spec for Phase 2. Section 13 lists the calls made while writing it that most need a second opinion — in particular 13.1, which asks for approval of the one new runtime dependency the phase needs. Nothing in this spec has been implemented.
+!!! info "Implemented"
+    Phase 2 is implemented and merged. Section 13's ten calls were decided as each proposed — including 13.1, the one new runtime dependency — and now read as the decisions taken. Section 14 records where the implementation departed from what is written here.
 
 Phase 1 is implemented and merged; this spec builds on it and cites its rules by number (S1–S5, C1–C3) rather than restating them.
 
@@ -428,29 +428,29 @@ The Kafka implementation is tested against a stub client that records calls, not
 
 Timing is injected, never slept on: the rate limiter and the stats bucket both take a clock function, so a test advances time by assigning to it. A test suite that sleeps to test a token bucket is a test suite that is flaky on a loaded CI runner.
 
-## 13. Open questions
+## 13. Decisions taken
 
-Each states a proposed reading, so that silence can be taken as agreement. **13.1 needs an explicit answer before implementation starts.**
+Each was raised as an open question with a proposed reading, and each was decided as proposed. They are kept here as the record of what was decided and what it costs, not as questions still awaiting an answer.
 
 **13.1 The Kafka client is a new dependency.** *Resolved: `confluent-kafka`, as an optional extra.* `pip install nautobot-event-tracker[kafka]` installs it; a deployment using Redis, or not using ingestion at all, installs nothing new, and the Kafka module imports without it and raises `ImproperlyConfigured` naming the extra when it is missing. It is the only new runtime dependency in the phase.
 
 **13.2 The enrichment resolver's phase.** *Resolved: it stays in Phase 4.* The architecture's phasing table puts it there; the Phase 1 spec's section 4.2 called it "the Phase 2 enrichment resolver", and that wording is corrected. The cost is worth naming: until Phase 4, an ingested ticket says "Interface Down on edge-rtr-07" without linking to that device, so an operator still searches by hand. Adding it later means a resolution-rules section here and a `related_objects` argument on the `create_ticket` call in 8.1; nothing else in this phase changes.
 
-**13.3 Redis pub/sub rather than Redis Streams.** ADR 0004 specifies pub/sub. Streams would give consumer groups, acknowledgement and replay — the properties pub/sub lacks — from a dependency the deployment already has. *Proposed reading:* implement pub/sub as the ADR says, and record Streams as a candidate third implementation rather than reopening the ADR now. The interface admits it without change.
+**13.3 Redis pub/sub rather than Redis Streams.** ADR 0004 specifies pub/sub. Streams would give consumer groups, acknowledgement and replay — the properties pub/sub lacks — from a dependency the deployment already has. *Decided:* implement pub/sub as the ADR says, and record Streams as a candidate third implementation rather than reopening the ADR now. The interface admits it without change.
 
-**13.4 The field map is declarative only.** A payload the path syntax cannot describe — a value needing arithmetic, a list to search — has no escape hatch in this design. *Proposed reading:* declarative only for Phase 2, and if real payloads defeat it, add a per-topic `normalizer` dotted path resolving to a callable. Adding it later costs one configuration key; adding it now invites a codebase of per-site normalizers nobody reviews.
+**13.4 The field map is declarative only.** A payload the path syntax cannot describe — a value needing arithmetic, a list to search — has no escape hatch in this design. *Decided:* declarative only for Phase 2, and if real payloads defeat it, add a per-topic `normalizer` dotted path resolving to a callable. Adding it later costs one configuration key; adding it now invites a codebase of per-site normalizers nobody reviews.
 
-**13.5 `IngestionStats` is not change-logged.** Section 4.1 argues a counter row should not write an `ObjectChange` per flush. *Proposed reading:* as written. *Cost:* it departs from the Nautobot convention that models are change-logged, and a reviewer will notice.
+**13.5 `IngestionStats` is not change-logged.** Section 4.1 argues a counter row should not write an `ObjectChange` per flush. *Decided:* as written. *Cost:* it departs from the Nautobot convention that models are change-logged, and a reviewer will notice.
 
-**13.6 The rate limit is per process.** With three instances and `per_minute: 120`, the estate admits 360. *Proposed reading:* accept it and document it. A shared limit needs Redis-backed coordination, which is a distributed rate limiter — real work, and a strange thing to build before anyone has hit the limit.
+**13.6 The rate limit is per process.** With three instances and `per_minute: 120`, the estate admits 360. *Decided:* accept it and document it. A shared limit needs Redis-backed coordination, which is a distributed rate limiter — real work, and a strange thing to build before anyone has hit the limit.
 
-**13.7 Suppression does not re-suppress a joined ticket (8.2).** *Proposed reading:* as written; a rule governs what a ticket starts as, not what it stays, and the alternative lets a rule pull a ticket out from under someone working it. *Cost:* a ticket triaged by mistake and then matched by a suppression rule stays open until a person suppresses it.
+**13.7 Suppression does not re-suppress a joined ticket (8.2).** *Decided:* as written; a rule governs what a ticket starts as, not what it stays, and the alternative lets a rule pull a ticket out from under someone working it. *Cost:* a ticket triaged by mistake and then matched by a suppression rule stays open until a person suppresses it.
 
-**13.8 Broker credentials in an `ExternalIntegration` (3.3).** This generalizes ADR 0006's rule beyond LLM credentials. *Proposed reading:* do it, and add a sentence to ADR 0004 rather than writing ADR 0009 — it is the same decision applied to a second kind of credential, not a new one.
+**13.8 Broker credentials in an `ExternalIntegration` (3.3).** This generalizes ADR 0006's rule beyond LLM credentials. *Decided:* done, and recorded as a paragraph in ADR 0004 rather than as ADR 0009 — it is the same decision applied to a second kind of credential, not a new one. `ingestion/consumers/base.py` reads the named integration's secrets group at connection time; no broker credential appears in `PLUGINS_CONFIG`.
 
-**13.9 The payload cap defaults to 64 KiB (section 6).** *Proposed reading:* keep a cap, because an uncapped `JSONField` fed by telemetry is a table that grows unpredictably. The number is a guess; if typical events are larger, raise it in configuration rather than removing the cap.
+**13.9 The payload cap defaults to 64 KiB (section 6).** *Decided:* keep a cap, because an uncapped `JSONField` fed by telemetry is a table that grows unpredictably. The number is a guess; if typical events are larger, raise it in configuration rather than removing the cap.
 
-**13.10 No dead-letter topic.** A poison message is logged, counted and dropped (I4). *Proposed reading:* enough for Phase 2 — the counter and the log line make it visible, and republishing failures to a broker topic is a second producer path with its own failure modes. If operators need the messages themselves, a dead-letter topic is a small addition later.
+**13.10 No dead-letter topic.** A poison message is logged, counted and dropped (I4). *Decided:* enough for Phase 2 — the counter and the log line make it visible, and republishing failures to a broker topic is a second producer path with its own failure modes. If operators need the messages themselves, a dead-letter topic is a small addition later.
 
 
 ## 14. What the implementation changed

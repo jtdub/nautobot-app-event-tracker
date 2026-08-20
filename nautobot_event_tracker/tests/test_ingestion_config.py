@@ -286,6 +286,7 @@ class TestTriageConfiguration(fixtures.RefusalAssertions, SimpleTestCase):
         self.assertEqual(triage.model, "triage-model")
         self.assertEqual(triage.timeout_seconds, 5.0)
         self.assertEqual(triage.attach_candidates, 5)
+        self.assertEqual(triage.model_cache_seconds, 60)
 
     @settings_with({"topics": {"network.events": TOPIC}, "triage": {"enabled": True}})
     def test_enabling_triage_without_a_model_names_both_missing_keys(self):
@@ -297,16 +298,26 @@ class TestTriageConfiguration(fixtures.RefusalAssertions, SimpleTestCase):
     @settings_with(
         {
             "topics": {"network.events": TOPIC},
-            "triage": {"enabled": "yes", "timeout_seconds": 0, "attach_candidates": "many"},
+            "triage": {
+                "enabled": "yes",
+                "timeout_seconds": 0,
+                "attach_candidates": "many",
+                "model_cache_seconds": 0,
+            },
         }
     )
     def test_wrongly_typed_triage_values_are_each_reported(self):
-        """A boolean that is not one, a timeout of zero, a count that is a word."""
+        """A boolean that is not one, a timeout of zero, a count that is a word, a TTL of zero."""
         with self.assertRaises(ImproperlyConfigured) as raised:
             config.load()
         self.assert_names(
             str(raised.exception),
-            ["'enabled' must be a boolean", "'timeout_seconds' must be a positive number", "'attach_candidates'"],
+            [
+                "'enabled' must be a boolean",
+                "'timeout_seconds' must be a positive number",
+                "'attach_candidates'",
+                "'model_cache_seconds'",
+            ],
         )
 
     @settings_with({"topics": {"network.events": {**TOPIC, "triage": "sometimes"}}})
