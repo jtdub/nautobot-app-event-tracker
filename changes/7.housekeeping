@@ -1,0 +1,1 @@
+Added a data migration that strips keys the `Default parameters` allowlist no longer accepts from rows written before it existed, which were otherwise unsavable through the UI or the REST API.

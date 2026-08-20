@@ -38,6 +38,20 @@ stored and rotated where every other credential in your deployment is.
    Enter the input and output costs so usage records carry real prices — they are your numbers,
    and zero is a fine answer for a model you run yourself.
 
+The integration decides more than the address. Four of its fields are read on every call:
+
+| Field | What it does |
+| --- | --- |
+| *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the LLM Provider |
+| *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
+| *Headers* | Sent with every request, templated the same way |
+| *SSL Verification* | Unticked, the call does not verify the certificate |
+| *CA File Path* | A private CA bundle, used when verification is on |
+| *Timeout* | The call's timeout, unless the model row or the caller states one |
+
+*Extra Config* is deliberately not sent. It is untyped, and splatting it into a call would reopen
+the hole that limiting a model's parameters closed.
+
 Disabling a provider or a model (the `enabled` flag on either) refuses every call through it
 before any network traffic, everywhere at once.
 
@@ -107,10 +121,12 @@ What to know before you turn it on:
   the answer — four actions, and a ticket the app itself shortlisted — but not its reasoning.
   Read a triage `drop` as "the model judged this noise", never as evidence the event was harmless.
 - **A model's parameters are limited on purpose.** `Default parameters` on an LLM Model takes
-  generation parameters only — `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`,
-  `seed`, `stop`, `timeout`. Anything that would choose *who* answers, an endpoint or a key above
-  all, is refused: the endpoint and the credential come from the provider's external integration
-  and from nowhere else.
+  generation parameters only — `temperature`, `top_p`, `top_k`, `frequency_penalty`,
+  `presence_penalty`, `logit_bias`, `n`, `reasoning_effort`, `seed`, `stop`, `extra_body`,
+  `timeout`. Anything that would choose *who* answers, an endpoint or a key or a header above
+  all, is refused: those come from the provider's external integration and from nowhere else.
+  A parameter outside the list that reached the row another way — a fixture, a data migration —
+  is dropped before the call and named in a log line rather than silently ignored.
 - **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event — a
   ticket too many, never an event lost — and shows up in the `triage_errors` counter and on the
   failed call's usage record. The consumer never exits because a model misbehaved.

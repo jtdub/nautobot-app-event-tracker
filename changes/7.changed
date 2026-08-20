@@ -1,0 +1,2 @@
+Changed a model call's timeout to fall back through the places that can state one - the call, then the model's `Default parameters`, then the External Integration's Timeout, then 30 seconds - so a slow self-hosted endpoint can be given room in the place an operator expects to give it.
+Changed a parameter dropped for being outside the allowlist to be named in a log line rather than discarded silently.

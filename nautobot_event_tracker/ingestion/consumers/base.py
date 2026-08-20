@@ -109,18 +109,38 @@ class EventConsumer(ABC):
         return False
 
 
+@dataclass(frozen=True)
+class BrokerConnection:
+    """Everything an integration says about how to reach a broker.
+
+    A record rather than a tuple because the TLS half arrived after the credentials half, and a
+    four-element tuple is where a call site starts unpacking the wrong thing.
+    """
+
+    url: str
+    username: str = None
+    password: str = None
+    #: False only when an operator has unticked *Verify SSL*. The lab fallback cannot say.
+    verify_ssl: bool = True
+    #: A CA bundle path, when the operator gave one. Empty otherwise.
+    ca_file_path: str = ""
+
+
 def connection_details(settings, *, url_key):
-    """Resolve a broker address and its credentials.
+    """Resolve a broker address, its credentials, and how its TLS is to be verified.
 
     An `external_integration` names a Nautobot object holding the address and a secrets group, so
     that credentials are rotated where every other credential in the deployment is rotated. Falling
-    back to a plain URL in settings suits a lab and nothing else.
+    back to a plain URL in settings suits a lab and nothing else - ADR 0004 says why that fallback
+    is tolerated rather than supported, and it carries no TLS settings, because there is nowhere in
+    `PLUGINS_CONFIG` to put them and no integration to read them from.
 
-    Returns `(url, username, password)`, either of the last two being None when not configured.
+    `remote_url` is rendered rather than read: Nautobot supports Jinja2 templating on it, and
+    reading it raw hands the broker client a literal `{{ ... }}`.
     """
     name = settings.get("external_integration")
     if not name:
-        return settings.get(url_key), None, None
+        return BrokerConnection(url=settings.get(url_key))
 
     from nautobot.extras.models import ExternalIntegration  # pylint: disable=import-outside-toplevel
 
@@ -129,7 +149,21 @@ def connection_details(settings, *, url_key):
     except ObjectDoesNotExist as error:
         raise ImproperlyConfigured(f"External integration '{name}' does not exist.") from error
 
-    return (integration.remote_url, *_credentials(integration))
+    try:
+        url = integration.render_remote_url({"obj": integration})
+    except Exception as error:  # pylint: disable=broad-except
+        raise ImproperlyConfigured(
+            f"External integration '{name}' has a remote URL template that does not render: {error}"
+        ) from error
+
+    username, password = _credentials(integration)
+    return BrokerConnection(
+        url=url,
+        username=username,
+        password=password,
+        verify_ssl=integration.verify_ssl,
+        ca_file_path=integration.ca_file_path or "",
+    )
 
 
 def _credentials(integration):

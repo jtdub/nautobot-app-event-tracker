@@ -271,11 +271,17 @@ class LLMProviderForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
             "provider_type",
             "external_integration",
             "enabled",
+            "tags",
         ]
 
 
-class LLMProviderBulkEditForm(NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
-    """LLMProvider bulk edit form."""
+class LLMProviderBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
+    """LLMProvider bulk edit form.
+
+    `TagsBulkEditFormMixin` for the same reason `EventTicketBulkEditForm` has it: both models are
+    PrimaryModels, both filtersets offer a `tags` filter, and a tag nobody can apply in bulk is a
+    filter for something the UI cannot produce.
+    """
 
     pk = forms.ModelMultipleChoiceField(queryset=LLMProvider.objects.all(), widget=forms.MultipleHiddenInput)
     description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
@@ -310,11 +316,13 @@ class LLMModelForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
         """Meta attributes."""
 
         model = LLMModel
-        # One definition of the field list, shared with the detail panel.
-        fields = list(LLM_MODEL_FIELDS)  # pylint: disable=nb-use-fields-all
+        # One definition of the field list, shared with the detail panel, plus tags - which the
+        # form offers and the panel does not, because Nautobot renders tags on a detail page
+        # itself.
+        fields = [*LLM_MODEL_FIELDS, "tags"]  # pylint: disable=nb-use-fields-all
 
 
-class LLMModelBulkEditForm(NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
+class LLMModelBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
     """LLMModel bulk edit form."""
 
     pk = forms.ModelMultipleChoiceField(queryset=LLMModel.objects.all(), widget=forms.MultipleHiddenInput)

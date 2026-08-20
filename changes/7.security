@@ -1,0 +1,1 @@
+Fixed the LLM call and the broker connection ignoring their External Integration's SSL Verification and CA File Path: an operator who unticked verification still got it, and one who named a private CA for an internal endpoint got a TLS failure with nothing in the app explaining why.

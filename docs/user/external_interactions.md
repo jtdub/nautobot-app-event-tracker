@@ -41,6 +41,7 @@ only module that imports litellm and the only writer of the usage records.
 | **Protocol** | Whatever litellm speaks to the configured provider; OpenAI-compatible endpoints are first-class |
 | **Endpoint** | The provider's `ExternalIntegration.remote_url`. No model parameter can change it; changing it needs `change_llmprovider`, or the rights to edit that integration |
 | **Credential** | That integration's secrets group, read at call time; secret type `token`, falling back to `secret` |
+| **TLS** | The integration's SSL Verification, CA File Path and Headers are applied to the call; its Extra Config is deliberately not |
 | **What is sent** | A fixed system prompt, the event payload capped at `max_context_chars`, and the titles and severities of up to `attach_candidates` open tickets |
 | **What is recorded** | One `LLMUsageRecord` per call — including failed calls — with token counts, cost and latency |
 | **Configured by** | The `llm` block and `ingestion.triage` — see [Configuring LLM Providers](../admin/llm.md) |
