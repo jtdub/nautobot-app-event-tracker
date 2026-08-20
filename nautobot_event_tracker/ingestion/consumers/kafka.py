@@ -34,7 +34,8 @@ class KafkaEventConsumer(EventConsumer):
     def connect(self):
         """Build the client and subscribe to the configured topics."""
         consumer_class = _import_consumer()
-        servers, username, password = connection_details(self.settings, url_key="bootstrap_servers")
+        connection = connection_details(self.settings, url_key="bootstrap_servers")
+        servers, username, password = connection.url, connection.username, connection.password
         if not servers:
             raise ImproperlyConfigured("Kafka needs bootstrap_servers, or an external integration naming them.")
 
@@ -58,6 +59,14 @@ class KafkaEventConsumer(EventConsumer):
                     "sasl.password": password,
                 }
             )
+
+        # librdkafka accepts both regardless of protocol and applies them only when the connection
+        # is encrypted, so there is nothing to gate on here - unlike redis-py, which refuses an SSL
+        # keyword on a plaintext connection.
+        if not connection.verify_ssl:
+            config["enable.ssl.certificate.verification"] = False
+        elif connection.ca_file_path:
+            config["ssl.ca.location"] = connection.ca_file_path
 
         self._consumer = consumer_class(config)
         self._consumer.subscribe(list(self.topics))

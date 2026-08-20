@@ -238,11 +238,13 @@ def create_ingestionstats(**overrides):
     return IngestionStats.objects.create(**{**defaults, **overrides})
 
 
-def create_external_integration(name="Test LLM Endpoint", remote_url="http://llm.example.test/v1"):
+def create_external_integration(name="Test LLM Endpoint", remote_url="http://llm.example.test/v1", **overrides):
     """An ExternalIntegration for an LLM provider to point at."""
     from nautobot.extras.models import ExternalIntegration  # pylint: disable=import-outside-toplevel
 
-    integration, _ = ExternalIntegration.objects.get_or_create(name=name, defaults={"remote_url": remote_url})
+    integration, _ = ExternalIntegration.objects.get_or_create(
+        name=name, defaults={"remote_url": remote_url, **overrides}
+    )
     return integration
 
 

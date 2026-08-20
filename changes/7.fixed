@@ -1,0 +1,6 @@
+Fixed an External Integration's Remote URL and Headers being read raw rather than rendered, so a Jinja2 template in either reached the provider as a literal `{{ ... }}`.
+Fixed `Default parameters` refusing `top_k`, `extra_body`, `reasoning_effort`, `n` and `logit_bias`, which Anthropic and self-hosted models legitimately use. A row already holding one could not be saved at all - including the edit that unticks `Enabled`.
+Fixed a `timeout` of `null` or `0` in `Default parameters` defeating rule L6's default instead of falling through to it, and refused such a value at save time.
+Fixed a persistently failing usage-record prune retrying on every model call, which put a whole-table delete on the consumer's hot path for as long as the fault lasted.
+Fixed `usage_retention_days` being validated on the first prune of the day rather than at consumer startup, where every other configuration fault is reported.
+Fixed the LLM Provider and LLM Model forms offering no `tags` field, and their bulk-edit forms offering no tag controls, though both filtersets filter on tags.

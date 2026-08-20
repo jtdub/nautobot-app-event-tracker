@@ -61,6 +61,13 @@ TOKENS_PER_MILLION = 1_000_000
 #: rather than one per call. The same shape as `StatsRecorder._prune`'s bookkeeping.
 _last_pruned_on = None  # pylint: disable=invalid-name
 
+#: Consecutive failed prunes since the last success. A failure leaves the day unmarked so the next
+#: call retries - right for a lock or a statement timeout, wrong for a missing privilege, which
+#: will fail the same way every time and would otherwise cost a full DELETE attempt per model call
+#: forever. After this many in a row the day is marked done and the retry waits for tomorrow.
+_prune_failures = 0  # pylint: disable=invalid-name
+MAX_PRUNE_FAILURES = 3
+
 
 @dataclass(frozen=True)
 class LLMResponse:
@@ -175,16 +182,27 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     # but a fixture, a migration or a direct ORM write never runs it, and one wrong key here sends
     # the call - and the credential with it - to an address the registry chose. The same tuple
     # backs both layers, so the two cannot drift apart.
-    call_kwargs = {
-        key: value for key, value in (model.default_parameters or {}).items() if key in LLMModel.ALLOWED_PARAMETERS
-    }
-    if timeout is not None:
-        call_kwargs["timeout"] = timeout
-    else:
-        # The registry's own timeout applies when the caller states none, which is what
-        # `default_parameters` advertises: passed through on every call, beaten only by the
-        # call's own arguments. `setdefault` still guarantees rule L6 - a call always has one.
-        call_kwargs.setdefault("timeout", DEFAULT_TIMEOUT_SECONDS)
+    registry_parameters = model.default_parameters or {}
+    call_kwargs = {key: value for key, value in registry_parameters.items() if key in LLMModel.ALLOWED_PARAMETERS}
+    dropped = sorted(set(registry_parameters) - set(call_kwargs))
+    if dropped:
+        # `clean()` refuses these at save time, so a row carrying one arrived by fixture, migration
+        # or direct ORM write. Dropping it silently is how an operator's parameter stops applying
+        # with nothing to read; this is that missing line.
+        logger.warning(
+            "LLM model %s carries %s in default_parameters, which this app does not pass. Allowed: %s.",
+            model,
+            ", ".join(dropped),
+            ", ".join(LLMModel.ALLOWED_PARAMETERS),
+        )
+
+    # L6 - a call always has a timeout, and it comes from the most specific place that named one:
+    # this call, then the registry entry, then the integration, then the constant. `or` rather
+    # than `is not None` on purpose: a stored `null` or `0` is not somebody asking for no limit,
+    # it is a row that says nothing, and `setdefault` used to read it as an answer.
+    call_kwargs["timeout"] = (
+        timeout or call_kwargs.get("timeout") or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS
+    )
     effective_max_tokens = max_tokens if max_tokens is not None else model.max_output_tokens
     if effective_max_tokens is not None:
         call_kwargs["max_tokens"] = effective_max_tokens
@@ -198,11 +216,11 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     # Splatted last and kept out of `call_kwargs`, so the endpoint and the key are decided here
     # and nowhere else (L3). A registry parameter colliding with one of them is a TypeError from
     # the call itself rather than a silent redirection - the allowlist above makes it unreachable.
-    credentials = _credential_kwargs(model.provider)
+    connection = _connection_kwargs(model.provider)
 
     started = time.monotonic()
     try:
-        raw = call(model_string, messages, **call_kwargs, **credentials)
+        raw = call(model_string, messages, **call_kwargs, **connection)
     except Exception as error:  # pylint: disable=broad-except
         # L4 - whatever the client raised, the caller sees one family, and the failure is on the
         # record first (L1).
@@ -268,18 +286,30 @@ def _model_string(model):
     return f"{prefix}/{model.name}"
 
 
-def _credential_kwargs(provider):
-    """L3 - the endpoint and key, read from Nautobot at call time and passed straight through.
+def _connection_kwargs(provider):
+    """L3 - everything the ExternalIntegration says about this connection, read at call time.
+
+    The endpoint and the key, and also the three fields an operator sets expecting them to be
+    obeyed: SSL Verification, CA File Path and Headers. Reading `remote_url` raw was wrong twice
+    over - Jinja2 templating is supported on it, so a templated URL reached litellm as a literal
+    `{{ ... }}`, and an operator pointing triage at an internal endpoint with a private CA got a
+    TLS failure with nothing in the UI explaining it.
 
     A missing key is not an error here: an on-premises endpoint may not want one, and one that
     does will refuse the call itself, which the record then shows. Prefers the token secret type
     and falls back to the plain secret type, so either way an operator has modeled "the key"
     works.
+
+    `extra_config` is deliberately not passed. It is untyped operator JSON, and splatting it into
+    the call would reopen, one door along, exactly the hole `ALLOWED_PARAMETERS` closed. If a
+    provider ever needs something from it, it gets a named field here rather than a free splat.
     """
     integration = provider.external_integration
     kwargs = {}
-    if integration.remote_url:
-        kwargs["api_base"] = integration.remote_url
+
+    remote_url = _rendered(integration, "render_remote_url", provider)
+    if remote_url:
+        kwargs["api_base"] = remote_url
     elif provider.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE:
         # `clean()` demands this URL at save time, but a shared integration can be blanked
         # afterwards without revalidating the providers pointing at it. Refusing here matters
@@ -288,12 +318,52 @@ def _credential_kwargs(provider):
         raise LLMConfigurationError(
             f"LLM provider '{provider}' is OpenAI-compatible but its external integration has no remote URL."
         )
+
     for secret_type in (SecretsGroupSecretTypeChoices.TYPE_TOKEN, SecretsGroupSecretTypeChoices.TYPE_SECRET):
         key = read_secret(integration, secret_type)
         if key:
             kwargs["api_key"] = key
             break
+
+    headers = _rendered(integration, "render_headers", provider)
+    if headers:
+        kwargs["extra_headers"] = headers
+
+    # httpx reads `verify` as a bool or as the path to a CA bundle, and litellm passes `ssl_verify`
+    # through to it. Unticking *Verify SSL* wins over a CA path: an operator who has done both has
+    # said not to verify, and quietly verifying anyway is the failure this fix exists to stop.
+    if not integration.verify_ssl:
+        kwargs["ssl_verify"] = False
+    elif integration.ca_file_path:
+        kwargs["ssl_verify"] = integration.ca_file_path
+
     return kwargs
+
+
+def _integration_timeout(provider):
+    """The integration's Timeout, in seconds, or None when it has nothing useful to say.
+
+    Nautobot defaults the field to 30, which is also this app's own default, so an operator who
+    has never touched it sees no change and one who has raised it for a slow on-premises model
+    gets what they asked for.
+    """
+    timeout = getattr(provider.external_integration, "timeout", None)
+    return timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
+
+
+def _rendered(integration, method_name, provider):
+    """One of the integration's Jinja2-templated fields, rendered rather than read raw.
+
+    The template context is the provider, under `obj`, matching what Nautobot's own callers pass.
+    A broken template is a configuration fault and is raised as one: rendering it to something
+    half-formed would point the call at an address nobody chose.
+    """
+    try:
+        return getattr(integration, method_name)({"obj": provider})
+    except Exception as error:  # pylint: disable=broad-except
+        raise LLMConfigurationError(
+            f"External integration '{integration}' has a template that does not render: {error}"
+        ) from error
 
 
 def _litellm_completion():
@@ -380,7 +450,7 @@ def _maybe_prune():
     job and a deployment that never calls a model never pays for one either. Never raises: a
     failed cleanup must not turn the successful call it rode in on into an error.
     """
-    global _last_pruned_on  # pylint: disable=global-statement
+    global _last_pruned_on, _prune_failures  # pylint: disable=global-statement
 
     today = timezone.now().date()
     if _last_pruned_on == today:
@@ -399,12 +469,21 @@ def _maybe_prune():
         cutoff = timezone.now() - timedelta(days=retention_days)
         deleted, _ = LLMUsageRecord.objects.filter(called_at__lt=cutoff).delete()
     except Exception:  # pylint: disable=broad-except
-        # The day is deliberately left unmarked. A lock or a statement timeout on the first prune
-        # of a large table is transient, and marking it here would stop the retry for 24 hours
-        # and let the table grow through all of them.
-        logger.exception("Could not prune LLM usage records")
+        # A lock or a statement timeout on the first prune of a large table is transient, so the
+        # day is left unmarked and the next call tries again - but only so many times. A durable
+        # fault fails identically every time, and an unbounded retry puts a whole-table DELETE on
+        # the consumer's hot path for every event it triages.
+        _prune_failures += 1
+        if _prune_failures >= MAX_PRUNE_FAILURES:
+            _last_pruned_on = today
+            logger.exception(
+                "Could not prune LLM usage records after %d attempts; not trying again today", _prune_failures
+            )
+        else:
+            logger.exception("Could not prune LLM usage records; will retry on the next call")
         return
 
+    _prune_failures = 0
     _last_pruned_on = today
     if deleted:
         logger.info("Pruned %d LLM usage records older than %d days", deleted, retention_days)

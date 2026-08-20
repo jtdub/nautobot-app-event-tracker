@@ -542,7 +542,12 @@ class TestLLMModel(ModelTestCases.BaseModelTestCase):
         self.assertIn("base_url", str(raised.exception))
 
     def test_every_key_that_decides_who_answers_is_refused(self):
-        """Routing, fallbacks, headers and canned responses all choose the responder, not the answer."""
+        """Routing, fallbacks, headers and canned responses all choose the responder, not the answer.
+
+        `extra_headers` is refused *here* and sent from the provider's ExternalIntegration, which
+        is the point: editing an integration is already the permission that owns the endpoint and
+        its credential, and `change_llmmodel` is not.
+        """
         for key, value in (
             ("custom_llm_provider", "openai"),
             ("model_list", [{"model_name": "anything"}]),
@@ -578,6 +583,40 @@ class TestLLMModel(ModelTestCases.BaseModelTestCase):
             default_parameters={"timeout": 45},
         )
         model.full_clean()
+
+    def test_a_timeout_that_is_not_a_positive_number_is_refused(self):
+        """Rule L6 promises every call carries one, and null is not an answer to that question."""
+        for value in (None, 0, -1, "soon", True):
+            with self.subTest(value=value):
+                model = models.LLMModel(
+                    provider=fixtures.create_llmprovider(),
+                    name=f"timeout-{value}",
+                    default_parameters={"timeout": value},
+                )
+                with self.assertRaises(ValidationError) as raised:
+                    model.full_clean()
+                self.assertIn("timeout", str(raised.exception))
+
+    def test_the_parameters_other_providers_need_are_allowed(self):
+        """The allowlist covers the registry's provider types, not one of them.
+
+        Refusing these did not make the field safer - none of them decides who answers. It made a
+        legitimate Anthropic or vLLM row unsavable, including the edit that unticks Enabled.
+        """
+        for key, value in (
+            ("top_k", 40),
+            ("extra_body", {"guided_json": {"type": "object"}}),
+            ("reasoning_effort", "low"),
+            ("n", 1),
+            ("logit_bias", {"1234": -100}),
+        ):
+            with self.subTest(key=key):
+                model = models.LLMModel(
+                    provider=fixtures.create_llmprovider(),
+                    name=f"allows-{key}",
+                    default_parameters={key: value},
+                )
+                model.full_clean()
 
 
 class TestLLMUsageRecord(ModelTestCases.BaseModelTestCase):

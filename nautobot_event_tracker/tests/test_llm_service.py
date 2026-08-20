@@ -183,6 +183,83 @@ class TestCredentials(TestCase):
         call(model, client)
         self.assertNotIn("api_key", client.calls[0])
 
+    def test_a_templated_remote_url_is_rendered(self):
+        """Nautobot supports Jinja2 on remote_url; read raw it reaches litellm as a literal brace."""
+        integration = fixtures.create_external_integration(
+            name="Templated Endpoint", remote_url="http://{{ obj.name }}.example.test/v1"
+        )
+        provider = fixtures.create_llmprovider(name="Templated Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["api_base"], "http://Templated Provider.example.test/v1")
+
+    def test_a_template_that_does_not_render_is_a_configuration_error(self):
+        """Half a URL points the call somewhere nobody chose, so it is refused before the wire."""
+        integration = fixtures.create_external_integration(
+            name="Broken Template", remote_url="http://{{ oops.example.test/v1"
+        )
+        provider = fixtures.create_llmprovider(name="Broken Template Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        with self.assertRaises(LLMConfigurationError):
+            call(model, client)
+        self.assertEqual(client.calls, [], "the call left the process anyway")
+
+    def test_the_integrations_headers_reach_the_client(self):
+        """An operator who set a header on the integration meant it to be sent."""
+        integration = fixtures.create_external_integration(name="Header Endpoint", headers={"X-Tenant": "network-ops"})
+        provider = fixtures.create_llmprovider(name="Header Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["extra_headers"], {"X-Tenant": "network-ops"})
+
+    def test_a_ca_file_path_reaches_the_client(self):
+        """The private-CA case: it used to fail TLS with nothing in the UI explaining why."""
+        integration = fixtures.create_external_integration(
+            name="Private CA Endpoint", ca_file_path="/etc/ssl/private-ca.pem"
+        )
+        provider = fixtures.create_llmprovider(name="Private CA Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["ssl_verify"], "/etc/ssl/private-ca.pem")
+
+    def test_unticking_verify_ssl_wins_over_a_ca_path(self):
+        """Both set means the operator said not to verify; verifying anyway is the old bug."""
+        integration = fixtures.create_external_integration(
+            name="No Verify Endpoint", verify_ssl=False, ca_file_path="/etc/ssl/private-ca.pem"
+        )
+        provider = fixtures.create_llmprovider(name="No Verify Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertIs(client.calls[0]["ssl_verify"], False)
+
+    def test_extra_config_is_not_splatted_into_the_call(self):
+        """Untyped operator JSON in the call kwargs would reopen the hole the allowlist closed."""
+        integration = fixtures.create_external_integration(
+            name="Extra Config Endpoint", extra_config={"base_url": "http://elsewhere.example.test"}
+        )
+        provider = fixtures.create_llmprovider(name="Extra Config Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertNotIn("base_url", client.calls[0])
+        self.assertEqual(client.calls[0]["api_base"], "http://llm.example.test/v1")
+
     def test_provider_types_map_to_model_strings(self):
         """litellm routes on the prefix; the registry's type decides it."""
         integration = fixtures.create_external_integration(name="Anthropic Endpoint", remote_url="")
@@ -273,6 +350,53 @@ class TestCallParameters(TestCase):
         self.assertNotIn("base_url", client.calls[0])
         # The legitimate parameter beside it still arrives, so this filters rather than discards.
         self.assertEqual(client.calls[0]["temperature"], 0.2)
+
+    def test_a_dropped_parameter_is_logged(self):
+        """Silently dropping it is how an operator's parameter stops applying with no signal."""
+        model = fixtures.create_llmmodel(name="noisy-model")
+        LLMModel.objects.filter(pk=model.pk).update(default_parameters={"base_url": "https://elsewhere.example"})
+        model.refresh_from_db()
+
+        with self.assertLogs("nautobot_event_tracker.services.llm", level="WARNING") as logged:
+            call(model, FakeLLMClient())
+
+        self.assertIn("base_url", "\n".join(logged.output))
+
+    def test_the_integration_timeout_applies_when_nothing_else_states_one(self):
+        """A slow on-premises endpoint is exactly what the integration's Timeout field is for."""
+        integration = fixtures.create_external_integration(name="Slow Endpoint", timeout=120)
+        provider = fixtures.create_llmprovider(name="Slow Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["timeout"], 120)
+
+    def test_the_registrys_timeout_beats_the_integrations(self):
+        """Most specific wins: the call, then the model row, then the integration, then the default."""
+        integration = fixtures.create_external_integration(name="Slow Endpoint 2", timeout=120)
+        provider = fixtures.create_llmprovider(name="Slow Provider 2", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider, default_parameters={"timeout": 7})
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["timeout"], 7)
+
+    def test_a_null_timeout_in_the_registry_is_not_an_answer(self):
+        """L6 says every call carries a timeout, and `setdefault` used to read null as one.
+
+        Written with `update()`, the way `clean()`'s new positive-number check cannot be reached.
+        """
+        model = fixtures.create_llmmodel(name="null-timeout-model")
+        LLMModel.objects.filter(pk=model.pk).update(default_parameters={"timeout": None})
+        model.refresh_from_db()
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["timeout"], llm_service.DEFAULT_TIMEOUT_SECONDS)
 
 
 class TestRefusals(TestCase):
@@ -366,7 +490,9 @@ class TestRetention(TestCase):
         """Reset the once-a-day memo other tests may have set."""
         super().setUp()
         llm_service._last_pruned_on = None  # pylint: disable=protected-access
+        llm_service._prune_failures = 0  # pylint: disable=protected-access
         self.addCleanup(setattr, llm_service, "_last_pruned_on", None)
+        self.addCleanup(setattr, llm_service, "_prune_failures", 0)
         self.model = fixtures.create_llmmodel()
 
     def _age_record(self, record, days):
@@ -442,3 +568,20 @@ class TestRetention(TestCase):
         # The next call, with the database well again, prunes as it should have.
         call(self.model, FakeLLMClient())
         self.assertNotIn(old.pk, set(LLMUsageRecord.objects.values_list("pk", flat=True)))
+
+    def test_a_persistent_failure_stops_retrying_for_the_day(self):
+        """A missing privilege fails identically every time, and the retry is on the hot path.
+
+        Unbounded, it means a whole-table DELETE attempt and a traceback for every event the
+        consumer triages, forever. Bounded, the operator still gets the log lines and the table
+        still waits only until tomorrow.
+        """
+        with mock.patch("django.db.models.query.QuerySet.delete", side_effect=DatabaseError("permission denied")):
+            for _ in range(llm_service.MAX_PRUNE_FAILURES):
+                llm_service._maybe_prune()  # pylint: disable=protected-access
+
+        self.assertIsNotNone(llm_service._last_pruned_on)  # pylint: disable=protected-access
+
+        # And with the day marked, the next call does not try again.
+        with mock.patch("django.db.models.query.QuerySet.delete", side_effect=AssertionError("tried again")):
+            llm_service._maybe_prune()  # pylint: disable=protected-access

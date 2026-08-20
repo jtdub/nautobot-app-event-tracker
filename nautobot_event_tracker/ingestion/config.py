@@ -291,6 +291,10 @@ def load(*, topics=None, consumer=None, require_topics=False):
 def database_problems(config, *, check_triage=True):
     """Return the faults that only a query can find: missing event types, and the triage model.
 
+    Also the `llm` settings the triage path will read, which are not this module's block but are
+    this process's problem: they are checked here because this is where every other fault the
+    consumer can start with is reported, in one pass, before the first message.
+
     `check_triage` is false for a dry run. `ConsumerRunner._build_triage` returns None for every
     dry run (T9), so a dry run never consults a model - and refusing to start one because the
     optional `llm` extra is absent would deny an operator the decide-only pass over live traffic
@@ -337,6 +341,15 @@ def database_problems(config, *, check_triage=True):
             # Not an LLMError, and so not something triage's fail-open would catch: without this
             # the consumer would start and then die on its first accepted event.
             problems.append(f"triage: {error}")
+
+        try:
+            llm_service.get_settings()
+        except ImproperlyConfigured as error:
+            # The `llm` block, not the `ingestion` one, and read here because this is the process
+            # that will act on it: every triaged call prunes, and a retention window this module
+            # never looks at would otherwise surface as one logged exception a day rather than as
+            # a refusal to start. Checked only when triage is on, since nothing else calls a model.
+            problems.append(str(error))
 
     return problems
 

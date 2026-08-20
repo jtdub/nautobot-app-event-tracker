@@ -475,8 +475,9 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
         default=dict,
         blank=True,
         help_text=(
-            "Extra request parameters, passed through on every call. Only these are accepted: "
-            "frequency_penalty, presence_penalty, seed, stop, temperature, timeout, top_p."
+            "Extra request parameters, passed through on every call. Generation parameters only: "
+            "extra_body, frequency_penalty, logit_bias, n, presence_penalty, reasoning_effort, "
+            "seed, stop, temperature, timeout, top_k, top_p."
         ),
     )
 
@@ -488,13 +489,24 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
     #: L3. `timeout` stays: it is the registry's own default, beaten by a call that states one.
     #: The service layer filters against this tuple again immediately before the call, because a
     #: fixture, a migration or a direct ORM write never runs `clean()`.
+    #:
+    #: The list covers the providers the registry offers, not one of them. `top_k` is Anthropic's
+    #: and every local model's; `extra_body` is how litellm carries a vLLM-specific parameter it
+    #: has no name for; `reasoning_effort` is how a reasoning model is told how hard to think.
+    #: Leaving them out did not make the field safer - none of them decides who answers - it made
+    #: a legitimate row unsavable, including the edit that unticks *Enabled*.
     ALLOWED_PARAMETERS = (
+        "extra_body",
         "frequency_penalty",
+        "logit_bias",
+        "n",
         "presence_penalty",
+        "reasoning_effort",
         "seed",
         "stop",
         "temperature",
         "timeout",
+        "top_k",
         "top_p",
     )
 
@@ -526,7 +538,19 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
         would surface as a failed model call rather than as the configuration mistake it is.
         """
         super().clean()
-        offenders = sorted(key for key in (self.default_parameters or {}) if key not in self.ALLOWED_PARAMETERS)
+        parameters = self.default_parameters or {}
+
+        # The one allowed key whose *value* matters here. A stored `null` or `0` is not a request
+        # for no limit; it is a row that says nothing, and rule L6 promises every call carries a
+        # timeout. The service layer falls through such a value rather than trusting it, and this
+        # stops it being written in the first place.
+        timeout = parameters.get("timeout", 1)
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+            raise ValidationError(
+                {"default_parameters": f"timeout must be a positive number of seconds, got {timeout!r}."}
+            )
+
+        offenders = sorted(key for key in parameters if key not in self.ALLOWED_PARAMETERS)
         if offenders:
             raise ValidationError(
                 {

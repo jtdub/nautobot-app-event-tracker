@@ -22,7 +22,8 @@ from nautobot_event_tracker.ingestion.consumers import (
     get_consumer_class,
 )
 from nautobot_event_tracker.ingestion.consumers import kafka as kafka_module
-from nautobot_event_tracker.ingestion.consumers.redis import _redacted
+from nautobot_event_tracker.ingestion.consumers.base import BrokerConnection
+from nautobot_event_tracker.ingestion.consumers.redis import _redacted, _tls_options
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -359,11 +360,13 @@ class TestConnectionDetails(TestCase):
     """Where a broker's address and credentials come from."""
 
     def test_settings_are_used_when_no_integration_is_named(self):
-        """The lab case: a plain URL in the settings file."""
-        url, username, password = connection_details({"url": "redis://localhost:6379/0"}, url_key="url")
-        self.assertEqual(url, "redis://localhost:6379/0")
-        self.assertIsNone(username)
-        self.assertIsNone(password)
+        """The lab case: a plain URL in the settings file, and nothing to say about TLS."""
+        connection = connection_details({"url": "redis://localhost:6379/0"}, url_key="url")
+        self.assertEqual(connection.url, "redis://localhost:6379/0")
+        self.assertIsNone(connection.username)
+        self.assertIsNone(connection.password)
+        self.assertTrue(connection.verify_ssl)
+        self.assertEqual(connection.ca_file_path, "")
 
     def test_a_missing_integration_is_named_in_the_error(self):
         """Naming an object that does not exist should say which object."""
@@ -376,10 +379,58 @@ class TestConnectionDetails(TestCase):
         from nautobot.extras.models import ExternalIntegration  # pylint: disable=import-outside-toplevel
 
         ExternalIntegration.objects.create(name="lab-broker", remote_url="kafka://broker:9092")
-        url, username, password = connection_details({"external_integration": "lab-broker"}, url_key="url")
-        self.assertEqual(url, "kafka://broker:9092")
-        self.assertIsNone(username)
-        self.assertIsNone(password)
+        connection = connection_details({"external_integration": "lab-broker"}, url_key="url")
+        self.assertEqual(connection.url, "kafka://broker:9092")
+        self.assertIsNone(connection.username)
+        self.assertIsNone(connection.password)
+
+    def test_the_integrations_tls_settings_come_back_with_it(self):
+        """The three fields an operator sets expecting them to be obeyed."""
+        from nautobot.extras.models import ExternalIntegration  # pylint: disable=import-outside-toplevel
+
+        ExternalIntegration.objects.create(
+            name="private-ca-broker",
+            remote_url="rediss://broker:6379/0",
+            verify_ssl=True,
+            ca_file_path="/etc/ssl/private-ca.pem",
+        )
+        connection = connection_details({"external_integration": "private-ca-broker"}, url_key="url")
+        self.assertTrue(connection.verify_ssl)
+        self.assertEqual(connection.ca_file_path, "/etc/ssl/private-ca.pem")
+
+    def test_a_templated_remote_url_is_rendered(self):
+        """Nautobot supports Jinja2 here; reading the field raw hands the client a literal brace."""
+        from nautobot.extras.models import ExternalIntegration  # pylint: disable=import-outside-toplevel
+
+        ExternalIntegration.objects.create(name="templated", remote_url="redis://{{ obj.name }}:6379/0")
+        connection = connection_details({"external_integration": "templated"}, url_key="url")
+        self.assertEqual(connection.url, "redis://templated:6379/0")
+
+
+class TestTheBrokerTlsOptions(SimpleTestCase):
+    """What reaches redis-py, which refuses an SSL keyword on a plaintext connection."""
+
+    def _options(self, url, **overrides):
+        """The TLS keywords for this URL and integration settings."""
+        return _tls_options(url, BrokerConnection(url=url, **overrides))
+
+    def test_a_plaintext_url_takes_none_of_them(self):
+        """`redis://` builds a Connection, which accepts no SSL keyword at all."""
+        self.assertEqual(self._options("redis://broker:6379/0", ca_file_path="/etc/ssl/ca.pem"), {})
+
+    def test_a_ca_path_is_passed_for_an_encrypted_url(self):
+        """The private-CA case, which is the one that fails today with nothing explaining it."""
+        self.assertEqual(
+            self._options("rediss://broker:6379/0", ca_file_path="/etc/ssl/ca.pem"),
+            {"ssl_ca_certs": "/etc/ssl/ca.pem"},
+        )
+
+    def test_unticking_verify_ssl_wins(self):
+        """An operator who unticked it has said not to verify."""
+        self.assertEqual(
+            self._options("rediss://broker:6379/0", verify_ssl=False, ca_file_path="/etc/ssl/ca.pem"),
+            {"ssl_cert_reqs": "none"},
+        )
 
 
 class TestTheLoggedUrl(SimpleTestCase):

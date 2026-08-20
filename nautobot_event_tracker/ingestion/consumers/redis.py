@@ -15,6 +15,23 @@ from nautobot_event_tracker.ingestion.consumers.base import BrokerMessage, Event
 logger = logging.getLogger(__name__)
 
 
+def _tls_options(url, connection):
+    """The integration's TLS settings, in the keywords redis-py takes - and only when it takes them.
+
+    Gated on the scheme because redis-py builds a plain `Connection` for `redis://`, which accepts
+    no SSL keyword at all and raises on one. An operator who sets a CA path and then points at an
+    unencrypted URL gets no TLS, which is what they configured; the setting is not silently
+    applied and not silently dropped into an error either.
+    """
+    if not url.startswith("rediss://"):
+        return {}
+    if not connection.verify_ssl:
+        return {"ssl_cert_reqs": "none"}
+    if connection.ca_file_path:
+        return {"ssl_ca_certs": connection.ca_file_path}
+    return {}
+
+
 def _redacted(url):
     """The URL with any userinfo removed, for a log line.
 
@@ -52,12 +69,16 @@ class RedisEventConsumer(EventConsumer):
         """
         import redis  # pylint: disable=import-outside-toplevel
 
-        url, username, password = connection_details(self.settings, url_key="url")
+        connection = connection_details(self.settings, url_key="url")
+        url = connection.url
         if not url:
             raise ImproperlyConfigured("The Redis consumer needs a url, or an external integration naming one.")
 
-        credentials = {key: value for key, value in (("username", username), ("password", password)) if value}
-        self._client = redis.Redis.from_url(url, **credentials)
+        options = {
+            key: value for key, value in (("username", connection.username), ("password", connection.password)) if value
+        }
+        options.update(_tls_options(url, connection))
+        self._client = redis.Redis.from_url(url, **options)
         self._pubsub = self._client.pubsub(ignore_subscribe_messages=True)
         self._pubsub.subscribe(*self.topics)
         logger.info("Subscribed to %s on %s", ", ".join(self.topics), _redacted(url))

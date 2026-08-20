@@ -130,7 +130,15 @@ PLUGINS_CONFIG = {
 Set `external_integration` to the name of a Nautobot **External Integration** and the consumer takes
 its address from that object's remote URL, and its username and password from the attached secrets
 group. Credentials then live where the rest of the deployment's credentials live, and are rotated
-the same way. The plain `bootstrap_servers` and `url` settings are for a lab.
+the same way. The remote URL is rendered, so Jinja2 templating works there.
+
+*SSL Verification* and *CA File Path* are honoured too: Kafka gets `ssl.ca.location` and
+`enable.ssl.certificate.verification`, and Redis gets `ssl_ca_certs` or `ssl_cert_reqs` — the
+latter only for a `rediss://` URL, since redis-py refuses an SSL keyword on a plaintext connection.
+
+The plain `bootstrap_servers` and `url` settings are for a lab. They carry no TLS settings, and a
+credential in one of them sits in `PLUGINS_CONFIG` unencrypted; the consumer strips it before
+logging the URL, which limits the damage without making the practice supported.
 
 For Kafka, `security_protocol` (`SASL_PLAINTEXT` or `SASL_SSL`) and `sasl_mechanism` (`PLAIN`,
 `SCRAM-SHA-256` or `SCRAM-SHA-512`) select how those credentials are presented. Both are consulted
