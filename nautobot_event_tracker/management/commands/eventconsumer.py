@@ -20,6 +20,7 @@ from nautobot_event_tracker.ingestion.pipeline import handle_message
 from nautobot_event_tracker.ingestion.prefilter import PreFilter
 from nautobot_event_tracker.ingestion.stats import NullStatsRecorder, StatsRecorder
 from nautobot_event_tracker.ingestion.triage import TriageFilter
+from nautobot_event_tracker.services.enrichment import Resolver
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         rules=None,
         recorder=None,
         triage=None,
+        resolver=None,
         dry_run=False,
         max_messages=None,
         sleep=time.sleep,
@@ -80,6 +82,7 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         self.dry_run = dry_run
         self.recorder = recorder if recorder is not None else self._build_recorder(settings, dry_run)
         self.triage = triage if triage is not None else self._build_triage(settings, dry_run)
+        self.resolver = resolver if resolver is not None else self._build_resolver(settings)
         self.max_messages = max_messages
         self._sleep = sleep
         self._stdout = stdout
@@ -108,6 +111,19 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
         if dry_run or not settings.triage.enabled:
             return None
         return TriageFilter(settings)
+
+    @staticmethod
+    def _build_resolver(settings):
+        """The enrichment resolver, built for every run including a dry one.
+
+        Unlike triage (T9), a dry run resolves: it spends nothing, and resolve rules are precisely
+        what an operator wants to tune against live traffic before writing tickets with them (E1).
+        A topic with no rules costs no query, so this is built whether or not anything uses it.
+        """
+        return Resolver(
+            ttl_seconds=settings.resolve_cache_seconds,
+            max_entries=settings.resolve_cache_entries,
+        )
 
     def stop(self):
         """Ask the loop to finish the message in flight and come back."""
@@ -171,12 +187,13 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
 
         for attempt in range(1, self.settings.max_retries + 1):
             try:
-                decision = handle_message(
+                outcome = handle_message(
                     message,
                     rules=self.rules,
                     recorder=self.recorder,
                     config=self.settings,
                     triage=self.triage,
+                    resolver=self.resolver,
                     write=not self.dry_run,
                 )
                 break
@@ -191,15 +208,27 @@ class ConsumerRunner:  # pylint: disable=too-many-instance-attributes
                 self._sleep(RETRY_BACKOFF_SECONDS * attempt)
 
         if self.dry_run:
-            line = f"{message.topic}: {decision.action} {decision.reason}".rstrip()
-            if self.settings.triage.enabled:
-                # T9 - say that the model was not consulted, so a dry run's output is not read as
-                # what triage would have decided.
-                line += " (triage skipped: dry run)"
-            self._report(line)
+            self._report(self._dry_run_line(message, outcome))
             return
 
         self.consumer.acknowledge(message)
+
+    def _dry_run_line(self, message, outcome):
+        """What a dry run says about one message.
+
+        The attachments are named rather than counted: a resolve rule that is pointing at the
+        wrong field attaches something plausible, and a number would not show that. This is the
+        output the rules are tuned against (E1).
+        """
+        decision = outcome.decision
+        line = f"{message.topic}: {decision.action} {decision.reason}".rstrip()
+        if self.settings.triage.enabled:
+            # T9 - say that the model was not consulted, so a dry run's output is not read as what
+            # triage would have decided.
+            line += " (triage skipped: dry run)"
+        if outcome.related_objects:
+            line += " attaching " + ", ".join(str(obj) for obj in outcome.related_objects)
+        return line
 
     def _report(self, line):
         """Say something to whoever is watching, if anyone is."""

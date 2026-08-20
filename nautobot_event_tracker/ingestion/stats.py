@@ -36,6 +36,8 @@ class Counts:  # pylint: disable=too-many-instance-attributes
     triaged: int = 0
     triage_attached: int = 0
     triage_errors: int = 0
+    enriched: int = 0
+    enrichment_misses: int = 0
     drops_by_reason: Counter = field(default_factory=Counter)
     last_message_at: object = None
 
@@ -92,6 +94,8 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
         triaged=0,
         triage_attached=0,
         triage_errors=0,
+        enriched=0,
+        enrichment_misses=0,
         drop_reason=None,
         message_time=None,
     ):
@@ -105,6 +109,8 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
         counts.triaged += triaged
         counts.triage_attached += triage_attached
         counts.triage_errors += triage_errors
+        counts.enriched += enriched
+        counts.enrichment_misses += enrichment_misses
         if drop_reason is not None:
             counts.add_drop(drop_reason)
         counts.saw_message_at(message_time)
@@ -162,6 +168,8 @@ class StatsRecorder:  # pylint: disable=too-many-instance-attributes
                 triaged=F("triaged") + counts.triaged,
                 triage_attached=F("triage_attached") + counts.triage_attached,
                 triage_errors=F("triage_errors") + counts.triage_errors,
+                enriched=F("enriched") + counts.enriched,
+                enrichment_misses=F("enrichment_misses") + counts.enrichment_misses,
                 drops_by_reason=dict(merged),
                 last_message_at=_newest(row.last_message_at, counts.last_message_at),
             )

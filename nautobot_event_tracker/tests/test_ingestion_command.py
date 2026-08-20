@@ -266,6 +266,27 @@ class TestDryRun(RunnerTestCase):
         self.assertIn("accept", stdout.getvalue())
         self.assertIn("network.events", stdout.getvalue())
 
+    def test_it_resolves_and_says_what_it_would_attach(self):
+        """E1 - unlike triage, a dry run resolves, because these rules are what it is for.
+
+        Named rather than counted: a rule pointing at the wrong field attaches something
+        plausible, and a number would not show that.
+        """
+        device = fixtures.create_device("leaf-01")
+        fixtures.create_interface(device)
+        stdout = StringIO()
+        runner, _ = self.build(
+            [fixtures.broker_message(payload(interface="ethernet-1/1"))],
+            settings_overrides={"topics": {"network.events": {**TOPIC, "resolve": fixtures.INGESTION_RESOLVE}}},
+            max_messages=1,
+            dry_run=True,
+            stdout=stdout,
+        )
+        runner.run()
+
+        self.assertIn("attaching leaf-01, ethernet-1/1", stdout.getvalue())
+        self.assertFalse(EventTicket.objects.exists())
+
 
 class TestStartupValidation(fixtures.RefusalAssertions, TestCase):
     """What the command refuses to start with, before it opens a socket."""

@@ -158,6 +158,8 @@ class IngestionStatsSerializer(BaseModelSerializer):
             "triaged",
             "triage_attached",
             "triage_errors",
+            "enriched",
+            "enrichment_misses",
             "drops_by_reason",
             "last_message_at",
         ]

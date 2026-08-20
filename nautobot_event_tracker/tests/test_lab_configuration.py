@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 
 from nautobot_event_tracker.choices import SeverityChoices
 from nautobot_event_tracker.ingestion import config
@@ -79,8 +79,13 @@ def topology():
 
 
 def lab_config():
-    """The lab's configuration as the consumer parses it at startup."""
-    with override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": lab_ingestion()}}):
+    """The lab's configuration as the consumer parses it at startup.
+
+    Through the fixture, so the app's own defaults are underneath it as they are in a deployment.
+    The lab's resolve rules are checked against `attachable_object_types`, and a bare override
+    would leave that empty and refuse every one of them.
+    """
+    with fixtures.app_settings(ingestion=lab_ingestion()):
         return config.load(require_topics=True)
 
 
@@ -141,6 +146,35 @@ class TestTheFieldMapMatchesTheBridge(SimpleTestCase):
         event = normalize(BRIDGE_PAYLOAD, topic_config=self.topic)
         self.assertEqual(event.title, "Interface ethernet-1/1 is down")
         self.assertEqual(event.event_type_name, "Interface Down")
+
+    def test_every_resolve_path_resolves(self):
+        """A resolve rule reading a path the bridge does not produce is a miss on every event."""
+        for rule in self.topic.resolve:
+            self.assertIsNotNone(
+                resolve_path(BRIDGE_PAYLOAD, rule.path),
+                f"the lab resolve rule '{rule.name}' reads {rule.path}, which a bridge payload does not carry",
+            )
+
+    def test_the_resolve_rules_name_the_estate_the_lab_creates(self):
+        """The device names in Nautobot are the hostnames the devices log, which is the whole point.
+
+        Phase 2.5 section 6 made them match so that this phase would have real data to hit. This
+        is the test that says they still do: the hostname in a bridge payload is a device in the
+        fabric, and the interface the bridge pulls out of the message is one that device has.
+        """
+        host = resolve_path(BRIDGE_PAYLOAD, "host")
+        interface = resolve_path(BRIDGE_PAYLOAD, "interface")
+
+        self.assertIn(host, FABRIC)
+        self.assertIn(interface, FABRIC[host]["interfaces"])
+
+    def test_the_interface_rule_is_scoped_by_the_device(self):
+        """Every node in this fabric has an `ethernet-1/1`; unscoped, the rule matches three."""
+        interface_rule = next(rule for rule in self.topic.resolve if rule.model == "dcim.interface")
+        self.assertEqual(interface_rule.scope, (("device", "device"),))
+
+        shared = [name for name, node in FABRIC.items() if "ethernet-1/1" in node["interfaces"]]
+        self.assertGreater(len(shared), 1, "if the fabric stopped sharing a name the scope would look unnecessary")
 
     def test_the_boot_chatter_rule_matches_what_it_is_written_for(self):
         """It exists so the lab's first ticket list is not all start-up noise."""

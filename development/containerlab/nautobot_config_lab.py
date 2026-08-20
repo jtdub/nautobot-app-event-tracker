@@ -44,6 +44,30 @@ LAB_INGESTION = {
             },
             # Interface included, so two interfaces flapping on one device are two tickets.
             "dedup_key_template": "{event.type}:{host}:{interface}",
+            # Phase 4A enrichment. `host` is the syslog hostname, which is the device's name in
+            # Nautobot on purpose (Phase 2.5 spec, section 6), and `classify.lua` pulls the
+            # interface out of the message text as SR Linux's own `ethernet-1/1`.
+            #
+            # The interface rule is scoped on the device rule because an interface name is unique
+            # per device and not globally: every node in this fabric has an `ethernet-1/1`.
+            # `classify.lua` writes an empty string when the message names no interface, which the
+            # resolver reads as "there is none" rather than as a fault (rule E7), so a BGP event
+            # attaches its device and nothing else.
+            "resolve": [
+                {
+                    "name": "device",
+                    "path": "host",
+                    "model": "dcim.device",
+                    "field": "name",
+                },
+                {
+                    "name": "interface",
+                    "path": "interface",
+                    "model": "dcim.interface",
+                    "field": "name",
+                    "scope": {"device": "device"},
+                },
+            ],
             # The lab is noisy at boot; without a floor the first ticket list is all informational
             # start-up chatter. Raise it to major to see only the breaks you cause on purpose.
             "minimum_severity": "warning",

@@ -97,6 +97,18 @@
                     "minimum": 1,
                     "default": 30
                 },
+                "resolve_cache_seconds": {
+                    "type": "integer",
+                    "description": "How long the enrichment resolver trusts a lookup, hit or miss. An object created since the last read takes up to this long to start resolving.",
+                    "minimum": 1,
+                    "default": 300
+                },
+                "resolve_cache_entries": {
+                    "type": "integer",
+                    "description": "How many lookups the enrichment resolver holds at once, evicting least recently used. Bounded because the keys come out of the payload.",
+                    "minimum": 1,
+                    "default": 2000
+                },
                 "kafka": {
                     "type": "object",
                     "description": "Kafka connection settings. Requires the `kafka` extra.",
@@ -350,6 +362,46 @@
                                         "name",
                                         "action",
                                         "when"
+                                    ],
+                                    "additionalProperties": false
+                                }
+                            },
+                            "resolve": {
+                                "type": "array",
+                                "description": "Enrichment rules, run in order after triage and before the ticket is written. Each finds one Nautobot object the payload names and attaches it.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {
+                                            "type": "string",
+                                            "description": "Unique within the topic. A later rule scopes on this name."
+                                        },
+                                        "path": {
+                                            "type": "string",
+                                            "description": "Dotted path to the value naming the object. Absent from the payload is a miss; present but empty is a skip."
+                                        },
+                                        "model": {
+                                            "type": "string",
+                                            "description": "`app_label.model` string. Must appear in `attachable_object_types`, or the consumer refuses to start."
+                                        },
+                                        "field": {
+                                            "type": "string",
+                                            "description": "Field to look the value up by, case-insensitively. Must be a field on that model."
+                                        },
+                                        "scope": {
+                                            "type": "object",
+                                            "description": "Relation field on this rule's model to the name of an earlier rule, whose object pins the lookup. An interface name is unique per device, not globally.",
+                                            "additionalProperties": {
+                                                "type": "string"
+                                            },
+                                            "minProperties": 1
+                                        }
+                                    },
+                                    "required": [
+                                        "name",
+                                        "path",
+                                        "model",
+                                        "field"
                                     ],
                                     "additionalProperties": false
                                 }

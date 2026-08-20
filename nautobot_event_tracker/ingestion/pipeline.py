@@ -1,14 +1,18 @@
-"""One message in, one decision out - and, when the decision is to accept it, one ticket.
+"""One message in, one outcome out - and, when the decision is to accept it, one ticket.
 
 This is the only module in the package that causes a ticket to exist, and it does so by calling
 `services.tickets`. It does not import `EventTicket` to write, it never assigns `status`, and
 nothing it does carries a user, so rule S4 holds and nothing the consumer does can be attributed
 to a person. The ticket write itself is `source=system`; the actions LLM triage decided - an
 attach, a suppression - carry `source=ai`, so the trail says who decided what (T6).
+
+Phase 4A adds one stage: the enrichment resolver runs between triage's verdict and the write, and
+what it finds goes in as `related_objects` on the calls the service layer already offers (E9).
 """
 
 import logging
 import time
+from dataclasses import dataclass, field
 
 from django.db import DatabaseError, transaction
 
@@ -36,27 +40,48 @@ DEDUP_WARNING_INTERVAL_SECONDS = 300
 _dedup_warned_at = {}
 
 
-def handle_message(message, *, rules, recorder, config, triage=None, write=True):  # pylint: disable=too-many-arguments
+@dataclass(frozen=True)
+class Outcome:
+    """What became of one message: the decision, and the objects that went in with it.
+
+    The decision alone was enough until Phase 4A; a dry run now has something else to report, and
+    it should not have to guess at it (E1). `related_objects` is what was attached on a real run,
+    and what would have been on a dry one.
+    """
+
+    decision: Decision
+    related_objects: tuple = field(default_factory=tuple)
+
+
+def handle_message(  # pylint: disable=too-many-arguments
+    message, *, rules, recorder, config, triage=None, resolver=None, write=True
+):
     """Decide what this message is, and write the ticket if it is one.
 
     The caller counts the message as received before calling this - a retry after a database
     failure re-enters here, and counting it twice would break the invariant that every received
     message ends in exactly one outcome.
 
-    Returns the `Decision` that was reached, which is what `--dry-run` prints and what the loop
-    logs. `write=False` decides without applying, so an operator can tune filters against live
-    traffic without consequences; a dry run also passes a recorder that counts nothing, so this
-    function does not check the flag for anything but the ticket itself.
+    Returns the `Outcome`: the `Decision` that was reached, which is what `--dry-run` prints and
+    what the loop logs, and whatever the resolver found.
+
+    `write=False` decides without applying, so an operator can tune filters against live traffic
+    without consequences; a dry run also passes a recorder that counts nothing, so this function
+    does not check the flag for anything but the ticket itself.
 
     `triage` is the LLM triage collaborator, or None when triage is disabled - which includes
     every dry run (T9: a dry run writes nothing, and rule L1 forbids an unrecorded model call).
     It runs here, between the pre-filter and the write, so no transaction ever spans it (T5).
+
+    `resolver` is the enrichment collaborator, and unlike triage it does run in a dry run (E1): it
+    spends no money, and resolve rules are exactly what an operator wants to tune against live
+    traffic.
     """
     topic_config = rules.topic(message.topic)
     if topic_config is None:
         # F1. Both brokers subscribe only to configured topics, so this is what a topic removed
         # from the configuration mid-run looks like rather than an everyday occurrence.
-        return _dropped(message.topic, REASON_UNKNOWN_TOPIC, recorder)
+        return Outcome(_dropped(message.topic, REASON_UNKNOWN_TOPIC, recorder))
 
     try:
         event = normalize(
@@ -75,14 +100,14 @@ def handle_message(message, *, rules, recorder, config, triage=None, write=True)
             error.reason,
         )
         recorder.record(message.topic, errored=1)
-        return Decision(ACTION_DROP, error.reason)
+        return Outcome(Decision(ACTION_DROP, error.reason))
 
     _warn_about_an_unresolvable_dedup_key(event, topic_config)
 
     result = rules.decide(event, topic_config)
     if result.decision.action == ACTION_DROP:
         # T1 - a drop never reaches the model.
-        return _dropped(message.topic, result.decision.reason, recorder)
+        return Outcome(_dropped(message.topic, result.decision.reason, recorder))
 
     # Read off the triage result here rather than sniffed for further down: only this branch knows
     # whether `result` is the pre-filter's or the model's, and a missing attribute should be a
@@ -111,12 +136,39 @@ def handle_message(message, *, rules, recorder, config, triage=None, write=True)
         if result.decision.action == ACTION_DROP:
             # T8 - the counter key is fixed; the model's own reason goes to the log.
             logger.info("LLM triage dropped an event from %s: %s", message.topic, result.decision.reason)
-            return _dropped(message.topic, REASON_TRIAGE, recorder)
+            return Outcome(_dropped(message.topic, REASON_TRIAGE, recorder))
+
+    # E1 - after triage, so an event the model dropped costs no query, and before the write, so
+    # what is found goes in with the ticket rather than as a second mutation after it.
+    related_objects = _resolve(event, topic_config, resolver, recorder)
 
     if write:
-        ticket = _apply(event, result, recorder, config, ai_decided=ai_decided)
+        ticket = _apply(event, result, recorder, config, ai_decided=ai_decided, related_objects=related_objects)
         _link_usage_records(usage_record_ids, ticket)
-    return result.decision
+    return Outcome(result.decision, related_objects)
+
+
+def _resolve(event, topic_config, resolver, recorder):
+    """Find the objects this event names, and count what the rules did (E10).
+
+    `enriched` counts events, `enrichment_misses` counts rule evaluations: one event whose two
+    rules both missed is one event and two misses. Skips are neither - a message about a BGP
+    session carrying no interface is not a fault (E7), and counting it as one would make the
+    counter say the configuration is broken on every event that is behaving exactly as intended.
+    """
+    if resolver is None or not topic_config.resolve:
+        return ()
+
+    resolution = resolver.resolve(event.payload, topic_config.resolve)
+    if resolution.objects or resolution.misses:
+        recorder.record(
+            event.topic,
+            enriched=1 if resolution.objects else 0,
+            enrichment_misses=len(resolution.misses),
+        )
+    for rule_name, reason in resolution.misses:
+        logger.info("Enrichment rule '%s' on %s found nothing (%s)", rule_name, event.topic, reason)
+    return resolution.objects
 
 
 def _link_usage_records(usage_record_ids, ticket):
@@ -164,23 +216,23 @@ def _warn_about_an_unresolvable_dedup_key(event, topic_config, clock=time.monoto
     )
 
 
-def _apply(event, result, recorder, config, *, ai_decided=False):
+def _apply(event, result, recorder, config, *, ai_decided=False, related_objects=()):  # pylint: disable=too-many-arguments
     """Apply what was decided: open, join by key, suppress - or attach where triage said to.
 
     Returns the ticket the event ended up on, for the usage-record link.
     """
     if result.decision.action == ACTION_ATTACH:
-        ticket = _attach(event, result, recorder)
+        ticket = _attach(event, result, recorder, related_objects)
         if ticket is not None:
             return ticket
         # The target vanished or reached a terminal status between shortlist and write. A ticket
         # too many beats an event lost, so the event falls through to open its own (spec 6.3).
         logger.info("LLM triage's attach target was gone; opening a ticket instead")
 
-    return _write_ticket(event, result, recorder, config, ai_decided=ai_decided)
+    return _write_ticket(event, result, recorder, config, ai_decided=ai_decided, related_objects=related_objects)
 
 
-def _attach(event, result, recorder):
+def _attach(event, result, recorder, related_objects=()):
     """Join the ticket triage chose, as the AI actor that chose it (T6). None when it cannot be."""
     from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
 
@@ -199,6 +251,10 @@ def _attach(event, result, recorder):
             source=TicketSourceChoices.AI,
             occurred_at=event.occurred_at,
             message=f"Attached by LLM triage: {result.decision.reason}",
+            # Recorded as the AI's doing, because the actor on an attachment is the actor of the
+            # mutation it arrived with, and a ticket's history reads best when one event is one
+            # actor (spec 11.5).
+            related_objects=related_objects,
         )
     except TicketImmutableError:
         # S3 - the ticket reached a terminal status before the join took its lock.
@@ -211,7 +267,7 @@ def _attach(event, result, recorder):
     return ticket
 
 
-def _write_ticket(event, result, recorder, config, *, ai_decided=False):
+def _write_ticket(event, result, recorder, config, *, ai_decided=False, related_objects=()):  # pylint: disable=too-many-arguments
     """Open or join the ticket this event belongs to, and suppress it if something said so.
 
     I2 - everything one message causes commits together: the ticket, its `created` update, and a
@@ -233,6 +289,7 @@ def _write_ticket(event, result, recorder, config, *, ai_decided=False):
             dedup_key=event.dedup_key,
             payload=capped(event.payload, config.max_payload_bytes),
             occurred_at=event.occurred_at,
+            related_objects=related_objects,
         )
 
         if suppress and ticket.was_created:

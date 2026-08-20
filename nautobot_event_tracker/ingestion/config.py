@@ -40,6 +40,10 @@ DEFAULTS = {
     "stats_bucket_seconds": 300,
     "stats_flush_seconds": 10,
     "stats_retention_days": 30,
+    # The enrichment resolver's cache (Phase 4A, rule E8). Bounded by entries as well as by age
+    # because its keys come out of the payload, which whoever emits the events controls.
+    "resolve_cache_seconds": 300,
+    "resolve_cache_entries": 2000,
     "kafka": {
         "bootstrap_servers": [],
         "group_id": "nautobot-event-tracker",
@@ -78,6 +82,9 @@ TOPIC_DEFAULTS = {
     "unknown_event_type": UNKNOWN_EVENT_TYPE_DEFAULT,
     "rate_limit": {},
     "rules": [],
+    # The enrichment rules (Phase 4A, section 3.1). An empty list means the resolver has nothing
+    # to do for this topic rather than that it is switched off, so the pipeline runs no query.
+    "resolve": [],
     # Whether this topic's survivors go to LLM triage, when triage is enabled at all. On by
     # default so enabling triage means enabling it, and opting a sensitive topic out is explicit.
     "triage": True,
@@ -138,6 +145,7 @@ class TopicConfig:  # pylint: disable=too-many-instance-attributes
     unknown_event_type: str
     rules: tuple = ()
     rate_limit: RateLimit = None
+    resolve: tuple = ()
     triage: bool = True
 
 
@@ -154,6 +162,8 @@ class IngestionConfig:  # pylint: disable=too-many-instance-attributes
     stats_bucket_seconds: int
     stats_flush_seconds: int
     stats_retention_days: int
+    resolve_cache_seconds: int
+    resolve_cache_entries: int
     kafka: dict = field(default_factory=dict)
     redis: dict = field(default_factory=dict)
     triage: TriageConfig = TRIAGE_OFF
@@ -260,6 +270,8 @@ def load(*, topics=None, consumer=None, require_topics=False):
         "stats_bucket_seconds",
         "stats_flush_seconds",
         "stats_retention_days",
+        "resolve_cache_seconds",
+        "resolve_cache_entries",
     ):
         problems += _positive_int_problem(f"'{key}'", raw.get(key))
 
@@ -281,6 +293,8 @@ def load(*, topics=None, consumer=None, require_topics=False):
         stats_bucket_seconds=raw["stats_bucket_seconds"],
         stats_flush_seconds=raw["stats_flush_seconds"],
         stats_retention_days=raw["stats_retention_days"],
+        resolve_cache_seconds=raw["resolve_cache_seconds"],
+        resolve_cache_entries=raw["resolve_cache_entries"],
         kafka=dict(raw["kafka"]),
         redis=dict(raw["redis"]),
         triage=triage,
@@ -392,6 +406,9 @@ def _parse_topic(name, topic_settings):  # pylint: disable=too-many-locals
     rate_limit, rate_problems = _parse_rate_limit(name, merged["rate_limit"] or {})
     problems.extend(rate_problems)
 
+    resolve, resolve_problems = _parse_resolve(name, merged["resolve"] or [])
+    problems.extend(resolve_problems)
+
     topic_triage = merged["triage"]
     if not isinstance(topic_triage, bool):
         problems.append(f"topic '{name}': 'triage' must be a boolean, got {topic_triage!r}")
@@ -407,6 +424,7 @@ def _parse_topic(name, topic_settings):  # pylint: disable=too-many-locals
         unknown_event_type=str(policy),
         rules=rules,
         rate_limit=rate_limit,
+        resolve=resolve,
         triage=topic_triage,
     )
     return topic, problems
@@ -490,6 +508,151 @@ def _parse_rules(topic_name, rule_settings):
             rules.append(Rule(name=str(rule_name), action=str(action), when=tuple(clauses)))
 
     return tuple(rules), problems
+
+
+def _parse_resolve(topic_name, resolve_settings):
+    """Parse the enrichment rules, reporting every rule that could never work.
+
+    Everything here is answerable from the settings and the model registry, so all of it happens
+    at startup and none of it needs a query. A rule naming a field that does not exist is the case
+    that matters: left to run, it would match nothing forever and look exactly like an estate that
+    has not been onboarded yet.
+
+    A rule that fails to parse still contributes its name to `seen`, so a later rule scoping on it
+    is not reported as a second fault - the same argument `load()` makes about "no topics are
+    configured".
+    """
+    # Imported here rather than at module scope: the allowlist lives with the code that enforces
+    # it, and this module is read by tests that have no database.
+    from nautobot_event_tracker.services.tickets import (  # pylint: disable=import-outside-toplevel
+        get_attachable_object_types,
+    )
+
+    problems = []
+    rules = []
+    seen = set()
+    attachable = sorted(get_attachable_object_types())
+
+    for index, entry in enumerate(resolve_settings):
+        rule, rule_problems = _parse_resolve_rule(f"topic '{topic_name}' resolve rule {index}", entry, attachable, seen)
+        problems.extend(rule_problems)
+        if rule is not None:
+            rules.append(rule)
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if name:
+            seen.add(name)
+
+    return tuple(rules), problems
+
+
+def _parse_resolve_rule(label, entry, attachable, earlier_names):
+    """Parse one enrichment rule, returning it and the problems found. None when unusable."""
+    from nautobot_event_tracker.services.enrichment import ResolveRule  # pylint: disable=import-outside-toplevel
+
+    if not isinstance(entry, dict):
+        return None, [f"{label}: must be a mapping"]
+
+    name = entry.get("name")
+    path = entry.get("path")
+    field_name = entry.get("field")
+    model_label = str(entry.get("model") or "").lower()
+
+    problems = []
+    if not name:
+        problems.append(f"{label}: needs a name, which is how a later rule scopes on it")
+    elif name in earlier_names:
+        problems.append(f"{label}: name '{name}' is already used in this topic")
+    if not path:
+        problems.append(f"{label}: needs a 'path' into the payload")
+    if not field_name:
+        problems.append(f"{label}: needs a 'field' to look the value up by")
+
+    model, model_problems = _resolve_model(label, model_label, attachable)
+    problems += model_problems
+    if model is not None and field_name:
+        problems += _field_problem(label, model, model_label, str(field_name))
+
+    scope, scope_problems = _parse_scope(label, entry.get("scope"), model, model_label, earlier_names)
+    problems += scope_problems
+
+    if not (name and path and field_name and model is not None and not scope_problems):
+        return None, problems
+
+    return (
+        ResolveRule(
+            name=str(name),
+            path=str(path),
+            model=model_label,
+            field=str(field_name),
+            scope=scope,
+        ),
+        problems,
+    )
+
+
+def _resolve_model(label, model_label, attachable):
+    """The model a rule names, and the faults naming it has.
+
+    The allowlist is checked here rather than left to `attach_object()` because by then the call is
+    inside the ticket write's transaction: a refused attachment would roll back the ticket, turning
+    a misconfigured rule into lost events (E4).
+    """
+    from django.apps import apps  # pylint: disable=import-outside-toplevel
+
+    if not model_label:
+        return None, [f"{label}: needs a 'model' as an 'app_label.model' string"]
+    if model_label not in attachable:
+        return None, [
+            f"{label}: objects of type '{model_label}' may not be attached to a ticket. "
+            f"Permitted types: {', '.join(attachable) or 'none configured'}"
+        ]
+    try:
+        return apps.get_model(model_label), []
+    except (LookupError, ValueError) as error:
+        return None, [f"{label}: model '{model_label}' does not exist ({error})"]
+
+
+def _field_problem(label, model, model_label, field_name, *, kind="field"):
+    """The faults this field has on this model: one, or none at all."""
+    from django.core.exceptions import FieldDoesNotExist  # pylint: disable=import-outside-toplevel
+
+    try:
+        model._meta.get_field(field_name)  # pylint: disable=protected-access
+    except FieldDoesNotExist:
+        return [f"{label}: {kind} '{field_name}' is not a field on {model_label}"]
+    return []
+
+
+def _parse_scope(label, scope_settings, model, model_label, earlier_names):
+    """Parse a rule's scope: which of its own fields to pin, and to which earlier rule's result.
+
+    A rule may only scope on a rule defined before it. That is not a limitation worth lifting: it
+    makes cycles impossible by construction rather than by detection, and reading the block top to
+    bottom is reading the order it runs in.
+    """
+    if not scope_settings:
+        return (), []
+    if not isinstance(scope_settings, dict):
+        return (), [f"{label}: 'scope' must be a mapping of field to the name of an earlier rule"]
+
+    problems = []
+    pairs = []
+    for field_name, rule_name in scope_settings.items():
+        if rule_name not in earlier_names:
+            problems.append(
+                f"{label}: scope '{field_name}' names '{rule_name}', which is not a rule defined earlier in this topic"
+            )
+        if model is not None:
+            field_problems = _field_problem(label, model, model_label, str(field_name), kind="scope field")
+            problems += field_problems
+            if not field_problems and not model._meta.get_field(str(field_name)).is_relation:  # pylint: disable=protected-access
+                problems.append(
+                    f"{label}: scope field '{field_name}' is not a relation on {model_label}, "
+                    "so there is nothing for an earlier rule's object to be"
+                )
+        pairs.append((str(field_name), str(rule_name)))
+
+    return tuple(pairs), problems
 
 
 def _parse_rate_limit(topic_name, rate_settings):

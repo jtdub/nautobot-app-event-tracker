@@ -338,6 +338,14 @@ class IngestionStats(BaseModel):
         default=0,
         help_text="Triage calls that failed and fell back to accept (rule T4).",
     )
+    enriched = models.PositiveIntegerField(
+        default=0,
+        help_text="Messages that attached at least one object the enrichment resolver found.",
+    )
+    enrichment_misses = models.PositiveIntegerField(
+        default=0,
+        help_text="Enrichment rules that found nothing they should have found (rules E5 to E7).",
+    )
     drops_by_reason = models.JSONField(
         default=dict,
         blank=True,

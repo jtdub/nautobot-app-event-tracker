@@ -104,6 +104,13 @@ PLUGINS_CONFIG = {
                         {"name": "known-flapper", "action": "suppress",
                          "when": {"host": "^edge-rtr-07$", "event.type": "^Interface Down$"}},
                     ],
+                    "resolve": [
+                        {"name": "device", "path": "host",
+                         "model": "dcim.device", "field": "name"},
+                        {"name": "interface", "path": "interface",
+                         "model": "dcim.interface", "field": "name",
+                         "scope": {"device": "device"}},
+                    ],
                 },
             },
         },
@@ -124,6 +131,8 @@ PLUGINS_CONFIG = {
 | `stats_bucket_seconds` | `300` | Width of one counter window |
 | `stats_flush_seconds` | `10` | How often counters are written |
 | `stats_retention_days` | `30` | Age at which counter rows are pruned |
+| `resolve_cache_seconds` | `300` | How long the enrichment resolver trusts a lookup, hit or miss |
+| `resolve_cache_entries` | `2000` | How many lookups it holds at once, evicting least recently used |
 
 ### Credentials
 
@@ -159,6 +168,47 @@ arbitrary one.
 `severity_map` translates the source system's severities into the app's five. Keys are compared as
 strings, so a syslog severity arriving as `4` and one arriving as `"4"` hit the same entry.
 
+### Attaching the objects an event names
+
+A ticket saying `Interface ethernet-1/1 is down` on `leaf-01` carries those as strings. Nautobot
+knows both of them as objects. A `resolve` block is how the ticket gets them: a list of rules, run
+in order after the event has survived every filter and before its ticket is written.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Unique within the topic. A later rule scopes on this name |
+| `path` | yes | Dotted path to the value naming the object, the same syntax `field_map` uses |
+| `model` | yes | `app_label.model`. Must be on `attachable_object_types` |
+| `field` | yes | The field to look it up by, case-insensitively |
+| `scope` | no | `{field on this rule's model: name of an earlier rule}` |
+
+**Why `scope` exists.** An interface name is unique per device, not globally: every switch in the
+estate has an `ethernet-1/1`. Looking one up by name alone matches all of them, so the rule is told
+which device — the one an earlier rule already found. A rule may only scope on a rule defined
+before it, which is also why cycles are impossible.
+
+**What it does when it cannot find something.** Nothing that costs you the ticket. A value that
+matches no row, or matches two, attaches nothing and counts a miss; the event still becomes a
+ticket, in full. Two of these are worth knowing about specifically:
+
+- **A path the payload does not carry is a miss** — the rule and the payload disagree, and you
+  should hear about it.
+- **A path that is there and empty is not.** `"interface": ""` means the producer is telling you
+  there is no interface in this message, which is the truth for an event about a BGP session.
+
+**What it refuses to start with.** A model that is not on `attachable_object_types`, a field that
+does not exist on it, a scope naming a later rule, or a scope on something that is not a relation.
+All of it is checked before the first message, because a resolve rule that failed *during* a ticket
+write would roll back the ticket rather than the attachment.
+
+Resolution runs on a dry run too, unlike LLM triage: it spends nothing, and these rules are exactly
+what a dry run is for. The reported line names what each message would attach.
+
+The cache is worth a thought on a large estate. A lookup is held for `resolve_cache_seconds` — so a
+device onboarded since the last read takes up to that long to start resolving — and at most
+`resolve_cache_entries` are held at once. Misses are cached as well as hits, which is what keeps an
+unknown hostname arriving ten thousand times from being ten thousand queries.
+
 ## What becomes a ticket
 
 Every message runs through the same six checks, cheapest first, and the first one to decide wins:
@@ -176,7 +226,8 @@ Every message runs through the same six checks, cheapest first, and the first on
 6. **Is the topic within its `rate_limit`?** A token bucket, per process — three instances admit
    three times as many.
 
-What survives becomes a ticket, or joins an existing one if its dedup key matches an open ticket.
+What survives becomes a ticket, or joins an existing one if its dedup key matches an open ticket —
+carrying whatever the `resolve` rules found as attached objects.
 
 Two things worth knowing about suppression rules. They apply only to a ticket the event *opened*: a
 rule firing on a later event will not pull a ticket somebody has already triaged out from under
@@ -196,7 +247,9 @@ consumer group's offsets do not move and the same messages are still there after
 
 **Apps → Event Tracker → Ingestion Stats** shows one row per consumer, topic and time window:
 messages received, tickets opened, tickets joined, suppressed, dropped, errored, and the time of the
-newest message. Every drop is also counted under the rule or filter that refused it, which is the
+newest message. `enriched` counts events that attached at least one resolved object, and
+`enrichment_misses` counts rule evaluations that found nothing — one event whose two rules both
+missed is one event and two misses. Every drop is also counted under the rule or filter that refused it, which is the
 first place to look when events are not becoming tickets.
 
 The counting invariant is `received = errored + dropped + opened + joined`. Suppressed is not a
@@ -220,6 +273,13 @@ trying stops consuming anything else.
 **The process exits with 2.** The database would not take a message after `max_retries`. The
 message was **not** acknowledged and will be redelivered, so nothing is lost; fix the database and
 the supervisor's restart picks up where it left off.
+
+**Nothing is attached to the tickets.** Watch `enrichment_misses` on the stats page. Rising with
+`enriched` at zero means the rules are running and finding nothing: either the payload path is
+wrong — check it against a raw message — or the names in Nautobot are not the names the devices
+log. The consumer logs each miss with the rule that made it and why. `enriched` and
+`enrichment_misses` both at zero means no rule ran at all, which is a `resolve` block on the wrong
+topic.
 
 **Tickets are duplicated.** Two open tickets for the same problem means the dedup key is not
 resolving — usually a path in `dedup_key_template` that the payload does not carry. A quick check:

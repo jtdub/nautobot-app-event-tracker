@@ -54,7 +54,14 @@ class PipelineTestCase(TestCase):
         )
 
     def handle(self, payload=None, *, topic_settings=None, topic="network.events", value=None, **kwargs):
-        """Push one message through the pipeline and return the decision."""
+        """Push one message through the pipeline and return the decision it reached."""
+        return self.handle_outcome(payload, topic_settings=topic_settings, topic=topic, value=value, **kwargs).decision
+
+    def handle_outcome(self, payload=None, *, topic_settings=None, topic="network.events", value=None, **kwargs):
+        """Push one message through the pipeline and return the whole outcome.
+
+        What the decision alone cannot say, since Phase 4A: what was attached with it.
+        """
         with fixtures.ingestion_settings(topics={"network.events": {**TOPIC, **(topic_settings or {})}}):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
@@ -317,6 +324,12 @@ class TriagedPipelineTestCase(PipelineTestCase):
 
     def handle_triaged(self, payload=None, *, answer=None, error=None, topic_settings=None, **kwargs):
         """Push one message through with a triage filter answering `answer` (or failing)."""
+        return self.triaged_outcome(
+            payload, answer=answer, error=error, topic_settings=topic_settings, **kwargs
+        ).decision
+
+    def triaged_outcome(self, payload=None, *, answer=None, error=None, topic_settings=None, **kwargs):
+        """The same, returning the whole outcome rather than the decision alone."""
         from nautobot_event_tracker.ingestion.triage import TriageFilter  # pylint: disable=import-outside-toplevel
 
         with fixtures.ingestion_settings(
@@ -543,3 +556,142 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         record = LLMUsageRecord.objects.get()
         self.assertTrue(record.success)
         self.assertIsNone(record.ticket)
+
+
+class TestEnrichmentInThePipeline(PipelineTestCase):
+    """Phase 4A: what the resolver finds goes in with the ticket, and never at its expense."""
+
+    RESOLVE = {"resolve": fixtures.INGESTION_RESOLVE}
+
+    def setUp(self):
+        """Build the estate the lab's rules are written against, and a resolver to find it."""
+        super().setUp()
+        from nautobot_event_tracker.services.enrichment import Resolver  # pylint: disable=import-outside-toplevel
+
+        self.device = fixtures.create_device("leaf-01")
+        self.interface = fixtures.create_interface(self.device)
+        self.resolver = Resolver(ttl_seconds=300, max_entries=100, clock=self.clock)
+
+    def enrich(self, payload=None, **kwargs):
+        """Push one message through with the resolver attached."""
+        return self.handle_outcome(
+            payload if payload is not None else self.payload(interface="ethernet-1/1"),
+            topic_settings=self.RESOLVE,
+            resolver=self.resolver,
+            **kwargs,
+        )
+
+    @staticmethod
+    def attached(ticket):
+        """Every object currently attached to this ticket, flattened."""
+        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=import-outside-toplevel
+
+        return [obj for objects in ticket_service.get_related_objects(ticket).values() for obj in objects]
+
+    def test_a_new_ticket_carries_what_the_event_named(self):
+        """The attachment panel fills in by itself, which is the phase in one sentence."""
+        self.enrich()
+        ticket = EventTicket.objects.get()
+        self.assertEqual(self.attached(ticket), [self.device, self.interface])
+
+    def test_the_attachments_are_the_systems_doing_and_not_a_persons(self):
+        """S4 - the consumer has no user, and the deterministic resolver is not the AI either."""
+        self.enrich()
+        update = TicketUpdate.objects.get(
+            update_type=UpdateTypeChoices.OBJECT_ATTACHED, related_object_id=self.device.pk
+        )
+        self.assertEqual(update.source, TicketSourceChoices.SYSTEM)
+        self.assertIsNone(update.user)
+
+    def test_an_enriched_event_is_counted(self):
+        """E10 - `enriched` counts events, so one event with two objects is one."""
+        self.enrich()
+        counts = self.counts()
+        self.assertEqual(counts.enriched, 1)
+        self.assertEqual(counts.enrichment_misses, 0)
+        self.assertEqual(counts.received, counts.accounted_for)
+
+    def test_a_rule_that_finds_nothing_is_counted_and_costs_no_ticket(self):
+        """E5 - a ticket without its device attached is still a ticket."""
+        outcome = self.enrich(self.payload(host="leaf-99", interface="ethernet-1/1"))
+
+        self.assertEqual(outcome.decision.action, ACTION_ACCEPT)
+        self.assertEqual(self.attached(EventTicket.objects.get()), [])
+        self.assertEqual(self.counts().enriched, 0)
+        self.assertEqual(
+            self.counts().enrichment_misses, 1, "the interface's scope failed, which is not a second fault"
+        )
+
+    def test_a_broken_lookup_still_writes_the_ticket(self):
+        """E5's real point: no failure in the resolver may reach the write's transaction."""
+        with mock.patch(
+            "nautobot_event_tracker.services.enrichment.ResolveRule.model_class",
+            new_callable=mock.PropertyMock,
+            side_effect=DatabaseError("connection lost"),
+        ):
+            outcome = self.enrich()
+
+        self.assertEqual(outcome.decision.action, ACTION_ACCEPT)
+        self.assertEqual(EventTicket.objects.count(), 1)
+        # One, not two: the interface rule's scope never resolved, and E7 says a consequence of
+        # another rule's failure is not a fault of its own.
+        self.assertEqual(self.counts().enrichment_misses, 1)
+
+    def test_a_recurrence_attaches_nothing_a_second_time(self):
+        """Spec 11.2 - every event resolves, and `_attach_all` makes the repeat a no-op."""
+        self.enrich()
+        self.enrich()
+
+        ticket = EventTicket.objects.get()
+        self.assertEqual(ticket.event_count, 2)
+        self.assertEqual(TicketUpdate.objects.filter(update_type=UpdateTypeChoices.OBJECT_ATTACHED).count(), 2)
+
+    def test_a_recurrence_can_name_something_the_first_event_did_not(self):
+        """Which is why `join_ticket` takes `related_objects` at all."""
+        second = fixtures.create_interface(self.device, name="ethernet-1/2")
+        self.enrich(self.payload(interface="ethernet-1/1"))
+        self.enrich(self.payload(interface="ethernet-1/2"))
+
+        self.assertIn(second, self.attached(EventTicket.objects.get()))
+
+    def test_a_topic_with_no_rules_runs_no_lookup(self):
+        """A resolver is built for every run; a topic that says nothing must still cost nothing."""
+        with mock.patch.object(self.resolver, "resolve") as resolve:
+            self.handle(resolver=self.resolver)
+        resolve.assert_not_called()
+
+    def test_a_dry_run_resolves_and_writes_nothing(self):
+        """E1 - unlike triage, this is exactly what a dry run is for."""
+        outcome = self.enrich(write=False)
+
+        self.assertEqual(list(outcome.related_objects), [self.device, self.interface])
+        self.assertFalse(EventTicket.objects.exists())
+
+
+class TestEnrichmentWithTriage(TriagedPipelineTestCase):
+    """The objects go in with whichever write the verdict chose."""
+
+    def setUp(self):
+        """An open ticket for triage to attach to, and the estate the rules name."""
+        super().setUp()
+        from nautobot_event_tracker.services.enrichment import Resolver  # pylint: disable=import-outside-toplevel
+
+        self.device = fixtures.create_device("leaf-01")
+        self.resolver = Resolver(ttl_seconds=300, max_entries=100, clock=self.clock)
+
+    def test_a_triage_attach_carries_the_objects_too(self):
+        """`_attach` joins through the service layer, and takes `related_objects` with it."""
+        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=import-outside-toplevel
+
+        existing = fixtures.create_ticket()
+        outcome = self.triaged_outcome(
+            answer='{"action": "attach", "reason": "same link", "ticket": 0}',
+            topic_settings={"resolve": fixtures.INGESTION_RESOLVE},
+            resolver=self.resolver,
+        )
+
+        existing.refresh_from_db()
+        self.assertEqual(outcome.decision.action, "attach")
+        self.assertIn(
+            self.device, [obj for objects in ticket_service.get_related_objects(existing).values() for obj in objects]
+        )

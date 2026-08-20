@@ -154,6 +154,7 @@ nav:
               - "Phase 2 — Ingestion": "specs/phase-2-ingestion.md"
               - "Phase 2.5 — Lab Environment": "specs/phase-2-5-lab-environment.md"
               - "Phase 3 — LLM Service Layer and Triage": "specs/phase-3-llm-triage.md"
+              - "Phase 4A — Enrichment Resolver": "specs/phase-4a-enrichment.md"
       - Code Reference:
           - "dev/code_reference/index.md"
           - Package: "dev/code_reference/package.md"

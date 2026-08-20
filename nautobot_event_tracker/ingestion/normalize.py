@@ -18,6 +18,7 @@ from nautobot_event_tracker.ingestion.constants import (
     REASON_NOT_AN_OBJECT,
     REASON_UNDECODABLE,
 )
+from nautobot_event_tracker.payloads import resolve_path
 
 #: How much of an oversize payload to keep, so that a person can still see what arrived.
 PREVIEW_CHARACTERS = 1024
@@ -60,21 +61,6 @@ def decode(value):
     if not isinstance(decoded, dict):
         raise NormalizationError(REASON_NOT_AN_OBJECT, f"payload is {type(decoded).__name__}, not an object")
     return decoded
-
-
-def resolve_path(payload, path):
-    """Walk a dotted path into nested objects, returning None rather than raising.
-
-    A missing key, a non-object where an object was expected, and an empty path all yield None. A
-    key containing a literal dot is not addressable, which is a limitation worth knowing and not
-    worth an escaping syntax.
-    """
-    current = payload
-    for part in str(path).split("."):
-        if not isinstance(current, dict) or part not in current:
-            return None
-        current = current[part]
-    return current
 
 
 def render_template(template, payload):

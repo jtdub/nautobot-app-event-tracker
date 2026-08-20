@@ -295,3 +295,32 @@ class TestTriageCounters(StatsTestCase):
         self.clock.advance(11)
         self.recorder.flush()
         self.assertEqual(self.row().triaged, 2)
+
+
+class TestEnrichmentCounters(StatsTestCase):
+    """The Phase 4A memo counters, outside the accounting invariant like the triage ones."""
+
+    def test_enrichment_counts_flush(self):
+        """`enriched` counts events and `enrichment_misses` counts rule evaluations."""
+        self.recorder.record(TOPIC, received=1, opened=1, enriched=1)
+        self.recorder.record(TOPIC, received=1, opened=1, enrichment_misses=2)
+        self.recorder.flush()
+        row = self.row()
+        self.assertEqual(row.enriched, 1)
+        self.assertEqual(row.enrichment_misses, 2)
+
+    def test_the_invariant_ignores_them(self):
+        """An attachment is not an outcome; the event was already counted as opened."""
+        self.recorder.record(TOPIC, received=1, opened=1, enriched=1, enrichment_misses=1)
+        self.recorder.flush()
+        row = self.row()
+        self.assertEqual(row.received, row.accounted_for)
+
+    def test_a_second_flush_accumulates_them(self):
+        """`F()` expressions cover the new columns too."""
+        self.recorder.record(TOPIC, received=1, opened=1, enriched=1)
+        self.recorder.flush()
+        self.recorder.record(TOPIC, received=1, opened=1, enriched=1)
+        self.clock.advance(11)
+        self.recorder.flush()
+        self.assertEqual(self.row().enriched, 2)
