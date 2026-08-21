@@ -30,6 +30,8 @@ so an entry in the change log per write would bury it under a record of arithmet
 | Triaged | Messages LLM triage actually judged. Recurrences and opted-out topics are not judged, so this is also the model-call count. |
 | Triage Attached | Messages triage attached to an existing ticket. Counted under Tickets Joined as well. |
 | Triage Errors | Triage calls that failed and fell back to accepting the event. |
+| Enriched | Messages that attached at least one object the enrichment resolver found. Counted under opened or joined as well. |
+| Enrichment Misses | Enrichment rules that found nothing they should have found. Counts rule evaluations, not messages. |
 | Drops by Reason | Drop counts broken down by the rule or filter that refused each message. Triage drops appear under `llm_triage`. |
 | Last Message At | The broker timestamp of the newest message counted here. |
 
@@ -45,6 +47,12 @@ Received = Errored + Dropped + Tickets Opened + Tickets Joined
 is counted there too; the column says how many of those arrived through a suppression rule. The
 three **Triage** columns are the same kind of commentary: an attached message is already counted
 under joined, and an errored triage call still accepted its event.
+
+The two **Enrichment** columns are commentary of the same kind, and they count different things
+from each other on purpose. **Enriched** counts messages: one event that attached a device and an
+interface is one. **Enrichment Misses** counts rule evaluations: one event whose two rules both
+found nothing is two. A rule that was skipped rather than failed — because the payload said there
+was no interface, or because the device it would have been scoped to was not found — is neither.
 
 **Drops by Reason** is the useful one. Keys are either a filter's name — `unknown_topic`,
 `event_type_disabled`, `below_severity_floor`, `rate_limited` — or the name of a rule an

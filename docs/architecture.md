@@ -101,7 +101,7 @@ The subject of Phase 1, and the narrow waist of the whole system. Every mutation
 
 ### Enrichment resolver
 
-Resolves references in raw event payloads (a hostname, an interface name, an IP) into real Nautobot objects, and attaches them to the ticket. This is why the app holds no copy of device or circuit data: it points at the source of truth.
+Resolves references in raw event payloads (a hostname, an interface name, an IP) into real Nautobot objects, and attaches them to the ticket. This is why the app holds no copy of device or circuit data: it points at the source of truth. The rules are declarative and per topic, the lookups are deterministic, and a lookup that finds nothing costs a counter rather than the ticket. See the [Phase 4A spec](specs/phase-4a-enrichment.md).
 
 ### Agents
 
@@ -126,7 +126,7 @@ Dashboard panels built on the UI Component Framework's ECharts components, readi
 | **1** | Tickets, service layer, workflow graph, REST/GraphQL, UI, filtersets, permissions. **No AI whatsoever.** |
 | 2 | Broker abstraction, consumer process, deterministic pre-filter, ingestion stats. |
 | 3 | LLM service layer, provider/model registry, usage accounting, LLM triage in the consumer. |
-| 4 | Enrichment resolver and agents with MCP tooling and approval gates. |
+| 4 | **4A:** the enrichment resolver. **4B:** agents with MCP tooling and approval gates. |
 | 5 | RAG indexing on close, similarity surfacing, analytics dashboard. |
 
 Phase 1 is AI-free by design. The `source` field on tickets and updates already carries an `ai` value, and the service layer already enforces the AI immutability rule, so that later phases plug in without reopening the domain model. Nothing in Phase 1 imports litellm or talks to a provider.

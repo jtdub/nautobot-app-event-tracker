@@ -1,0 +1,1 @@
+The enrichment resolver: declarative per-topic `resolve` rules turn the hostnames, interface names and addresses in an event payload into the Nautobot objects they name, and attach them to the ticket the event opens or joins. Rules are validated at startup, resolve after triage and before the write, and never cost a ticket when they find nothing (Phase 4A, rules E1-E10).

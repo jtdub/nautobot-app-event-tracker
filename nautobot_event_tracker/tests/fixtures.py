@@ -84,6 +84,25 @@ def create_device(name="somebody-elses-device"):
     return device
 
 
+def create_interface(device, name="ethernet-1/1"):
+    """One interface on a device, for the enrichment resolver's scoped lookups."""
+    return dcim_fixtures.ensure_interface(device=device, name=name)
+
+
+#: Enrichment rules matching `event_payload()`: the device by the hostname it logged, and the
+#: interface inside that device. The shape the lab uses, so the tests and the lab agree.
+INGESTION_RESOLVE = [
+    {"name": "device", "path": "host", "model": "dcim.device", "field": "name"},
+    {
+        "name": "interface",
+        "path": "interface",
+        "model": "dcim.interface",
+        "field": "name",
+        "scope": {"device": "device"},
+    },
+]
+
+
 def create_ticket(user=None, event_type=None, **kwargs):
     """Create one ticket through the service layer."""
     if event_type is None:
@@ -218,6 +237,21 @@ class FakeWallClock:
         self.now += timedelta(**kwargs)
 
 
+def app_settings(**overrides):
+    """A PLUGINS_CONFIG override that starts from the app's own defaults, as a deployment does.
+
+    Nautobot fills a missing key from `default_settings` when it loads the app, so a real
+    `PLUGINS_CONFIG` always carries `attachable_object_types` whether or not anyone wrote it down.
+    `override_settings` does not, and a test that replaced the whole block would be testing an
+    installation that cannot exist - one where nothing may be attached to a ticket at all.
+    """
+    from nautobot_event_tracker import EventTrackerConfig  # pylint: disable=import-outside-toplevel
+
+    return override_settings(
+        PLUGINS_CONFIG={"nautobot_event_tracker": {**EventTrackerConfig.default_settings, **overrides}}
+    )
+
+
 def ingestion_settings(**overrides):
     """A PLUGINS_CONFIG override carrying this ingestion block.
 
@@ -225,7 +259,7 @@ def ingestion_settings(**overrides):
     cannot find two same-named helpers meaning different things.
     """
     block = {"topics": {"network.events": INGESTION_TOPIC}, **overrides}
-    return override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": block}})
+    return app_settings(ingestion=block)
 
 
 def create_ingestionstats(**overrides):

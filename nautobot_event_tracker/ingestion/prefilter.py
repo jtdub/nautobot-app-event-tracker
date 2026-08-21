@@ -18,7 +18,7 @@ from nautobot_event_tracker.ingestion.constants import (
     REASON_UNKNOWN_EVENT_TYPE,
     UNKNOWN_EVENT_TYPE_DROP,
 )
-from nautobot_event_tracker.ingestion.normalize import resolve_path
+from nautobot_event_tracker.payloads import resolve_path
 from nautobot_event_tracker.services.tickets import effective_severity
 
 

@@ -27,6 +27,10 @@ INGESTION_STATS_COUNTER_FIELDS = (
     "triaged",
     "triage_attached",
     "triage_errors",
+    # The enrichment counters read last of the three groups: what was attached to those outcomes,
+    # and what the rules could not find.
+    "enriched",
+    "enrichment_misses",
     "last_message_at",
 )
 

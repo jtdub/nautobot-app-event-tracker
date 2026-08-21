@@ -334,3 +334,67 @@ class LLMUsageGuardTest(SimpleTestCase):
             [],
             "LLMUsageRecord rows must only be written by services/llm.py. Offending lines: " + ", ".join(offenders),
         )
+
+
+def _write_call_offenders(paths, methods):
+    """Yield `path:line calls .<method>()` for every write-shaped method call in these files.
+
+    Broader than `_manager_call_offenders`, which matches `<Model>.objects.create()` and needs to
+    know the model's name. This one knows nothing and refuses everything, which is what a module
+    that must not write at all wants: a `save()` on an instance it happens to be holding is as much
+    a write as a manager call, and neither belongs in a reader.
+    """
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in methods:
+                yield f"{path.relative_to(APP_ROOT)}:{node.lineno} calls .{node.func.attr}()"
+
+
+def _app_import_offenders(paths, prefix):
+    """Yield `path:line imports <module>` for every import of an app package under `prefix`."""
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            for name in names:
+                if name == prefix or name.startswith(f"{prefix}."):
+                    yield f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}"
+
+
+class EnrichmentGuardTest(SimpleTestCase):
+    """Phase 4A's rule E3, in both halves: the resolver reads, and services does not import ingestion."""
+
+    #: Every method that writes, whatever it is called on. `update` is here at the cost of a dict's
+    #: own `update()`: a reader that wants to merge a dictionary can assign items instead, and the
+    #: rule is worth more than the convenience.
+    WRITE_CALLS = WRITE_METHODS | {"save", "delete", "bulk_update"}
+
+    def test_the_enrichment_resolver_writes_nothing(self):
+        """E3 - it finds objects and hands them back; `services/tickets.py` does the writing."""
+        offenders = list(_write_call_offenders([SERVICES_DIR / "enrichment.py"], self.WRITE_CALLS))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "services/enrichment.py must only read. Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_service_layer_imports_nothing_from_ingestion(self):
+        """The dependency runs one way: `ingestion` imports `services`, never the reverse.
+
+        A rule the codebase has always followed and never checked. Phase 4A is the first phase to
+        give anyone a reason to break it - the resolver is called by the pipeline and is about
+        payloads - so it is the right moment to assert it.
+        """
+        offenders = list(_app_import_offenders(sorted(SERVICES_DIR.rglob("*.py")), "nautobot_event_tracker.ingestion"))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "services/ must not import the ingestion package. Offending lines: " + ", ".join(offenders),
+        )

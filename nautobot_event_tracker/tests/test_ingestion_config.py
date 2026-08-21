@@ -7,7 +7,7 @@ is the only reason the validation exists at all.
 from unittest import mock
 
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 
 from nautobot_event_tracker.choices import SeverityChoices
 from nautobot_event_tracker.ingestion import config
@@ -25,8 +25,13 @@ TOPIC = {
 
 
 def settings_with(ingestion):
-    """Build a PLUGINS_CONFIG override carrying this ingestion block."""
-    return override_settings(PLUGINS_CONFIG={"nautobot_event_tracker": {"ingestion": ingestion}})
+    """Build a PLUGINS_CONFIG override carrying this ingestion block.
+
+    Through the fixture, so the block sits on the app's own defaults the way a deployment's does -
+    the resolve rules are checked against `attachable_object_types`, which a bare override would
+    leave empty.
+    """
+    return fixtures.app_settings(ingestion=ingestion)
 
 
 class TestDefaults(SimpleTestCase):
@@ -388,3 +393,189 @@ class TestTriageDatabaseValidation(TestCase):
         with settings_with({"topics": {"network.events": TOPIC}}):
             loaded = config.load()
         self.assertEqual(config.database_problems(loaded), [])
+
+
+class TestResolveConfiguration(fixtures.RefusalAssertions, SimpleTestCase):
+    """Phase 4A section 3.2: every fault in a resolve rule, found before the first message.
+
+    All of it is answerable from the settings and the model registry, so none of these tests needs
+    a database - which is the point of checking it here rather than at the first lookup.
+    """
+
+    def assert_refuses(self, resolve, *expected):
+        """Assert that a topic carrying these resolve rules will not load."""
+        with settings_with({"topics": {"t": {**TOPIC, "resolve": resolve}}}):
+            with self.assertRaises(ImproperlyConfigured) as caught:
+                config.load()
+        return self.assert_names(str(caught.exception), expected)
+
+    def load_rules(self, resolve):
+        """Load a topic carrying these resolve rules and return what it parsed."""
+        with settings_with({"topics": {"t": {**TOPIC, "resolve": resolve}}}):
+            return config.load().topics["t"].resolve
+
+    def test_a_topic_that_says_nothing_resolves_nothing(self):
+        """The default is an empty list, so the pipeline runs no query for that topic."""
+        with settings_with({"topics": {"t": TOPIC}}):
+            self.assertEqual(config.load().topics["t"].resolve, ())
+
+    def test_a_rule_is_parsed_into_what_the_resolver_takes(self):
+        """The dataclass lives in the service layer; this is where it gets filled in."""
+        rules = self.load_rules(fixtures.INGESTION_RESOLVE)
+
+        self.assertEqual([rule.name for rule in rules], ["device", "interface"])
+        self.assertEqual(rules[0].model, "dcim.device")
+        self.assertEqual(rules[1].scope, (("device", "device"),))
+
+    def test_a_model_named_in_any_case_is_the_same_model(self):
+        """`dcim.Device` is how a Django developer writes it and it means the same thing."""
+        rules = self.load_rules([{"name": "d", "path": "host", "model": "DCIM.Device", "field": "name"}])
+        self.assertEqual(rules[0].model, "dcim.device")
+
+    def test_every_missing_key_is_reported_at_once(self):
+        """One restart answers every fault, which is this module's whole contract."""
+        self.assert_refuses(
+            [{}],
+            "needs a name",
+            "needs a 'path'",
+            "needs a 'model'",
+            "needs a 'field'",
+        )
+
+    def test_a_rule_must_be_a_mapping(self):
+        """A list of strings is a plausible thing to write and an impossible thing to run."""
+        self.assert_refuses(["dcim.device"], "must be a mapping")
+
+    def test_two_rules_may_not_share_a_name(self):
+        """The name is how a later rule scopes on this one, so it has to mean one rule."""
+        self.assert_refuses(
+            [
+                {"name": "device", "path": "host", "model": "dcim.device", "field": "name"},
+                {"name": "device", "path": "peer", "model": "dcim.device", "field": "name"},
+            ],
+            "name 'device' is already used",
+        )
+
+    def test_a_model_that_does_not_exist_is_refused(self):
+        """A typo in a model label would otherwise be an exception on the first message."""
+        self.assert_refuses(
+            [{"name": "d", "path": "host", "model": "dcim.devise", "field": "name"}],
+            "may not be attached to a ticket",
+        )
+
+    def test_a_model_outside_the_allowlist_is_refused(self):
+        """E4 - and refused here, because `attach_object()` would refuse it inside the ticket's
+        own transaction, where the roll-back costs the event rather than the attachment.
+        """
+        self.assert_refuses(
+            [{"name": "s", "path": "host", "model": "extras.secret", "field": "name"}],
+            "objects of type 'extras.secret' may not be attached to a ticket",
+        )
+
+    def test_a_field_that_does_not_exist_is_refused(self):
+        """Left to run, this matches nothing forever and looks exactly like an empty estate."""
+        self.assert_refuses(
+            [{"name": "d", "path": "host", "model": "dcim.device", "field": "hostname"}],
+            "'hostname' is not a field on dcim.device",
+        )
+
+    def test_a_scope_may_only_name_an_earlier_rule(self):
+        """Forward references are how a cycle would start; there is no order that runs this."""
+        self.assert_refuses(
+            [
+                {
+                    "name": "interface",
+                    "path": "interface",
+                    "model": "dcim.interface",
+                    "field": "name",
+                    "scope": {"device": "device"},
+                },
+                {"name": "device", "path": "host", "model": "dcim.device", "field": "name"},
+            ],
+            "which is not a rule defined earlier in this topic",
+        )
+
+    def test_a_rule_may_not_scope_on_itself(self):
+        """The same check catches it, which is why cycles are impossible rather than detected."""
+        self.assert_refuses(
+            [
+                {
+                    "name": "device",
+                    "path": "host",
+                    "model": "dcim.device",
+                    "field": "name",
+                    "scope": {"location": "device"},
+                }
+            ],
+            "which is not a rule defined earlier in this topic",
+        )
+
+    def test_a_scope_field_must_be_a_field_on_this_rules_model(self):
+        """The scope pins this rule's lookup, so the field belongs to this rule's model."""
+        self.assert_refuses(
+            [
+                {"name": "device", "path": "host", "model": "dcim.device", "field": "name"},
+                {
+                    "name": "interface",
+                    "path": "interface",
+                    "model": "dcim.interface",
+                    "field": "name",
+                    "scope": {"switch": "device"},
+                },
+            ],
+            "scope field 'switch' is not a field on dcim.interface",
+        )
+
+    def test_a_scope_field_must_be_a_relation(self):
+        """There is nothing for an earlier rule's object to be, on a character field."""
+        self.assert_refuses(
+            [
+                {"name": "device", "path": "host", "model": "dcim.device", "field": "name"},
+                {
+                    "name": "interface",
+                    "path": "interface",
+                    "model": "dcim.interface",
+                    "field": "name",
+                    "scope": {"label": "device"},
+                },
+            ],
+            "is not a relation on dcim.interface",
+        )
+
+    def test_a_scope_must_be_a_mapping(self):
+        """Naming the earlier rule alone reads well and cannot say which field to pin."""
+        self.assert_refuses(
+            [
+                {"name": "device", "path": "host", "model": "dcim.device", "field": "name"},
+                {
+                    "name": "interface",
+                    "path": "interface",
+                    "model": "dcim.interface",
+                    "field": "name",
+                    "scope": "device",
+                },
+            ],
+            "'scope' must be a mapping",
+        )
+
+    def test_a_rule_that_cannot_be_built_is_not_handed_to_the_resolver(self):
+        """`load()` raises on any fault, but the parse must not half-build one either."""
+        with settings_with({"topics": {"t": {**TOPIC, "resolve": [{"name": "d", "path": "host"}]}}}):
+            topic, problems = config._parse_topic(  # pylint: disable=protected-access
+                "t", {**TOPIC, "resolve": [{"name": "d", "path": "host"}]}
+            )
+        self.assertEqual(topic.resolve, ())
+        self.assertTrue(problems)
+
+    def test_the_cache_settings_must_be_positive_integers(self):
+        """Zero entries would make every event a query, and the operator would never know why."""
+        with settings_with({"resolve_cache_seconds": 0, "resolve_cache_entries": -1}):
+            with self.assertRaises(ImproperlyConfigured) as caught:
+                config.load()
+        self.assert_names(
+            str(caught.exception),
+            [
+                "'resolve_cache_seconds' must be a positive integer",
+                "'resolve_cache_entries' must be a positive integer",
+            ],
+        )
