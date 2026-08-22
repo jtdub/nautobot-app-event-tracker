@@ -5,6 +5,7 @@ from django.contrib.contenttypes.models import ContentType
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.forms import (
     DynamicModelChoiceField,
+    DynamicModelMultipleChoiceField,
     NautobotBulkEditForm,
     NautobotFilterForm,
     NautobotModelForm,
@@ -455,6 +456,8 @@ class MCPToolForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
             "input_schema",
             "tags",
         ]
+        # `advertised_read_only` is deliberately absent: it records what the server claimed, and a
+        # field an operator can type into is no longer a record of that.
 
 
 class MCPToolBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
@@ -478,10 +481,17 @@ class MCPToolFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancesto
     """Filter form for MCPTool."""
 
     model = MCPTool
-    field_order = ["q", "server", "name", "enabled", "mutating"]
+    field_order = ["q", "server", "name", "enabled", "mutating", "advertised_read_only"]
 
     q = forms.CharField(required=False, label="Search", help_text="Search within name, description and server.")
-    server = DynamicModelChoiceField(queryset=MCPServer.objects.all(), required=False)
+    # Multiple, because the filterset takes multiple and reviewing two servers at once is an
+    # ordinary thing to want on the page whose whole purpose is review.
+    server = DynamicModelMultipleChoiceField(queryset=MCPServer.objects.all(), to_field_name="name", required=False)
     name = forms.CharField(required=False, label="Name")
     enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
     mutating = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+    advertised_read_only = forms.NullBooleanField(
+        required=False,
+        label="Server claims read-only",
+        widget=StaticSelect2(choices=YES_NO_CHOICES),
+    )

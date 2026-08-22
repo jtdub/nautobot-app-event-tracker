@@ -403,8 +403,9 @@ class EnrichmentGuardTest(SimpleTestCase):
 class MCPGuardTest(SimpleTestCase):
     """ADR 0007's two mechanical halves: one client, and no way to run a process."""
 
-    #: The MCP client library, importable only in `services/mcp.py` (rule M1).
-    MCP_LIBRARY = "mcp"
+    #: The MCP client library and the HTTP client it is driven with, importable only in
+    #: `services/mcp.py` (rule M1).
+    MCP_LIBRARIES = ("mcp", "httpx2")
 
     #: Every way Python starts a process. ADR 0007 refused the stdio transport because it means
     #: process execution driven by database rows; this is that decision, asserted rather than
@@ -416,7 +417,7 @@ class MCPGuardTest(SimpleTestCase):
         """M1 - one import site, the same arrangement litellm has."""
         allowed = {"services/mcp.py"}
         paths = [path for path in sorted(APP_ROOT.rglob("*.py")) if str(path.relative_to(APP_ROOT)) not in allowed]
-        offenders = list(_import_offenders(paths, (self.MCP_LIBRARY,)))
+        offenders = list(_import_offenders(paths, self.MCP_LIBRARIES))
 
         self.assertEqual(
             offenders,
@@ -437,12 +438,17 @@ class MCPGuardTest(SimpleTestCase):
         )
 
     def test_the_mcp_client_is_an_optional_dependency(self):
-        """A deployment that registers no server installs no MCP client."""
+        """A deployment that registers no server installs no MCP client.
+
+        Both packages, because `services/mcp.py` imports both: relying on `httpx2` arriving as one
+        of `mcp`'s own dependencies makes the day that changes look like a missing `mcp` extra.
+        """
         poetry = IngestionGuardTest._poetry()  # pylint: disable=protected-access
-        self.assertIs(
-            poetry["dependencies"].get("mcp", {}).get("optional"),
-            True,
-            "mcp must be a runtime dependency marked optional",
-        )
-        self.assertIn("mcp", poetry["extras"].get("mcp", ()), "the 'mcp' extra must install mcp")
-        self.assertIn("mcp", poetry["extras"].get("all", ()), "the 'all' extra must include mcp")
+        for package in self.MCP_LIBRARIES:
+            self.assertIs(
+                poetry["dependencies"].get(package, {}).get("optional"),
+                True,
+                f"{package} must be a runtime dependency marked optional",
+            )
+            self.assertIn(package, poetry["extras"].get("mcp", ()), f"the 'mcp' extra must install {package}")
+            self.assertIn(package, poetry["extras"].get("all", ()), f"the 'all' extra must include {package}")

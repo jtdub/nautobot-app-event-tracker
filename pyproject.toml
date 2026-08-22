@@ -41,6 +41,10 @@ litellm = { version = ">=1.74.0,<2.0.0", optional = true }
 # (rule M1). Pinned to 2.x: 2.0 renamed the streamable HTTP transport and moved the tool fields to
 # snake_case, so a 1.x client is not the one this app is written against.
 mcp = { version = ">=2.0.0,<3.0.0", optional = true }
+# Imported directly by services/mcp.py to build the session's HTTP client, so it is declared here
+# rather than relied on as one of mcp's own dependencies - which is where it comes from today, and
+# which would surface as an ImproperlyConfigured naming the wrong extra the day it stops.
+httpx2 = { version = ">=2.12.0,<3.0.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 coverage = "*"
@@ -80,9 +84,10 @@ mkdocs-glightbox = "~0.5.2"
 [tool.poetry.extras]
 kafka = ["confluent-kafka"]
 llm = ["litellm"]
-mcp = ["mcp"]
+mcp = ["mcp", "httpx2"]
 all = [
     "confluent-kafka",
+    "httpx2",
     "litellm",
     "mcp",
 ]

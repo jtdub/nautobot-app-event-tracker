@@ -12,6 +12,7 @@ generate twelve rather than fifty wherever the number does not matter.
 from io import StringIO
 from unittest import mock
 
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
@@ -353,6 +354,22 @@ class TestDiscoverMCPTools(TestCase):
         with self.assertRaises(CommandError) as caught:
             self.run_command(server="Retired")
         self.assertIn("disabled", str(caught.exception))
+
+    def test_a_missing_extra_is_refused_rather_than_raised(self):
+        """A cron entry on a box installed without `[mcp]` should read a sentence, not a traceback.
+
+        The missing-extra failure is an `ImproperlyConfigured`, deliberately outside the family
+        the discovery loop handles, so nothing there would have caught it.
+        """
+        from nautobot_event_tracker.services import mcp as mcp_service  # pylint: disable=import-outside-toplevel
+
+        with mock.patch.object(
+            mcp_service, "require_client", side_effect=ImproperlyConfigured("The MCP client is not installed.")
+        ):
+            with self.assertRaises(CommandError) as caught:
+                call_command("discovermcptools", stdout=StringIO(), stderr=StringIO())
+
+        self.assertIn("not installed", str(caught.exception))
 
     def test_no_enabled_servers_is_refused(self):
         """Otherwise a scheduled run reports success having done nothing, forever."""

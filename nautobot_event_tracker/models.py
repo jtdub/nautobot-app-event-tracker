@@ -719,17 +719,33 @@ class MCPTool(PrimaryModel):  # pylint: disable=too-many-ancestors
         help_text=(
             "Whether calling this tool changes something. A mutating tool never runs without a "
             "human approving that call (rule M6). True until a person says otherwise: guessing "
-            "wrong this way costs a click, and guessing wrong the other way changes the network."
+            "wrong this way costs a click, and guessing wrong the other way changes the network. "
+            "Only a person sets this. Discovery never does, whatever the server claims."
+        ),
+    )
+    advertised_read_only = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text=(
+            "What the server's own readOnlyHint annotation claims, or unset when it claims "
+            "nothing. Shown so a reviewer can see it; never used to decide anything. The MCP "
+            "specification says in as many words that a client must not make tool-use decisions "
+            "from annotations it received from the server they describe."
         ),
     )
     enabled = models.BooleanField(
         default=False,
         help_text="Disabled means uncallable, whatever a model asks for (rule M4). Discovery never enables.",
     )
-    schema_fingerprint = models.CharField(
+    definition_fingerprint = models.CharField(
         max_length=CHARFIELD_MAX_LENGTH,
         blank=True,
-        help_text="Digest of the advertised schema when this tool was last reviewed. A change disables it (rule M5).",
+        help_text=(
+            "Digest of everything the server advertised about this tool - its description as well "
+            "as its argument schema - as of the last discovery. A change under an enabled tool "
+            "disables it (rule M5). The description is in the digest because it is half of what a "
+            "reviewer read, and because it becomes the tool's semantics in an agent's prompt."
+        ),
     )
     last_seen_at = models.DateTimeField(
         null=True,
@@ -764,3 +780,12 @@ class MCPTool(PrimaryModel):  # pylint: disable=too-many-ancestors
         an operator enabled is still not being offered to a model.
         """
         return self.enabled and self.server.enabled
+
+    @property
+    def claims_read_only(self):
+        """Whether the server says this tool only reads, and this deployment disagrees.
+
+        The pair worth showing a reviewer: a tool the server calls read-only which nobody has
+        classified that way. It is a prompt to look, never an argument to believe.
+        """
+        return self.advertised_read_only is True and self.mutating

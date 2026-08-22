@@ -273,4 +273,12 @@ class MCPToolFilterSet(NautobotFilterSet):
         """Meta attributes for filter."""
 
         model = MCPTool
-        fields = ["server", "name", "description", "enabled", "mutating", "tags"]  # pylint: disable=nb-use-fields-all
+        fields = [  # pylint: disable=nb-use-fields-all
+            "server",
+            "name",
+            "description",
+            "enabled",
+            "mutating",
+            "advertised_read_only",
+            "tags",
+        ]

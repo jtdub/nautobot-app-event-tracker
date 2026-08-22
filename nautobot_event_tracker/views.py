@@ -8,7 +8,6 @@ from contextlib import contextmanager
 
 from django.contrib import messages
 from django.core.exceptions import ImproperlyConfigured as DjangoImproperlyConfigured
-from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -25,6 +24,7 @@ from nautobot.apps.ui import (
     ObjectFieldsPanel,
     ObjectsTablePanel,
     ObjectTextPanel,
+    PostButton,
     SectionChoices,
 )
 from nautobot.apps.views import (
@@ -44,10 +44,10 @@ from nautobot_event_tracker.services.exceptions import MCPError, TicketServiceEr
 
 TRANSITION_PERMISSION = "nautobot_event_tracker.transition_eventticket"
 CHANGE_PERMISSION = "nautobot_event_tracker.change_eventticket"
-#: Discovery writes both: the server's `last_discovered_at`, and a row per tool it found. Two
-#: permissions, therefore, and they are checked in two places because Nautobot's mixin restricts
-#: the view's own queryset by the permission it is given - which only works when the two name the
-#: same model. The server half is the mixin's; the tool half is checked in `post()`.
+#: Discovery writes both: the server's `last_discovered_at`, and a row per tool it found. The
+#: first is what the view's queryset is restricted by, so it is the one the mixin is given; the
+#: second goes in `additional_permissions`, which the mixin checks without touching the
+#: restriction. Editing a server does not carry the right to widen what may be called.
 DISCOVER_PERMISSION = "nautobot_event_tracker.change_mcpserver"
 DISCOVER_TOOL_PERMISSION = "nautobot_event_tracker.add_mcptool"
 
@@ -699,8 +699,12 @@ class LLMUsageRecordUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ance
     )
 
 
-class DiscoverToolsButton(Button):
-    """Reads a server's tool list and reconciles the registry with it. Hidden for a disabled server."""
+class DiscoverToolsButton(PostButton):
+    """Reads a server's tool list and reconciles the registry with it. Hidden for a disabled server.
+
+    A `PostButton`, not a `Button`: the plain one renders an anchor, which issues a GET, and this
+    action writes rows. It also means the request carries a CSRF token, which a link cannot.
+    """
 
     link_name = "plugins:nautobot_event_tracker:mcpserver_discover"
     required_permissions = (DISCOVER_PERMISSION, DISCOVER_TOOL_PERMISSION)
@@ -776,7 +780,15 @@ class MCPToolUIViewSet(NautobotUIViewSet):
             ObjectFieldsPanel(
                 weight=100,
                 section=SectionChoices.LEFT_HALF,
-                fields=["server", "name", "description", "enabled", "mutating", "last_seen_at"],
+                fields=[
+                    "server",
+                    "name",
+                    "description",
+                    "enabled",
+                    "mutating",
+                    "advertised_read_only",
+                    "last_seen_at",
+                ],
             ),
             ObjectTextPanel(
                 weight=200,
@@ -797,18 +809,16 @@ class MCPServerDiscoverView(ObjectPermissionRequiredMixin, GenericView):
     """
 
     queryset = models.MCPServer.objects.all()
+    #: Checked alongside the required permission, without being used to restrict this view's
+    #: queryset - which is what makes it the right home for a permission on another model.
+    additional_permissions = [DISCOVER_TOOL_PERMISSION]
 
     def get_required_permission(self):
-        """The half the mixin can enforce: discovery stamps the server row it is given."""
+        """The permission the queryset is restricted by: discovery stamps the server it is given."""
         return DISCOVER_PERMISSION
 
     def post(self, request, pk):
         """Discover, then say what changed in the terms an operator has to act on."""
-        if not request.user.has_perm(DISCOVER_TOOL_PERMISSION):
-            # The other half. Writing tool rows is the part of this that decides what this
-            # deployment can be made to do, and it is not implied by editing a server.
-            raise PermissionDenied("Discovering tools needs permission to add MCP tools.")
-
         server = get_object_or_404(self.queryset, pk=pk)
         try:
             report = mcp_service.discover(server)

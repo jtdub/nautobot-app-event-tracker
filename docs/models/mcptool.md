@@ -18,10 +18,28 @@ to none of them until somebody goes through the list. And a tool nobody has clas
 as though it changes the network, because getting that wrong in one direction costs a click and in
 the other direction costs an outage.
 
-MCP's own `readOnlyHint` annotation pre-fills **Mutating** for a tool nobody has classified yet. It
-never overrules a person, and re-discovery will not use it to reclassify a tool you have already
-decided about: the hint is written by the server's author, and the boundary it would be deciding is
-yours.
+## What the server claims, and why it decides nothing
+
+MCP lets a server annotate its own tools with `readOnlyHint`. Event Tracker records that claim in
+**Server Claims Read-Only** and acts on it in no way whatsoever. **Mutating** is set by a person
+and by nobody else.
+
+This is not caution for its own sake. `Mutating` is the only thing standing between a tool and an
+agent calling it without asking anyone. If a server could set it, a compromised or hostile server
+would advertise `push_config` as read-only, it would land in the harmless-looking half of the list,
+and an operator working down that half in bulk would enable it. No Nautobot permission is needed
+for that attack — only control of the server's own answer.
+
+The MCP specification says the same thing in its own words: a client must never make tool-use
+decisions from annotations received from the server those annotations describe.
+
+What the claim is good for is review. A tool where the server says *read-only* and this deployment
+still says *mutating* is a row worth a second look — either the server is right and somebody should
+untick Mutating, or it is not, and that is worth knowing about the server.
+
+| Field | Description |
+| --- | --- |
+| Server Claims Read-Only | The server's `readOnlyHint`, or unset when it makes no claim. Refreshed by discovery, read by nobody. |
 
 ## What the server said
 
@@ -33,11 +51,17 @@ yours.
 | Input Schema | The JSON Schema for the tool's arguments. Refreshed by discovery. |
 | Last Seen At | When discovery last saw this tool advertised. |
 
-## When a schema changes
+## When the definition changes
 
-The argument schema is the thing that was reviewed when the tool was enabled. If discovery finds it
-has changed under an **enabled** tool, that tool is **disabled** and named in the discovery result.
-What was allowed is not what is now being offered, and somebody should look before it runs again.
+The description and the argument schema together are what was reviewed when the tool was enabled.
+If discovery finds either has changed under an **enabled** tool, that tool is **disabled** and
+named in the discovery result. What was allowed is not what is now being offered, and somebody
+should look before it runs again.
+
+The description counts, not just the schema. It is half of what you read when you decided whether
+the tool mutates — a schema of `{"device": "string"}` rarely says — and it is the sentence that
+tells an agent what the tool is *for*. A server that wanted to change a tool's meaning without
+tripping the alarm would leave the arguments alone and rewrite that sentence.
 
 A change to a tool that was already disabled is simply recorded — there is nothing to withdraw.
 

@@ -141,9 +141,10 @@ A `PrimaryModel`, unique on `(server, name)`.
 | `name` | Char | The tool name on the wire |
 | `description` | Text, blank | As the server advertised it |
 | `input_schema` | JSON, default `{}` | The JSON Schema the server advertised |
-| `mutating` | Boolean, default **True** | Whether calling it changes something |
+| `mutating` | Boolean, default **True** | Whether calling it changes something. Set by a person, never by discovery |
 | `enabled` | Boolean, default **False** | Rule M4's switch |
-| `schema_fingerprint` | Char, blank | Digest of the advertised schema (M5) |
+| `advertised_read_only` | Boolean, null | What the server's own `readOnlyHint` claims. Recorded and shown; decides nothing |
+| `definition_fingerprint` | Char, blank | Digest of the advertised description **and** schema (M5) |
 | `last_seen_at` | DateTime, null | When discovery last saw it |
 
 **Both defaults are the load-bearing part.** A newly discovered tool is disabled, so a server
@@ -151,9 +152,19 @@ advertising forty tools grants forty times nothing. And it is `mutating=True` un
 otherwise, because the failure of guessing wrong in that direction is an unapproved change to the
 network, and the failure of guessing wrong in the other is one extra click.
 
-MCP's own `readOnlyHint` annotation is read as a *suggestion* on discovery — it pre-fills the
-field on a tool nobody has classified yet — and never as an answer, because it is written by the
-server author and this app's security boundary may not be.
+MCP's own `readOnlyHint` annotation is **recorded and never acted on**. `mutating` is the only
+input to the approval gate, and the party who would be setting it is the party the gate exists to
+constrain: a server that could mark its own `push_config` read-only would land it in the half of
+the list an operator enables in bulk, needing no Nautobot permission at all. The MCP specification
+says a client must never make tool-use decisions from annotations received from the server they
+describe. The claim is kept in `advertised_read_only` and shown beside the operator's own
+classification, because a disagreement between the two is worth a reviewer's attention — which is
+a reason to look, not a reason to believe.
+
+**The fingerprint covers the description too, not only the schema.** The description is half of
+what a reviewer read when deciding whether a tool mutates — a schema of `{"device": "string"}`
+rarely says — and in an agent's prompt it *is* the tool's semantics. A server changing a tool's
+meaning while leaving its arguments alone is the case a schema-only digest waves through.
 
 ### 4.3 AgentRun (PR B)
 
@@ -226,11 +237,14 @@ supplies one. No test opens a socket.
   server that is not enabled, before any network I/O — and refuses it whatever the prompt, the
   model or the caller said. The allowlist is a table; the model never sees a tool that is not on
   it, and could not call one if it invented the name.
-- **M5 — Discovery never grants.** `discover()` creates new tools disabled and `mutating=True`,
-  refreshes descriptions and schemas, and marks tools the server no longer advertises. It never
-  enables anything and never flips `mutating` on a tool a person has classified. A tool whose
-  schema changed since it was approved is **disabled again** and reported: the thing an operator
-  allowed is not the thing the server is now offering.
+- **M5 — Discovery never grants, and believes nothing.** `discover()` creates new tools disabled
+  and `mutating=True` whatever the server claims about them, refreshes descriptions and schemas,
+  and marks tools the server no longer advertises. It never enables anything and never writes
+  `mutating` at all — not on a new tool, not on an old one. A tool whose **definition** changed
+  since it was approved, in its description or its schema, is **disabled again** and reported: the
+  thing an operator allowed is not the thing the server is now offering. The whole pass is one
+  transaction, and a tool the registry cannot hold — a duplicated name, a name past the column —
+  is an `MCPCallError` rather than a half-written registry.
 - **M6 — A mutating tool needs an approved call.** `call_tool()` requires `status=approved` on the
   `AgentToolCall` when the tool is mutating, and refuses otherwise. One gate, in the layer that
   owns the rule — the argument `join_ticket` already makes about where a check belongs.
@@ -244,8 +258,9 @@ supplies one. No test opens a socket.
 
 ### 5.2 Discovery
 
-`discover(server)` lists the server's tools and returns a `DiscoveryReport`: added, updated,
-`schema_changed` (disabled by M5), and `missing`. It is reachable from the server's detail page as
+`discover(server)` lists the server's tools — following the pagination `tools/list` defines, so a
+paged server is registered whole — and returns a `DiscoveryReport`: added, updated,
+`definition_changed` (disabled by M5), and `missing`. It is reachable from the server's detail page as
 an action, and from a management command for a deployment that would rather cron it. It writes
 `MCPTool` rows and nothing else — no ticket, no run.
 
@@ -529,16 +544,38 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   say. An integration whose own headers already carry an Authorization wins, so a server that
   authenticates some other way needs no code here.
 - **Discovery needs two permissions**, `change_mcpserver` and `add_mcptool`. It writes both kinds
-  of row, and Nautobot's `ObjectPermissionRequiredMixin` restricts the view's own queryset by the
-  permission it is given - which only works when the two name the same model. The server half is
-  the mixin's; the tool half is checked in the view, and a user holding only `change_mcpserver`
-  gets a 403.
-- **Re-discovery never touches `mutating`**, not even when the `readOnlyHint` changes. Section 4.2
-  said the hint pre-fills a tool nobody has classified; the implementation adds that it can never
-  *re*-fill one, or a server could talk its way out of the gate by editing an annotation.
+  of row. The first restricts the view's queryset and is what `get_required_permission()` returns;
+  the second goes in `additional_permissions`, which `ObjectPermissionRequiredMixin` checks without
+  using it to restrict anything. A user holding only `change_mcpserver` gets a 403.
+- **`mutating` is never written from a server's answer**, on a new tool or an old one, and the
+  hint is recorded in `advertised_read_only` instead. Section 4.2 originally said the hint
+  *pre-fills* the field for a tool nobody has classified, which contradicted M5 in the same
+  document and would have let a hostile server file a config-push tool under "safe to enable in
+  bulk". Both sections now say the same thing, and it is the safe one.
+- **The fingerprint covers the description as well as the schema**, and the report's bucket is
+  named `definition_changed` accordingly. A schema-only digest let a server rewrite the sentence
+  that becomes a tool's semantics in a prompt and be reported as "1 updated".
 - **A disabled server is not discovered at all.** Reading its tool list is harmless, but an
   operator who switched a server off should not find its registry changing underneath them.
 - **The list page counts tools twice**, total and enabled, because the gap between them is the
   default-deny rule being visible. The second count is a plain annotated column rather than a
   second `LinkedCountColumn`: two of those on one relation collide in django-tables2 with
   "already seen with a different queryset".
+- **The Discover Tools control is a `PostButton`.** A plain `Button` renders an anchor, which
+  issues a GET, and the view accepts POST only - so the one documented way to run discovery from
+  the UI returned 405. The tests posted to the URL directly and never rendered the page, which is
+  why a full green suite said nothing; there is now a test that reads the rendered page.
+- **`tools/list` is read to the end.** It is a paginated request, and reading one page would leave
+  the rest unregistered - so unreviewable - and would report every tool after page one as "no
+  longer offered" on every run, which is the one signal an operator is meant to act on.
+- **The session's HTTP client follows redirects and reads on a longer deadline than it writes.**
+  The transport keeps a server-sent-event stream open, so a flat timeout from the integration cuts
+  it mid-answer; an endpoint that redirects `/mcp` to `/mcp/` simply failed. Both match what the
+  SDK's own client factory documents.
+- **`httpx2` is declared**, rather than relied on as one of `mcp`'s dependencies. It is imported
+  directly here, and the day it stops arriving transitively the failure would name the wrong extra.
+- **`require_client()` is called by the management command.** It was written for exactly this and
+  shipped unused: without it, a scheduled run on a deployment installed without the extra reported
+  a traceback where the documentation promises a sentence.
+- **An unchanged tool is not rewritten.** `MCPTool` is change-logged, and stamping `last_seen_at`
+  on every pass filed one `ObjectChange` per tool per night recording that nothing had happened.

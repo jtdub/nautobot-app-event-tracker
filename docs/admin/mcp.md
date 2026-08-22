@@ -54,15 +54,19 @@ nautobot-server discovermcptools            # every enabled server
 ```
 
 Discovery reads the advertised tool list and writes one **MCP Tool** record per tool. Every new
-tool arrives **disabled** and marked **mutating**. A server advertising forty tools has granted
-access to none of them.
+tool arrives **disabled** and marked **mutating** — whatever the server says about it. A server
+advertising forty tools has granted access to none of them, and cannot classify any of them for
+you.
 
 ## 4. Review, which is the actual work
 
 Go through the tool list and make two decisions per tool:
 
 - **Is it mutating?** Does calling it change something — on a device, in another system, anywhere?
-  If it only reads, untick **Mutating**. If you are not sure, leave it ticked.
+  If it only reads, untick **Mutating**. If you are not sure, leave it ticked. The **Server Claims
+  Read-Only** column shows what the server says about itself; it is a place to start looking, not
+  an answer. A server that could set this field could hand you a config-push tool filed under
+  "safe".
 - **Should this deployment be able to call it at all?** If yes, tick **Enabled**.
 
 A read-only tool is not automatically a harmless tool. It is a decision about what the author of an
@@ -77,13 +81,14 @@ friction rather than pretending it away.
 Run discovery again whenever the server changes, or on a schedule. Three things can happen:
 
 - **A new tool appears.** It arrives disabled. It is named in the result so you can go and look.
-- **A tool's argument schema changed.** If that tool was enabled, it is **disabled again** and
-  named. The schema is what you reviewed; if it has changed, the thing you allowed is not the thing
-  now on offer.
+- **A tool's definition changed** — its description or its argument schema. If that tool was
+  enabled, it is **disabled again** and named. Those two together are what you reviewed; if either
+  has changed, the thing you allowed is not the thing now on offer. The description counts because
+  it is what tells an agent what the tool is for.
 - **A tool is no longer advertised.** It is reported and otherwise left alone. A server having a
   bad minute must not silently undo your decisions.
 
-Nothing discovery does ever enables a tool or reclassifies one you have classified.
+Nothing discovery does ever enables a tool or sets **Mutating**, on a new tool or an old one.
 
 ## The off switches
 

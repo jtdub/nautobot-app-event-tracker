@@ -714,6 +714,31 @@ class MCPServerDiscoverViewTest(TestCase):
         self.server = fixtures.create_mcpserver()
         self.url = reverse("plugins:nautobot_event_tracker:mcpserver_discover", kwargs={"pk": self.server.pk})
 
+    def test_the_button_on_the_page_posts(self):
+        """The regression that 1384 green tests missed: a plain Button renders a link.
+
+        A link issues a GET, this view accepts POST only, and an operator holding both permissions
+        got a 405 from the only documented way to run discovery. Asserting on the rendered page is
+        the only thing that catches it - posting to the URL directly, which every other test here
+        does, works perfectly well against a button nobody can use.
+        """
+        self.add_permissions(*self.DISCOVER_PERMISSIONS)
+        response = self.client.get(self.server.get_absolute_url())
+
+        self.assertHttpStatus(response, 200)
+        content = response.content.decode()
+        self.assertIn(f'<form method="post" action="{self.url}"', content)
+
+    def test_the_button_is_hidden_for_a_disabled_server(self):
+        """Offering an action that would be refused is how an operator learns to ignore buttons."""
+        self.add_permissions(*self.DISCOVER_PERMISSIONS)
+        self.server.enabled = False
+        self.server.validated_save()
+
+        response = self.client.get(self.server.get_absolute_url())
+
+        self.assertNotIn(self.url, response.content.decode())
+
     def test_it_needs_more_than_permission_to_look(self):
         """Discovery writes rows; viewing the server is not enough to make it."""
         self.assertHttpStatus(self.client.post(self.url), 403)

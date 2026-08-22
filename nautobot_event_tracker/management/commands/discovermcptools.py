@@ -6,6 +6,7 @@ arrive disabled, and a tool whose schema changed under an approval is disabled a
 the output.
 """
 
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management.base import BaseCommand, CommandError
 
 from nautobot_event_tracker.models import MCPServer
@@ -29,6 +30,15 @@ class Command(BaseCommand):
         outage should come back with three servers reconciled and one named, not with nothing done.
         """
         servers = self._servers(options.get("server"))
+        try:
+            # Resolved once, before anything is attempted. A missing extra is an
+            # `ImproperlyConfigured`, deliberately outside the family the loop below handles, so
+            # without this a scheduled run on a deployment installed without `[mcp]` reports a
+            # traceback where the documentation promises a sentence.
+            mcp_service.require_client()
+        except ImproperlyConfigured as error:
+            raise CommandError(str(error)) from error
+
         failures = []
 
         for server in servers:

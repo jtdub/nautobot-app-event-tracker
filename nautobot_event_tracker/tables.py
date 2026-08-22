@@ -294,6 +294,9 @@ class MCPToolTable(BaseTable):
     server = tables.Column(linkify=True)
     enabled = BooleanColumn()
     mutating = BooleanColumn(verbose_name="Mutating")
+    # Shown beside the operator's own classification, never instead of it: a reviewer comparing
+    # the two columns is exactly the comparison this app refuses to make on their behalf.
+    advertised_read_only = BooleanColumn(verbose_name="Server Claims Read-Only")
     actions = ButtonsColumn(MCPTool, pk_field="pk")
 
     class Meta(BaseTable.Meta):
@@ -307,6 +310,7 @@ class MCPToolTable(BaseTable):
             "description",
             "enabled",
             "mutating",
+            "advertised_read_only",
             "last_seen_at",
             "actions",
         )

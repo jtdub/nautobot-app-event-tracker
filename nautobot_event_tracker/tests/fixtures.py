@@ -394,7 +394,10 @@ def create_mcpserver(name="Test MCP Server", **overrides):
     from nautobot_event_tracker.models import MCPServer  # pylint: disable=import-outside-toplevel
 
     existing = MCPServer.objects.filter(name=name).first()
-    if existing is not None and not overrides:
+    if existing is not None:
+        # Whatever the overrides say. Falling through with them would build a second server of the
+        # same unique name and fail on save, which is a confusing way for a fixture to report
+        # "somebody already made this one".
         return existing
 
     defaults = {
