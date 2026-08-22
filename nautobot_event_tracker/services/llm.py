@@ -337,11 +337,12 @@ def _model_string(model):
 def _connection_kwargs(provider):
     """L3 - everything the ExternalIntegration says about this connection, read at call time.
 
-    The endpoint and the key, and also the three fields an operator sets expecting them to be
-    obeyed: SSL Verification, CA File Path and Headers. Reading `remote_url` raw was wrong twice
-    over - Jinja2 templating is supported on it, so a templated URL reached litellm as a literal
-    `{{ ... }}`, and an operator pointing triage at an internal endpoint with a private CA got a
-    TLS failure with nothing in the UI explaining it.
+    The endpoint, the key and the Headers. Reading `remote_url` raw was wrong twice over - Jinja2
+    templating is supported on it, so a templated URL reached litellm as a literal `{{ ... }}`,
+    and a templated endpoint went nowhere.
+
+    Not the TLS fields: litellm takes no per-call TLS argument, and `_warn_about_unappliable_tls`
+    explains what happens instead.
 
     A missing key is not an error here: an on-premises endpoint may not want one, and one that
     does will refuse the call itself, which the record then shows. Prefers the token secret type
@@ -405,15 +406,45 @@ def _connection_kwargs(provider):
     if headers:
         kwargs["extra_headers"] = headers
 
-    # httpx reads `verify` as a bool or as the path to a CA bundle, and litellm passes `ssl_verify`
-    # through to it. Unticking *Verify SSL* wins over a CA path: an operator who has done both has
-    # said not to verify, and quietly verifying anyway is the failure this fix exists to stop.
-    if not integration.verify_ssl:
-        kwargs["ssl_verify"] = False
-    elif integration.ca_file_path:
-        kwargs["ssl_verify"] = integration.ca_file_path
+    _warn_about_unappliable_tls(provider, integration)
 
     return kwargs
+
+
+def _warn_about_unappliable_tls(provider, integration):
+    """Say so when an integration asks for TLS settings litellm cannot be given per call.
+
+    This used to pass `ssl_verify` as a call keyword, which litellm does not accept: it swept the
+    key into `extra_body` and sent it to the provider in the request JSON. So unticking *Verify
+    SSL* did not disable verification, a *CA File Path* was never loaded, and an unexpected field
+    went out with every request. The setting looked applied and was not.
+
+    litellm resolves TLS from the `SSL_VERIFY` and `SSL_CERT_FILE` environment variables or from
+    its own `litellm.ssl_verify` module global, and from nothing per call. Writing that global
+    around each call is the obvious repair and the wrong one: a Celery worker runs calls for
+    several providers at once in threads, so one provider with verification off would switch it
+    off for another provider's call in flight. Quietly not applying a setting is bad; silently
+    disabling verification on somebody else's connection is worse.
+
+    So the app applies neither and says which ones it skipped. `services/mcp.py` has no such
+    problem and does honour both: it builds the HTTP client itself, per call.
+    """
+    unappliable = []
+    if not integration.verify_ssl:
+        unappliable.append("Verify SSL (unticked)")
+    if integration.ca_file_path:
+        unappliable.append(f"CA File Path ({integration.ca_file_path})")
+    if not unappliable:
+        return
+
+    logger.warning(
+        "External integration '%s' for LLM provider %s sets %s, which litellm cannot be given per "
+        "call - it reads TLS settings process-wide. They are NOT being applied. Set SSL_VERIFY or "
+        "SSL_CERT_FILE in the environment of every process that calls a model instead.",
+        integration,
+        provider,
+        " and ".join(unappliable),
+    )
 
 
 def _integration_timeout(provider):
@@ -447,8 +478,14 @@ def _litellm_completion():
     try:
         import litellm  # pylint: disable=import-outside-toplevel
     except ImportError as error:
+        # The cause is in the message, not only chained onto the exception. "litellm is not
+        # installed" is one explanation of an ImportError and not the only one: a release that is
+        # installed and broken - 1.98.0 imported `typing.NotRequired` on Python 3.10 - reads
+        # identically, and this line is what an operator or a CI log actually shows.
         raise ImproperlyConfigured(
-            "litellm is not installed. Install the app with the 'llm' extra: nautobot-event-tracker[llm]."
+            "litellm could not be imported, so no model can be called: "
+            f"{type(error).__name__}: {error}. "
+            "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
     return litellm.completion
 

@@ -609,7 +609,12 @@ def _default_client():
         from mcp import ClientSession  # pylint: disable=import-outside-toplevel
         from mcp.client.streamable_http import streamable_http_client  # pylint: disable=import-outside-toplevel
     except ImportError as error:
+        # The cause in the message, for the reason `services.llm` gives: a dependency that is
+        # installed and unimportable is not a missing extra, and telling somebody to install it
+        # again sends them the wrong way.
         raise ImproperlyConfigured(
-            "The MCP client is not installed. Install the app with the 'mcp' extra: nautobot-event-tracker[mcp]."
+            "The MCP client could not be imported, so no tool can be called: "
+            f"{type(error).__name__}: {error}. "
+            "If it is not installed, install the app with the 'mcp' extra: nautobot-event-tracker[mcp]."
         ) from error
     return _StreamableHTTPClient(ClientSession, streamable_http_client, httpx2.AsyncClient, httpx2.Timeout)

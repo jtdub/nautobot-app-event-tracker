@@ -54,12 +54,27 @@ The integration decides more than the address. Four of its fields are read on ev
 | *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the LLM Provider |
 | *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
 | *Headers* | Sent with every request, templated the same way |
-| *SSL Verification* | Unticked, the call does not verify the certificate |
-| *CA File Path* | A private CA bundle, used when verification is on |
+| *SSL Verification* | **Not applied to LLM calls** — see below |
+| *CA File Path* | **Not applied to LLM calls** — see below |
 | *Timeout* | The call's timeout, unless the model row or the caller states one |
 
 *Extra Config* is deliberately not sent. It is untyped, and splatting it into a call would reopen
 the hole that limiting a model's parameters closed.
+
+!!! warning "TLS settings on an LLM provider's integration are not applied"
+    litellm takes no per-call TLS argument. It reads the `SSL_VERIFY` and `SSL_CERT_FILE`
+    environment variables, or its own process-wide global, and nothing else — so *SSL Verification*
+    and *CA File Path* on the integration cannot be honoured for one provider without changing
+    every other provider's calls in the same process. A worker runs several at once, so applying
+    one provider's setting would silently disable verification on another's connection.
+
+    To reach an LLM endpoint with a private CA or a self-signed certificate, set `SSL_CERT_FILE`
+    (or `SSL_VERIFY=False`) in the environment of every process that calls a model — Nautobot, the
+    worker and the event consumer. The app logs a warning naming the fields it skipped whenever
+    either is set, so this is visible rather than silent.
+
+    MCP servers are not affected: `services/mcp.py` builds its own HTTP client per call and does
+    honour both fields.
 
 Disabling a provider or a model (the `enabled` flag on either) refuses every call through it
 before any network traffic, everywhere at once.

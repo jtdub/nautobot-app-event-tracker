@@ -4,15 +4,28 @@
 #
 # netmiko-mcp permits nothing by default. A plain string matches that command exactly; a `*` matches
 # the prefix plus anything after it. `denied_commands` wins over `allowed_commands`.
+#
+# These are SR Linux commands, because that is what the lab runs. A model trained mostly on IOS
+# will try `show ip interface brief` and `show bgp summary` here and be refused - which is the
+# whitelist doing its job on a command this platform does not have. The equivalents are
+# `show interface brief` and `show network-instance default protocols bgp summary`.
 allowed_commands:
-  # Enough to work out why an interface is down, and nothing else.
+  # The whole of SR Linux's `show` tree, as the device itself enumerates it - ask it for
+  # `show zzz` and it lists these. `show` is the read verb on this platform; the imperative one is
+  # `tools`, which the deny list below names.
+  #
+  # Listed root by root rather than as a bare `show*`, so that a future subtree has to be added
+  # deliberately rather than arriving allowed.
   - "show version"
-  - "show platform*"
-  - "show interface*"
-  - "show network-instance*"
-  - "show system lldp*"
-  - "show arpnd*"
   - "show acl*"
+  - "show arpnd*"
+  - "show interface*"
+  - "show lag*"
+  - "show network-instance*"     # includes `... default protocols bgp neighbor|routes|summary`
+  - "show platform*"
+  - "show system*"
+  - "show tunnel*"
+  - "show tunnel-interface*"
 
 denied_commands:
   # Prefix-anchored, because netmiko-mcp only supports a trailing `*` - a leading one is refused at

@@ -306,31 +306,53 @@ class TestCredentials(TestCase):
 
         self.assertEqual(client.calls[0]["extra_headers"], {"X-Tenant": "network-ops"})
 
-    def test_a_ca_file_path_reaches_the_client(self):
-        """The private-CA case: it used to fail TLS with nothing in the UI explaining why."""
+    def test_tls_settings_are_not_passed_as_call_keywords(self):
+        """`ssl_verify` is not a litellm argument, and passing it was worse than useless.
+
+        litellm sweeps an unknown keyword into `extra_body` and sends it to the provider in the
+        request JSON. So the old code disabled no verification, loaded no CA bundle, and added a
+        stray field to every request - while a test that asserted the keyword was passed went on
+        agreeing that it worked. This asserts the outcome instead.
+        """
+        for name, overrides in (
+            ("Private CA Endpoint", {"ca_file_path": "/etc/ssl/private-ca.pem"}),
+            ("No Verify Endpoint", {"verify_ssl": False}),
+        ):
+            with self.subTest(name=name):
+                integration = fixtures.create_external_integration(name=name, **overrides)
+                provider = fixtures.create_llmprovider(name=f"{name} Provider", external_integration=integration)
+                model = fixtures.create_llmmodel(provider=provider, name=f"model-{name}")
+
+                client = FakeLLMClient()
+                with self.assertLogs("nautobot_event_tracker.services.llm", level="WARNING"):
+                    call(model, client)
+
+                self.assertNotIn("ssl_verify", client.calls[0])
+                self.assertNotIn("extra_body", client.calls[0])
+
+    def test_the_warning_names_what_was_not_applied_and_what_to_do(self):
+        """A setting the app cannot honour has to say so, or the UI is lying about it."""
         integration = fixtures.create_external_integration(
-            name="Private CA Endpoint", ca_file_path="/etc/ssl/private-ca.pem"
+            name="Both TLS Fields", verify_ssl=False, ca_file_path="/etc/ssl/private-ca.pem"
         )
-        provider = fixtures.create_llmprovider(name="Private CA Provider", external_integration=integration)
+        provider = fixtures.create_llmprovider(name="Both TLS Provider", external_integration=integration)
         model = fixtures.create_llmmodel(provider=provider)
 
-        client = FakeLLMClient()
-        call(model, client)
+        with self.assertLogs("nautobot_event_tracker.services.llm", level="WARNING") as logs:
+            call(model, FakeLLMClient())
 
-        self.assertEqual(client.calls[0]["ssl_verify"], "/etc/ssl/private-ca.pem")
+        message = " ".join(logs.output)
+        self.assertIn("Verify SSL", message)
+        self.assertIn("/etc/ssl/private-ca.pem", message)
+        self.assertIn("NOT being applied", message)
+        self.assertIn("SSL_VERIFY", message)
 
-    def test_unticking_verify_ssl_wins_over_a_ca_path(self):
-        """Both set means the operator said not to verify; verifying anyway is the old bug."""
-        integration = fixtures.create_external_integration(
-            name="No Verify Endpoint", verify_ssl=False, ca_file_path="/etc/ssl/private-ca.pem"
-        )
-        provider = fixtures.create_llmprovider(name="No Verify Provider", external_integration=integration)
-        model = fixtures.create_llmmodel(provider=provider)
+    def test_an_integration_with_default_tls_says_nothing(self):
+        """The warning fires for a setting that was made, never for one left alone."""
+        model = fixtures.create_llmmodel()
 
-        client = FakeLLMClient()
-        call(model, client)
-
-        self.assertIs(client.calls[0]["ssl_verify"], False)
+        with self.assertNoLogs("nautobot_event_tracker.services.llm", level="WARNING"):
+            call(model, FakeLLMClient())
 
     def test_extra_config_is_not_splatted_into_the_call(self):
         """Untyped operator JSON in the call kwargs would reopen the hole the allowlist closed."""
@@ -780,3 +802,27 @@ class TestToolCalls(TestCase):
 
         self.assertEqual(response.prompt_tokens, 10)
         self.assertEqual(response.completion_tokens, 5)
+
+
+class TestTheClientIsResolvable(TestCase):
+    """What `require_client()` says when the dependency will not import."""
+
+    def test_the_reason_is_in_the_message(self):
+        """ "Not installed" is one explanation of an ImportError, and not always the right one.
+
+        litellm 1.98.0 imported `typing.NotRequired` while declaring support for Python 3.10, so it
+        installed there and then could not be imported. The message said to install it, which was
+        already done - and because the cause was chained rather than reported, a CI log showed only
+        the wrong advice. This is that hour, spent once.
+        """
+        with mock.patch.dict("sys.modules", {"litellm": None}):
+            with self.assertRaises(ImproperlyConfigured) as caught:
+                llm_service.require_client()
+
+        message = str(caught.exception)
+        self.assertIn("could not be imported", message)
+        # The underlying failure's own type and text, which is the half that was missing.
+        self.assertIn("ModuleNotFoundError", message)
+        self.assertIn("litellm", message)
+        # And still the advice, for the case where it really is not installed.
+        self.assertIn("'llm' extra", message)

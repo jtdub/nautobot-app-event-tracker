@@ -1,0 +1,1 @@
+litellm 1.98.0 is excluded. It does `from typing import NotRequired` while still declaring `requires_python >=3.10`, so on Python 3.10 it installs and then cannot be imported - which took out every model call on that interpreter. The one release is excluded rather than the range capped, so 1.98.1 and later are still reachable.
