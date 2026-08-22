@@ -7,6 +7,7 @@ See ADR 0008.
 from contextlib import contextmanager
 
 from django.contrib import messages
+from django.core.exceptions import ImproperlyConfigured as DjangoImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -23,6 +24,7 @@ from nautobot.apps.ui import (
     ObjectFieldsPanel,
     ObjectsTablePanel,
     ObjectTextPanel,
+    PostButton,
     SectionChoices,
 )
 from nautobot.apps.views import (
@@ -36,11 +38,18 @@ from nautobot.apps.views import (
 from nautobot_event_tracker import filters, forms, models, tables
 from nautobot_event_tracker.api import serializers
 from nautobot_event_tracker.choices import TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import tickets as ticket_service
-from nautobot_event_tracker.services.exceptions import TicketServiceError
+from nautobot_event_tracker.services.exceptions import MCPError, TicketServiceError
 
 TRANSITION_PERMISSION = "nautobot_event_tracker.transition_eventticket"
 CHANGE_PERMISSION = "nautobot_event_tracker.change_eventticket"
+#: Discovery writes both: the server's `last_discovered_at`, and a row per tool it found. The
+#: first is what the view's queryset is restricted by, so it is the one the mixin is given; the
+#: second goes in `additional_permissions`, which the mixin checks without touching the
+#: restriction. Editing a server does not carry the right to widen what may be called.
+DISCOVER_PERMISSION = "nautobot_event_tracker.change_mcpserver"
+DISCOVER_TOOL_PERMISSION = "nautobot_event_tracker.add_mcptool"
 
 
 def _render_object_form(request, ticket, form):
@@ -688,3 +697,146 @@ class LLMUsageRecordUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ance
             ),
         ),
     )
+
+
+class DiscoverToolsButton(PostButton):
+    """Reads a server's tool list and reconciles the registry with it. Hidden for a disabled server.
+
+    A `PostButton`, not a `Button`: the plain one renders an anchor, which issues a GET, and this
+    action writes rows. It also means the request carries a CSRF token, which a link cannot.
+    """
+
+    link_name = "plugins:nautobot_event_tracker:mcpserver_discover"
+    required_permissions = (DISCOVER_PERMISSION, DISCOVER_TOOL_PERMISSION)
+
+    def should_render(self, context):
+        """Only for an enabled server, on top of the framework's permission check."""
+        server = context.get("object")
+        if server is None or not super().should_render(context):
+            return False
+        return server.enabled
+
+
+class MCPServerUIViewSet(NautobotUIViewSet):
+    """ViewSet for MCPServer views."""
+
+    bulk_update_form_class = forms.MCPServerBulkEditForm
+    filterset_class = filters.MCPServerFilterSet
+    filterset_form_class = forms.MCPServerFilterForm
+    form_class = forms.MCPServerForm
+    lookup_field = "pk"
+    # Both counts annotated: the gap between them is the thing worth seeing on the list page. A
+    # server offering forty tools of which two are enabled is the default-deny rule working, and
+    # one where the two numbers are equal is a review nobody did.
+    queryset = models.MCPServer.objects.select_related("external_integration").annotate(
+        tool_count=count_related(models.MCPTool, "server"),
+        enabled_tool_count=count_related(models.MCPTool, "server", filter_dict={"enabled": True}),
+    )
+    serializer_class = serializers.MCPServerSerializer
+    table_class = tables.MCPServerTable
+
+    object_detail_content = ObjectDetailContent(
+        panels=[
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=["name", "description", "external_integration", "enabled", "last_discovered_at"],
+            ),
+            ObjectsTablePanel(
+                weight=200,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.MCPToolTable,
+                table_filter="server",
+                related_field_name="server",
+                label="Tools",
+                select_related_fields=["server"],
+            ),
+        ],
+        extra_buttons=[
+            DiscoverToolsButton(
+                weight=100,
+                label="Discover Tools",
+                icon="mdi-magnify-scan",
+                color=ButtonColorChoices.BLUE,
+            ),
+        ],
+    )
+
+
+class MCPToolUIViewSet(NautobotUIViewSet):
+    """ViewSet for MCPTool views."""
+
+    bulk_update_form_class = forms.MCPToolBulkEditForm
+    filterset_class = filters.MCPToolFilterSet
+    filterset_form_class = forms.MCPToolFilterForm
+    form_class = forms.MCPToolForm
+    lookup_field = "pk"
+    queryset = models.MCPTool.objects.select_related("server")
+    serializer_class = serializers.MCPToolSerializer
+    table_class = tables.MCPToolTable
+
+    object_detail_content = ObjectDetailContent(
+        panels=[
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=[
+                    "server",
+                    "name",
+                    "description",
+                    "enabled",
+                    "mutating",
+                    "advertised_read_only",
+                    "last_seen_at",
+                ],
+            ),
+            ObjectTextPanel(
+                weight=200,
+                section=SectionChoices.RIGHT_HALF,
+                label="Input Schema",
+                object_field="input_schema",
+                render_as=ObjectTextPanel.RenderOptions.JSON,
+            ),
+        ],
+    )
+
+
+class MCPServerDiscoverView(ObjectPermissionRequiredMixin, GenericView):
+    """Read one server's tool list and reconcile the registry with it (rule M5).
+
+    POST only: it writes rows, and a discovery reachable by following a link is a discovery a
+    crawler can trigger. The button posts.
+    """
+
+    queryset = models.MCPServer.objects.all()
+    #: Checked alongside the required permission, without being used to restrict this view's
+    #: queryset - which is what makes it the right home for a permission on another model.
+    additional_permissions = [DISCOVER_TOOL_PERMISSION]
+
+    def get_required_permission(self):
+        """The permission the queryset is restricted by: discovery stamps the server it is given."""
+        return DISCOVER_PERMISSION
+
+    def post(self, request, pk):
+        """Discover, then say what changed in the terms an operator has to act on."""
+        server = get_object_or_404(self.queryset, pk=pk)
+        try:
+            report = mcp_service.discover(server)
+        except MCPError as error:
+            messages.error(request, str(error))
+            return redirect(server.get_absolute_url())
+        except DjangoImproperlyConfigured as error:
+            # The missing `mcp` extra, deliberately outside the MCPError family: a deployment
+            # fault, and one an operator can only fix by installing something.
+            messages.error(request, str(error))
+            return redirect(server.get_absolute_url())
+
+        messages.success(request, f"Discovered tools on '{server}': {report.summary()}.")
+        if report.needs_attention:
+            # The whole point of the default-deny rule is that somebody looks. Saying so here is
+            # what stops a new tool sitting disabled and unnoticed for a month.
+            messages.warning(
+                request,
+                "These tools are disabled and need review: " + ", ".join(tool.name for tool in report.needs_attention),
+            )
+        return redirect(server.get_absolute_url())

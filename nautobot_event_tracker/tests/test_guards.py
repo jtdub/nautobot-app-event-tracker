@@ -398,3 +398,57 @@ class EnrichmentGuardTest(SimpleTestCase):
             [],
             "services/ must not import the ingestion package. Offending lines: " + ", ".join(offenders),
         )
+
+
+class MCPGuardTest(SimpleTestCase):
+    """ADR 0007's two mechanical halves: one client, and no way to run a process."""
+
+    #: The MCP client library and the HTTP client it is driven with, importable only in
+    #: `services/mcp.py` (rule M1).
+    MCP_LIBRARIES = ("mcp", "httpx2")
+
+    #: Every way Python starts a process. ADR 0007 refused the stdio transport because it means
+    #: process execution driven by database rows; this is that decision, asserted rather than
+    #: trusted to nobody reaching for the convenience later.
+    PROCESS_MODULES = ("subprocess", "pty", "multiprocessing")
+    PROCESS_CALLS = frozenset({"system", "popen", "fork", "execv", "execvp", "execve", "spawnv", "posix_spawn"})
+
+    def test_the_mcp_client_is_imported_only_in_the_mcp_service(self):
+        """M1 - one import site, the same arrangement litellm has."""
+        allowed = {"services/mcp.py"}
+        paths = [path for path in sorted(APP_ROOT.rglob("*.py")) if str(path.relative_to(APP_ROOT)) not in allowed]
+        offenders = list(_import_offenders(paths, self.MCP_LIBRARIES))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "The MCP client belongs in services/mcp.py alone. Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_no_module_can_start_a_process(self):
+        """M2 - streamable HTTP only, and nothing anywhere that could run a local command."""
+        offenders = list(_import_offenders(sorted(APP_ROOT.rglob("*.py")), self.PROCESS_MODULES))
+        offenders += list(_write_call_offenders(sorted(APP_ROOT.rglob("*.py")), self.PROCESS_CALLS))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "No module may start a process: ADR 0007 refused stdio for exactly this reason. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_mcp_client_is_an_optional_dependency(self):
+        """A deployment that registers no server installs no MCP client.
+
+        Both packages, because `services/mcp.py` imports both: relying on `httpx2` arriving as one
+        of `mcp`'s own dependencies makes the day that changes look like a missing `mcp` extra.
+        """
+        poetry = IngestionGuardTest._poetry()  # pylint: disable=protected-access
+        for package in self.MCP_LIBRARIES:
+            self.assertIs(
+                poetry["dependencies"].get(package, {}).get("optional"),
+                True,
+                f"{package} must be a runtime dependency marked optional",
+            )
+            self.assertIn(package, poetry["extras"].get("mcp", ()), f"the 'mcp' extra must install {package}")
+            self.assertIn(package, poetry["extras"].get("all", ()), f"the 'all' extra must include {package}")

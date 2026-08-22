@@ -22,6 +22,8 @@ from nautobot_event_tracker.models import (
     LLMModel,
     LLMProvider,
     LLMUsageRecord,
+    MCPServer,
+    MCPTool,
     TicketUpdate,
 )
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -239,3 +241,44 @@ class LLMUsageRecordFilterSet(NautobotFilterSet):
 
         model = LLMUsageRecord
         fields = ["model", "ticket", "purpose", "success"]  # pylint: disable=nb-use-fields-all
+
+
+class MCPServerFilterSet(NautobotFilterSet):
+    """Filter for MCPServer."""
+
+    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains"})
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = MCPServer
+        fields = ["name", "description", "enabled", "tags"]  # pylint: disable=nb-use-fields-all
+
+
+class MCPToolFilterSet(NautobotFilterSet):
+    """Filter for MCPTool.
+
+    The questions the page exists to answer: what is enabled, what is mutating, and what a
+    particular server offers. `enabled` and `mutating` are the two an operator reviews by.
+    """
+
+    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains", "server__name": "icontains"})
+    server = NaturalKeyOrPKMultipleChoiceFilter(
+        queryset=MCPServer.objects.all(),
+        to_field_name="name",
+        label="Server (name or ID)",
+    )
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = MCPTool
+        fields = [  # pylint: disable=nb-use-fields-all
+            "server",
+            "name",
+            "description",
+            "enabled",
+            "mutating",
+            "advertised_read_only",
+            "tags",
+        ]

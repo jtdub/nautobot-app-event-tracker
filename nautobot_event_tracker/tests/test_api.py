@@ -16,7 +16,7 @@ from nautobot_event_tracker.choices import (
     TicketStatusChoices,
     UpdateTypeChoices,
 )
-from nautobot_event_tracker.models import EventTicket, EventType, LLMModel, LLMProvider
+from nautobot_event_tracker.models import EventTicket, EventType, LLMModel, LLMProvider, MCPServer, MCPTool
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -537,3 +537,59 @@ class TestCreateRejectsADisabledEventType(APITestCase):
         """The refusal happens inside the create transaction."""
         self._post()
         self.assertFalse(EventTicket.objects.filter(title="Should not open").exists())
+
+
+class MCPServerAPITest(APIViewTestCases.APIViewTestCase):
+    """Standard API test cases for MCPServer."""
+
+    model = MCPServer
+    bulk_update_data = {"description": "Bulk updated"}
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        fixtures.create_mcpserver(name="Server One")
+        fixtures.create_mcpserver(name="Server Two")
+        fixtures.create_mcpserver(name="Server Three")
+        integration = fixtures.create_external_integration(
+            name="API MCP Endpoint", remote_url="https://api.example.test/mcp"
+        )
+        cls.create_data = [
+            {"name": f"API Server {suffix}", "external_integration": integration.pk}
+            for suffix in ("One", "Two", "Three")
+        ]
+
+
+class MCPToolAPITest(APIViewTestCases.APIViewTestCase):
+    """Standard API test cases for MCPTool."""
+
+    model = MCPTool
+    bulk_update_data = {"enabled": True}
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        server = fixtures.create_mcpserver()
+        fixtures.create_mcptool(server=server, name="tool_one")
+        fixtures.create_mcptool(server=server, name="tool_two")
+        fixtures.create_mcptool(server=server, name="tool_three")
+        cls.create_data = [{"server": server.pk, "name": f"api_tool_{suffix}"} for suffix in ("one", "two", "three")]
+
+    def test_a_tool_created_through_the_api_is_not_callable(self):
+        """The default-deny rule is the model's, so it holds on every route into it."""
+        # Both permissions: the serializer resolves the related server through a queryset
+        # restricted to what this user may view, so `add_mcptool` alone cannot find it.
+        self.add_permissions("nautobot_event_tracker.add_mcptool", "nautobot_event_tracker.view_mcpserver")
+        server = fixtures.create_mcpserver(name="Created Through The API")
+
+        response = self.client.post(
+            self._get_list_url(),
+            {"server": str(server.pk), "name": "sneaky_tool"},
+            format="json",
+            **self.header,
+        )
+
+        self.assertHttpStatus(response, 201)
+        tool = MCPTool.objects.get(name="sneaky_tool")
+        self.assertFalse(tool.enabled)
+        self.assertTrue(tool.mutating)

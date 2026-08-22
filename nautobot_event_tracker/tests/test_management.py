@@ -10,7 +10,9 @@ generate twelve rather than fifty wherever the number does not matter.
 """
 
 from io import StringIO
+from unittest import mock
 
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
@@ -25,7 +27,7 @@ from nautobot_event_tracker.management.commands.generate_nautobot_event_tracker_
     MANAGEMENT_INTERFACE,
     TEST_DATA_TAG,
 )
-from nautobot_event_tracker.models import EventTicket, IngestionStats
+from nautobot_event_tracker.models import EventTicket, IngestionStats, MCPServer, MCPTool
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -286,3 +288,91 @@ class TestRefusals(TestCase):
         with self.assertRaises(CommandError) as caught:
             generate(count=1, database="other")
         self.assertIn("service layer", str(caught.exception))
+
+
+class TestDiscoverMCPTools(TestCase):
+    """The discovery command: what it covers, what it says, and what it refuses."""
+
+    def setUp(self):
+        """Two enabled servers and one that is not."""
+        super().setUp()
+        self.first = fixtures.create_mcpserver(name="Device Inventory")
+        self.second = fixtures.create_mcpserver(name="Change System")
+        self.disabled = fixtures.create_mcpserver(name="Retired", enabled=False)
+
+    def run_command(self, *, tools=(), error=None, **options):
+        """Run the command with the client seam standing in for every server."""
+        from nautobot_event_tracker.services import mcp as mcp_service  # pylint: disable=import-outside-toplevel
+
+        stdout, stderr = StringIO(), StringIO()
+        client = fixtures.FakeMCPClient(tools, error=error)
+        real_discover = mcp_service.discover
+
+        with mock.patch(
+            "nautobot_event_tracker.services.mcp.discover",
+            side_effect=lambda server: real_discover(server, client=client),
+        ):
+            call_command("discovermcptools", stdout=stdout, stderr=stderr, **options)
+        return stdout.getvalue(), stderr.getvalue()
+
+    def test_it_covers_every_enabled_server(self):
+        """The no-arguments form is the one a cron entry runs."""
+        out, _ = self.run_command(tools=[fixtures.tool_definition()])
+
+        self.assertIn("Device Inventory", out)
+        self.assertIn("Change System", out)
+        self.assertNotIn("Retired", out)
+
+    def test_a_named_server_is_the_only_one_touched(self):
+        """The form somebody runs after registering one server."""
+        out, _ = self.run_command(tools=[fixtures.tool_definition()], server="Device Inventory")
+
+        self.assertIn("Device Inventory", out)
+        self.assertNotIn("Change System", out)
+        self.assertEqual(MCPTool.objects.filter(server=self.second).count(), 0)
+
+    def test_new_tools_are_named_rather_than_counted(self):
+        """These are the rows somebody has to go and decide about; a number does not say which."""
+        out, _ = self.run_command(tools=[fixtures.tool_definition(name="get_device")], server="Device Inventory")
+
+        self.assertIn("needing review", out)
+        self.assertIn("get_device", out)
+
+    def test_one_unreachable_server_does_not_stop_the_others(self):
+        """Four servers and one outage should come back with three reconciled and one named."""
+        with self.assertRaises(CommandError):
+            self.run_command(error=RuntimeError("connection refused"))
+
+    def test_an_unknown_server_is_refused_by_name(self):
+        """A typo should read as a typo."""
+        with self.assertRaises(CommandError) as caught:
+            self.run_command(server="No Such Server")
+        self.assertIn("No Such Server", str(caught.exception))
+
+    def test_a_disabled_server_is_refused(self):
+        """Naming one explicitly should say why it will not run, not silently do nothing."""
+        with self.assertRaises(CommandError) as caught:
+            self.run_command(server="Retired")
+        self.assertIn("disabled", str(caught.exception))
+
+    def test_a_missing_extra_is_refused_rather_than_raised(self):
+        """A cron entry on a box installed without `[mcp]` should read a sentence, not a traceback.
+
+        The missing-extra failure is an `ImproperlyConfigured`, deliberately outside the family
+        the discovery loop handles, so nothing there would have caught it.
+        """
+        from nautobot_event_tracker.services import mcp as mcp_service  # pylint: disable=import-outside-toplevel
+
+        with mock.patch.object(
+            mcp_service, "require_client", side_effect=ImproperlyConfigured("The MCP client is not installed.")
+        ):
+            with self.assertRaises(CommandError) as caught:
+                call_command("discovermcptools", stdout=StringIO(), stderr=StringIO())
+
+        self.assertIn("not installed", str(caught.exception))
+
+    def test_no_enabled_servers_is_refused(self):
+        """Otherwise a scheduled run reports success having done nothing, forever."""
+        MCPServer.objects.filter(enabled=True).update(enabled=False)
+        with self.assertRaises(CommandError):
+            self.run_command()

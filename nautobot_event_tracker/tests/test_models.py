@@ -676,3 +676,89 @@ class TestLLMUsageRecord(ModelTestCases.BaseModelTestCase):
     def test_records_are_not_change_logged(self):
         """One ObjectChange per model call would bury the change log, as for IngestionStats."""
         self.assertFalse(hasattr(self._record(), "to_objectchange"))
+
+
+class TestMCPServer(ModelTestCases.BaseModelTestCase):
+    """The MCP server registry entry."""
+
+    model = models.MCPServer
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        super().setUpTestData()
+        fixtures.create_mcpserver(name="Server One")
+        fixtures.create_mcpserver(name="Server Two")
+        fixtures.create_mcpserver(name="Server Three")
+
+    def test_str(self):
+        """A server stringifies as its name."""
+        self.assertEqual(str(fixtures.create_mcpserver(name="Stringify Me")), "Stringify Me")
+
+    def test_a_server_needs_a_remote_url(self):
+        """An integration is a shared object, and the one chosen may never have needed a URL."""
+        integration = fixtures.create_external_integration(name="No URL", remote_url="")
+        server = models.MCPServer(name="Missing Endpoint", external_integration=integration)
+
+        with self.assertRaises(ValidationError) as raised:
+            server.full_clean()
+        self.assertIn("external_integration", raised.exception.message_dict)
+
+    def test_its_tools_go_with_it(self):
+        """A tool cannot outlive the server that offers it."""
+        tool = fixtures.create_mcptool()
+        server = tool.server
+        server.delete()
+        self.assertFalse(models.MCPTool.objects.filter(pk=tool.pk).exists())
+
+
+class TestMCPTool(ModelTestCases.BaseModelTestCase):
+    """The tool registry entry, and the two defaults that carry the security argument."""
+
+    model = models.MCPTool
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        super().setUpTestData()
+        server = fixtures.create_mcpserver()
+        fixtures.create_mcptool(server=server, name="tool_one")
+        fixtures.create_mcptool(server=server, name="tool_two")
+        fixtures.create_mcptool(server=server, name="tool_three")
+
+    def test_str(self):
+        """A tool stringifies as its server and its name, because the name alone is not unique."""
+        tool = fixtures.create_mcptool(name="stringify_me")
+        self.assertEqual(str(tool), f"{tool.server.name}: stringify_me")
+
+    def test_a_new_tool_is_not_callable(self):
+        """Registering a server grants nothing (rule M4)."""
+        tool = fixtures.create_mcptool(name="fresh")
+        self.assertFalse(tool.enabled)
+        self.assertFalse(tool.is_callable)
+
+    def test_a_new_tool_is_mutating(self):
+        """Until a person says otherwise, it is assumed to change the network."""
+        self.assertTrue(fixtures.create_mcptool(name="unclassified").mutating)
+
+    def test_a_disabled_server_makes_its_enabled_tools_uncallable(self):
+        """The server-level off switch has to mean something, or it is decoration."""
+        server = fixtures.create_mcpserver(name="Switched Off", enabled=False)
+        tool = fixtures.create_mcptool(server=server, name="ready", enabled=True)
+        self.assertTrue(tool.enabled)
+        self.assertFalse(tool.is_callable)
+
+    def test_two_servers_may_offer_the_same_tool_name(self):
+        """`get_interface_status` is not one tool across the estate."""
+        first = fixtures.create_mcpserver(name="First")
+        second = fixtures.create_mcpserver(name="Second")
+        fixtures.create_mcptool(server=first, name="shared")
+        fixtures.create_mcptool(server=second, name="shared")
+        self.assertEqual(models.MCPTool.objects.filter(name="shared").count(), 2)
+
+    def test_one_server_may_not_offer_two_tools_of_one_name(self):
+        """The natural key is the pair, and a duplicate would make an allowlist ambiguous."""
+        server = fixtures.create_mcpserver(name="Duplicating")
+        fixtures.create_mcptool(server=server, name="twice")
+        with self.assertRaises((IntegrityError, ValidationError)):
+            fixtures.create_mcptool(server=server, name="twice")

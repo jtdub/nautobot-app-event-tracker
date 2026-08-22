@@ -12,6 +12,8 @@ router.register("ingestion-stats", views.IngestionStatsViewSet)
 router.register("llm-providers", views.LLMProviderViewSet)
 router.register("llm-models", views.LLMModelViewSet)
 router.register("llm-usage", views.LLMUsageRecordViewSet)
+router.register("mcp-servers", views.MCPServerViewSet)
+router.register("mcp-tools", views.MCPToolViewSet)
 
 app_name = "nautobot_event_tracker-api"
 urlpatterns = router.urls

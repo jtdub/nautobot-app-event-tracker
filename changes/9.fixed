@@ -1,0 +1,1 @@
+Discovery reads the tool list with the pagination MCP defines, follows redirects, and gives the session an SSE-safe read timeout, so a paged or redirecting server is registered correctly rather than partly.

@@ -16,6 +16,8 @@ router.register("ingestion-stats", views.IngestionStatsUIViewSet)
 router.register("llm-providers", views.LLMProviderUIViewSet)
 router.register("llm-models", views.LLMModelUIViewSet)
 router.register("llm-usage", views.LLMUsageRecordUIViewSet)
+router.register("mcp-servers", views.MCPServerUIViewSet)
+router.register("mcp-tools", views.MCPToolUIViewSet)
 
 urlpatterns = [
     path(
@@ -32,6 +34,11 @@ urlpatterns = [
         "tickets/<uuid:pk>/detach/",
         views.EventTicketDetachView.as_view(),
         name="eventticket_detach",
+    ),
+    path(
+        "mcp-servers/<uuid:pk>/discover/",
+        views.MCPServerDiscoverView.as_view(),
+        name="mcpserver_discover",
     ),
     path("docs/", RedirectView.as_view(url=static("nautobot_event_tracker/docs/index.html")), name="docs"),
 ]

@@ -14,9 +14,20 @@ from nautobot_event_tracker.filters import (
     LLMModelFilterSet,
     LLMProviderFilterSet,
     LLMUsageRecordFilterSet,
+    MCPServerFilterSet,
+    MCPToolFilterSet,
     TicketUpdateFilterSet,
 )
-from nautobot_event_tracker.models import EventTicket, EventType, LLMModel, LLMProvider, LLMUsageRecord, TicketUpdate
+from nautobot_event_tracker.models import (
+    EventTicket,
+    EventType,
+    LLMModel,
+    LLMProvider,
+    LLMUsageRecord,
+    MCPServer,
+    MCPTool,
+    TicketUpdate,
+)
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.tests import fixtures
 
@@ -340,3 +351,72 @@ class LLMUsageRecordFilterTest(FilterTestCases.FilterTestCase):  # pylint: disab
     def test_q_matches_the_error_text(self):
         """Finding a failure by its message is the point of recording it."""
         self.assertEqual(self.filterset({"q": "broke"}, self.queryset).qs.count(), 1)
+
+
+class MCPServerFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
+    """Filters for MCPServer."""
+
+    queryset = MCPServer.objects.all()
+    filterset = MCPServerFilterSet
+    generic_filter_tests = (
+        ["name"],
+        ["description"],
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        fixtures.create_mcpserver(name="Device Inventory", description="the read-only one")
+        fixtures.create_mcpserver(name="Change System", description="switched off", enabled=False)
+        fixtures.create_mcpserver(name="Spare Server", description="a third, for the generic suite")
+
+    def test_q_matches_name_and_description(self):
+        """Search covers both text fields."""
+        self.assertEqual(self.filterset({"q": "Inventory"}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.filterset({"q": "read-only"}, self.queryset).qs.count(), 1)
+
+    def test_enabled(self):
+        """The server-level off switch has to be findable, or nobody audits it."""
+        self.assertEqual(self.filterset({"enabled": False}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.filterset({"enabled": True}, self.queryset).qs.count(), 2)
+
+
+class MCPToolFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
+    """Filters for MCPTool.
+
+    `enabled` and `mutating` are the two an operator reviews a server by, so they are the two this
+    asserts on with counts that could not pass by accident.
+    """
+
+    queryset = MCPTool.objects.all()
+    filterset = MCPToolFilterSet
+    generic_filter_tests = (
+        ["name"],
+        ["server", "server__name"],
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        """Create test data."""
+        inventory = fixtures.create_mcpserver(name="Device Inventory")
+        changes = fixtures.create_mcpserver(name="Change System")
+        spare = fixtures.create_mcpserver(name="Spare Server")
+        fixtures.create_mcptool(server=inventory, name="get_device", mutating=False, enabled=True)
+        fixtures.create_mcptool(server=changes, name="open_change", mutating=True)
+        fixtures.create_mcptool(server=spare, name="spare_tool", mutating=True)
+
+    def test_q_matches_the_tool_and_its_server(self):
+        """Finding a tool by the server it is on is how a review starts."""
+        self.assertEqual(self.filterset({"q": "get_device"}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.filterset({"q": "Inventory"}, self.queryset).qs.count(), 1)
+
+    def test_enabled(self):
+        """The allowlist has to be readable as a list, which means filterable."""
+        self.assertEqual(self.filterset({"enabled": True}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.filterset({"enabled": False}, self.queryset).qs.count(), 2)
+
+    def test_mutating(self):
+        """The review question: which of these change something."""
+        self.assertEqual(self.filterset({"mutating": True}, self.queryset).qs.count(), 2)
+        self.assertEqual(self.filterset({"mutating": False}, self.queryset).qs.count(), 1)
+        self.assertEqual(self.queryset.count(), 3)

@@ -1,0 +1,1 @@
+Phase 4B specification: agents, the MCP registry and the approval gate (`docs/specs/phase-4b-agents.md`), with [ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) recording that an agent run is a Nautobot Job which ends at the gate rather than waiting at it.

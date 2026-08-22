@@ -105,7 +105,7 @@ Resolves references in raw event payloads (a hostname, an interface name, an IP)
 
 ### Agents
 
-Tool-using loops that work a ticket. Their reach is bounded twice over: they can only call MCP tools that an operator has explicitly allowlisted, and any action with a side effect passes an approval gate. See [ADR 0007](decisions/0007-mcp-tools-streamable-http-and-default-deny.md).
+Tool-using loops that work a ticket. Their reach is bounded twice over: they can only call MCP tools that an operator has explicitly allowlisted, and any action with a side effect passes an approval gate. A run is a Nautobot Job that ends at that gate rather than waiting at it. See [ADR 0007](decisions/0007-mcp-tools-streamable-http-and-default-deny.md), [ADR 0009](decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) and the [Phase 4B spec](specs/phase-4b-agents.md).
 
 ### LLM service layer
 
@@ -126,7 +126,7 @@ Dashboard panels built on the UI Component Framework's ECharts components, readi
 | **1** | Tickets, service layer, workflow graph, REST/GraphQL, UI, filtersets, permissions. **No AI whatsoever.** |
 | 2 | Broker abstraction, consumer process, deterministic pre-filter, ingestion stats. |
 | 3 | LLM service layer, provider/model registry, usage accounting, LLM triage in the consumer. |
-| 4 | **4A:** the enrichment resolver. **4B:** agents with MCP tooling and approval gates. |
+| 4 | **4A:** the enrichment resolver. **4B:** agents, MCP tooling and the approval gate. |
 | 5 | RAG indexing on close, similarity surfacing, analytics dashboard. |
 
 Phase 1 is AI-free by design. The `source` field on tickets and updates already carries an `ai` value, and the service layer already enforces the AI immutability rule, so that later phases plug in without reopening the domain model. Nothing in Phase 1 imports litellm or talks to a provider.

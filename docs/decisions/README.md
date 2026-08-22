@@ -12,5 +12,6 @@ Each record captures one decision, the pressure that forced it, and what it cost
 | [0006](0006-litellm-service-layer-and-credential-storage.md) | litellm service layer and credential storage | Accepted |
 | [0007](0007-mcp-tools-streamable-http-and-default-deny.md) | MCP tools over streamable HTTP with a default-deny allowlist | Accepted |
 | [0008](0008-ui-component-framework-only.md) | UI Component Framework only | Accepted |
+| [0009](0009-agent-runs-are-jobs-that-end-at-the-gate.md) | Agent runs are Nautobot Jobs that end at the approval gate | Accepted |
 
-ADRs 0004 through 0007 describe later phases. They are recorded now because Phase 1 has to leave room for them.
+ADRs 0004 through 0007 describe later phases. They are recorded now because Phase 1 has to leave room for them. ADR 0009 is different: it was written in Phase 4B, for Phase 4B, because ADR 0007 named an approval gate without saying what runs the agent — and the two turned out to be one question.

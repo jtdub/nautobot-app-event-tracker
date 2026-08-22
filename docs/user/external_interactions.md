@@ -56,6 +56,29 @@ Three things worth knowing before you enable it:
 - **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event and is
   counted. The consumer never exits because a model misbehaved.
 
+### MCP servers
+
+When an operator registers an MCP server and enables tools on it, the app can call those tools. In
+this release nothing does: the registry, the discovery pass and the allowlist ship first, and the
+agent that would use them arrives next.
+
+| | |
+| --- | --- |
+| **Direction** | Outbound HTTPS, one session per operation |
+| **Protocol** | MCP over **streamable HTTP** only. stdio is refused, so no configuration value can cause a local process to run |
+| **Endpoint** | The server's `ExternalIntegration.remote_url` |
+| **Credential** | That integration's secrets group, sent as `Authorization: Bearer …` unless the integration's own headers already carry an Authorization |
+| **TLS** | The integration's SSL Verification, CA File Path, Headers and Timeout are all applied |
+| **What is sent** | On discovery, nothing but the protocol handshake. On a tool call, the arguments a model asked for — which is why mutating tools need a human to approve the exact call |
+| **What is recorded** | Every tool this app may call is a database row an operator enabled by hand |
+| **Configured by** | The MCP Server and MCP Tool records — see [Registering MCP Servers](../admin/mcp.md) |
+
+Two things bound what this connection can do, and neither is a prompt:
+
+- **Nothing is callable until somebody enables it.** Registering a server grants access to none of
+  its tools; discovery creates them disabled.
+- **The transport cannot execute anything locally.** There is no stdio option to turn on.
+
 No other outbound connection exists. The app makes no telemetry, licensing or update calls.
 
 ## From Other Systems to the App
@@ -88,6 +111,7 @@ curl -H "Authorization: Token $NAUTOBOT_TOKEN" \
 | `ticket-updates/` | `GET`, `HEAD`, `OPTIONS` | Append-only history; writes are 405 |
 | `ingestion-stats/` | `GET`, `HEAD`, `OPTIONS` | Written by the consumer |
 | `llm-providers/`, `llm-models/` | Full CRUD | The registry |
+| `mcp-servers/`, `mcp-tools/` | Full CRUD | The MCP registry. Enabling a tool is an operator decision an operator may script; no route calls one |
 | `llm-usage/` | `GET`, `HEAD`, `OPTIONS` | Written by the service layer alone; writes are 405 |
 
 To move a ticket through the workflow, post to the transition action rather than patching `status`:

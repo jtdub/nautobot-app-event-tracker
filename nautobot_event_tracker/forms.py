@@ -5,6 +5,7 @@ from django.contrib.contenttypes.models import ContentType
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.forms import (
     DynamicModelChoiceField,
+    DynamicModelMultipleChoiceField,
     NautobotBulkEditForm,
     NautobotFilterForm,
     NautobotModelForm,
@@ -21,7 +22,16 @@ from nautobot_event_tracker.choices import (
     TicketSourceChoices,
     TicketStatusChoices,
 )
-from nautobot_event_tracker.models import EventTicket, EventType, IngestionStats, LLMModel, LLMProvider, LLMUsageRecord
+from nautobot_event_tracker.models import (
+    EventTicket,
+    EventType,
+    IngestionStats,
+    LLMModel,
+    LLMProvider,
+    LLMUsageRecord,
+    MCPServer,
+    MCPTool,
+)
 from nautobot_event_tracker.services import tickets as ticket_service
 
 #: The model registry entry's editable fields, in the order they read best. Shared with the detail
@@ -379,3 +389,109 @@ class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
         # ordering it takes a second pass. Without this the picker renders last, below the fields
         # a reader is meant to reach after it.
         self.order_fields(self.field_order)
+
+
+class MCPServerForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
+    """MCPServer creation/edit form."""
+
+    external_integration = DynamicModelChoiceField(queryset=ExternalIntegration.objects.all())
+
+    class Meta:
+        """Meta attributes."""
+
+        model = MCPServer
+        fields = [  # pylint: disable=nb-use-fields-all
+            "name",
+            "description",
+            "external_integration",
+            "enabled",
+            "tags",
+        ]
+
+
+class MCPServerBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
+    """MCPServer bulk edit form."""
+
+    pk = forms.ModelMultipleChoiceField(queryset=MCPServer.objects.all(), widget=forms.MultipleHiddenInput)
+    description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+    class Meta:
+        """Meta attributes."""
+
+        nullable_fields = ["description"]
+
+
+class MCPServerFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for MCPServer."""
+
+    model = MCPServer
+    field_order = ["q", "name", "enabled"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within name and description.")
+    name = forms.CharField(required=False, label="Name")
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+
+class MCPToolForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
+    """MCPTool creation/edit form.
+
+    `name`, `description` and `input_schema` are what a server advertised, and discovery rewrites
+    them. What an operator owns is the two decisions: whether this tool may be called at all, and
+    whether calling it changes something.
+    """
+
+    server = DynamicModelChoiceField(queryset=MCPServer.objects.all())
+
+    class Meta:
+        """Meta attributes."""
+
+        model = MCPTool
+        fields = [  # pylint: disable=nb-use-fields-all
+            "server",
+            "name",
+            "description",
+            "mutating",
+            "enabled",
+            "input_schema",
+            "tags",
+        ]
+        # `advertised_read_only` is deliberately absent: it records what the server claimed, and a
+        # field an operator can type into is no longer a record of that.
+
+
+class MCPToolBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
+    """MCPTool bulk edit form.
+
+    The one that carries the weight of ADR 0007's admitted friction: reviewing a forty-tool server
+    one row at a time is how an operator ends up enabling all of them to be done with it.
+    """
+
+    pk = forms.ModelMultipleChoiceField(queryset=MCPTool.objects.all(), widget=forms.MultipleHiddenInput)
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+    mutating = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+
+    class Meta:
+        """Meta attributes."""
+
+        nullable_fields = []
+
+
+class MCPToolFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for MCPTool."""
+
+    model = MCPTool
+    field_order = ["q", "server", "name", "enabled", "mutating", "advertised_read_only"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within name, description and server.")
+    # Multiple, because the filterset takes multiple and reviewing two servers at once is an
+    # ordinary thing to want on the page whose whole purpose is review.
+    server = DynamicModelMultipleChoiceField(queryset=MCPServer.objects.all(), to_field_name="name", required=False)
+    name = forms.CharField(required=False, label="Name")
+    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+    mutating = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+    advertised_read_only = forms.NullBooleanField(
+        required=False,
+        label="Server claims read-only",
+        widget=StaticSelect2(choices=YES_NO_CHOICES),
+    )

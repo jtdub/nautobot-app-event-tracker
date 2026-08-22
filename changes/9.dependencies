@@ -1,0 +1,1 @@
+The optional `mcp` extra, pinned to 2.x, and the `httpx2` client it is driven with. A deployment that registers no MCP server installs neither.
