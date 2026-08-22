@@ -1,0 +1,36 @@
+---
+# What an agent may ask a device, which is the second allowlist in front of it - the first being
+# which tools are enabled at all in Nautobot (rule M4).
+#
+# netmiko-mcp permits nothing by default. A plain string matches that command exactly; a `*` matches
+# the prefix plus anything after it. `denied_commands` wins over `allowed_commands`.
+allowed_commands:
+  # Enough to work out why an interface is down, and nothing else.
+  - "show version"
+  - "show platform*"
+  - "show interface*"
+  - "show network-instance*"
+  - "show system lldp*"
+  - "show arpnd*"
+  - "show acl*"
+
+denied_commands:
+  # Prefix-anchored, because netmiko-mcp only supports a trailing `*` - a leading one is refused at
+  # startup, which is how this list was written wrong the first time. That suits SR Linux, where the
+  # verb comes first.
+  #
+  # Redundant with the allowlist above, and worth writing down anyway: a reviewer should see the
+  # destructive verbs named and refused rather than have to satisfy themselves that no `show*` glob
+  # could reach one. Being prefix-anchored, these cannot catch a denied word in the middle of a
+  # command - the allowlist is what actually holds that line, and this is the second lock.
+  #
+  # `tools` is SR Linux's imperative command tree - `tools system reboot`, `tools platform` - and is
+  # the single most important entry here.
+  - "tools*"
+  - "configure*"
+  - "commit*"
+  - "delete*"
+  - "reload*"
+  - "reboot*"
+  - "bash*"
+  - "file*"

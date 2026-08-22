@@ -24,13 +24,22 @@ stored and rotated where every other credential in your deployment is.
    secret type *Token* (a *Secret*-typed entry works too). Skip this for an endpoint that needs
    no key.
 2. Create an **External Integration**: the *Remote URL* is the endpoint's base URL (for an
-   OpenAI-compatible endpoint, the URL up to and including `/v1`), and the *Secrets Group* is the
-   one from step 1.
+   OpenAI-compatible endpoint, the URL up to and including `/v1`; for Ollama, without it), and the
+   *Secrets Group* is the one from step 1.
 3. Create an **LLM Provider** (Apps → Event Tracker → LLM Providers) pointing at that
    integration, choosing the provider type:
     - **OpenAI-compatible** — any self-hosted or third-party endpoint speaking the OpenAI
-      protocol: vLLM, Ollama, llama.cpp, a gateway. The integration must carry a remote URL.
-      This is the first-class path for deployments that cannot send event data to a third party.
+      protocol: vLLM, llama.cpp, a gateway. The integration must carry a remote URL. This is the
+      first-class path for deployments that cannot send event data to a third party.
+    - **Ollama** — Ollama specifically, reached through its own API rather than its
+      OpenAI-compatibility layer. Give the integration Ollama's base URL with **no `/v1`**
+      (`http://ollama.example.com:11434`); a key is not needed, though one is sent if you
+      configure it, for an Ollama behind an authenticating proxy.
+
+        Use this rather than OpenAI-compatible if you want the [agent](agents.md) to call tools.
+        Ollama's compatibility layer does not return tool calls in the `tool_calls` field — a
+        model asked for a tool answers with the JSON call written into the message content, where
+        nothing can act on it. Triage works either way, since it asks for no tools.
     - **OpenAI** / **Anthropic** — the hosted services. Nautobot requires a remote URL on every
       external integration, so give it the service's own base URL
       (`https://api.openai.com/v1`, `https://api.anthropic.com`).

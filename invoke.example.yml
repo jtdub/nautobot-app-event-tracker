@@ -16,6 +16,15 @@ nautobot_event_tracker:
     # what points Nautobot at the broker.
     - "docker-compose.redpanda.yml"
     - "docker-compose.containerlab.yml"
+    # The netmiko MCP server, which is what gives the agent something to actually check rather
+    # than guess at. Only useful with the lab: the inventory it serves is the lab's three SR Linux
+    # nodes, and it attaches to the management network containerlab makes.
+    #
+    # Commented out because it is opt-in on its own - unlike the two above, `lab: true` does not
+    # add it. The lab is about ingestion; this is about agents, and you may well want one without
+    # the other. Uncomment it, run `invoke start`, then register the server in Nautobot as
+    # docs/dev/lab.md describes.
+    # - "docker-compose.netmiko-mcp.yml"
 
   # The containerlab lab: a three-node SR Linux fabric whose logs are real, a Redpanda broker, the
   # syslog bridge between them, and a running event consumer. Turning this on adds all four to the

@@ -191,6 +191,55 @@ class TestCredentials(TestCase):
 
         self.assertEqual(client.calls[0]["api_key"], llm_service.NO_CREDENTIAL_PLACEHOLDER)
 
+    def test_ollama_routes_to_its_own_litellm_prefix(self):
+        """Not `openai/`, and the difference is the whole reason this provider type exists.
+
+        Ollama's OpenAI-compatibility layer does not return tool calls in the `tool_calls` field -
+        a model asked for a tool answers with the JSON written into the message content, where
+        nothing may act on it. Its native API does, and litellm reaches that through `ollama/`.
+        On the compatible path an Ollama-backed agent cannot call a tool at all.
+        """
+        provider = fixtures.create_llmprovider(name="Local Ollama", provider_type=LLMProviderTypeChoices.OLLAMA)
+        model = fixtures.create_llmmodel(provider=provider, name="qwen2.5-coder:7b")
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["model_string"], "ollama/qwen2.5-coder:7b")
+
+    def test_ollama_needs_no_placeholder_key(self):
+        """Its litellm path builds no OpenAI client, so there is no constructor to get past."""
+        provider = fixtures.create_llmprovider(name="Keyless Ollama", provider_type=LLMProviderTypeChoices.OLLAMA)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertNotIn("api_key", client.calls[0])
+
+    def test_a_self_hosted_provider_with_no_url_is_refused(self):
+        """Both self-hosted types, because litellm's fallback for each goes somewhere wrong.
+
+        `openai/` with no api_base sends this deployment's key and its event payload to
+        api.openai.com; `ollama/` quietly tries a loopback address that means nothing inside a
+        container. `clean()` demands the URL at save time, and an integration is a shared object
+        that can be blanked afterwards without revalidating what points at it.
+        """
+        for provider_type in (LLMProviderTypeChoices.OPENAI_COMPATIBLE, LLMProviderTypeChoices.OLLAMA):
+            with self.subTest(provider_type=provider_type):
+                integration = fixtures.create_external_integration(name=f"Blank {provider_type}", remote_url="")
+                provider = fixtures.create_llmprovider(
+                    name=f"Blanked {provider_type}",
+                    provider_type=provider_type,
+                    external_integration=integration,
+                )
+                model = fixtures.create_llmmodel(provider=provider, name=f"model-{provider_type}")
+
+                with self.assertRaises(LLMConfigurationError) as caught:
+                    call(model, FakeLLMClient())
+
+                self.assertIn("no remote URL", str(caught.exception))
+
     def test_a_keyless_first_party_provider_sends_no_key(self):
         """Only OpenAI-compatible gets the placeholder.
 

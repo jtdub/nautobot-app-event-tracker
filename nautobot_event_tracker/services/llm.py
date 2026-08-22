@@ -35,7 +35,11 @@ from nautobot.apps.choices import SecretsGroupSecretTypeChoices
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.utils import deepmerge
 
-from nautobot_event_tracker.choices import LITELLM_PROVIDER_PREFIXES, LLMProviderTypeChoices
+from nautobot_event_tracker.choices import (
+    LITELLM_PROVIDER_PREFIXES,
+    PROVIDER_TYPES_REQUIRING_A_URL,
+    LLMProviderTypeChoices,
+)
 from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
 from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
@@ -344,7 +348,9 @@ def _connection_kwargs(provider):
     and falls back to the plain secret type, so either way an operator has modeled "the key"
     works. An OpenAI-compatible provider with no secret configured gets a placeholder rather than
     nothing, because litellm's OpenAI client refuses to make the call at all without one - see
-    `NO_CREDENTIAL_PLACEHOLDER`.
+    `NO_CREDENTIAL_PLACEHOLDER`. An Ollama provider needs no such workaround, since its litellm
+    path builds no OpenAI client; a token still reaches it when one is configured, for an Ollama
+    behind an authenticating proxy.
 
     `extra_config` is deliberately not passed. It is untyped operator JSON, and splatting it into
     the call would reopen, one door along, exactly the hole `ALLOWED_PARAMETERS` closed. If a
@@ -356,13 +362,15 @@ def _connection_kwargs(provider):
     remote_url = _rendered(integration, "render_remote_url", provider)
     if remote_url:
         kwargs["api_base"] = remote_url
-    elif provider.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE:
+    elif provider.provider_type in PROVIDER_TYPES_REQUIRING_A_URL:
         # `clean()` demands this URL at save time, but a shared integration can be blanked
         # afterwards without revalidating the providers pointing at it. Refusing here matters
-        # more than tidiness: with no api_base, litellm's `openai/` prefix would send this
-        # deployment's key and its event payload to api.openai.com.
+        # more than tidiness, and differently per type: with no api_base, litellm's `openai/`
+        # prefix would send this deployment's key and its event payload to api.openai.com, and its
+        # `ollama/` prefix would quietly try a loopback address that means nothing in a container.
         raise LLMConfigurationError(
-            f"LLM provider '{provider}' is OpenAI-compatible but its external integration has no remote URL."
+            f"LLM provider '{provider}' is '{provider.get_provider_type_display()}' but its "
+            "external integration has no remote URL."
         )
 
     for secret_type in (SecretsGroupSecretTypeChoices.TYPE_TOKEN, SecretsGroupSecretTypeChoices.TYPE_SECRET):

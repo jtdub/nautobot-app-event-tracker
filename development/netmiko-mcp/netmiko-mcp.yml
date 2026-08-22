@@ -1,0 +1,30 @@
+---
+# netmiko-mcp's own configuration. Its defaults look in a home directory; these paths are where
+# compose mounts the files instead.
+inventory_type: "netmiko_tools"
+inventory_file: "/config/netmiko.yml"
+command_file: "/config/commands.yml"
+
+# Streamable HTTP, which is the only transport this app will speak (ADR 0007). netmiko-mcp also
+# offers stdio; that is the one Event Tracker refuses, because it means process execution driven by
+# a database row.
+transport: "streamable-http"
+# 0.0.0.0, not the 127.0.0.1 default: in a container the loopback interface is reachable only from
+# the container itself, and Nautobot is not in it.
+http_host: "0.0.0.0"
+http_port: 8000
+http_path: "/mcp"
+
+# On, so the credential path gets exercised end to end: the token lives in a Nautobot Secret, in a
+# SecretsGroup on the MCP server's ExternalIntegration, and `services/mcp.py` presents it as
+# `Authorization: Bearer ...` (rule M3). A lab that skipped this would not be testing the thing
+# most likely to be wrong in a real deployment.
+http_auth_enabled: true
+# One request, one answer, no session to keep. Event Tracker opens a session per operation and
+# closes it, so there is nothing for server-side session state to be useful for.
+http_stateless: true
+http_json_response: true
+
+# Belt and braces beside `commands.yml`: no pipes, so a whitelisted `show` cannot grow a suffix
+# that does something else.
+allow_pipe: false

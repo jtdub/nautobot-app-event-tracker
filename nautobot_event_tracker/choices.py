@@ -100,16 +100,27 @@ class LLMProviderTypeChoices(ChoiceSet):
     This selects how the service layer builds the litellm model string and which credentials it
     expects, nothing more. An on-premises endpoint speaking the OpenAI protocol is a first-class
     citizen here (ADR 0006): many network operators cannot send configuration to a third party.
+
+    Ollama has a type of its own rather than being one more OpenAI-compatible endpoint, and it is
+    worth saying why, because "it speaks the OpenAI protocol" is true and not sufficient. Ollama's
+    OpenAI-compatibility layer does not return tool calls in the `tool_calls` field: a model asked
+    for a tool answers with the JSON call written into the message content, where nothing may act
+    on it. Its native API does return them, and litellm reaches that through the `ollama/` prefix.
+    So on the OpenAI-compatible path an Ollama-backed agent cannot call a tool at all - which is
+    most of Phase 4B - and on this one it can. Measured against Ollama 0.x with qwen2.5-coder and
+    llama3.2; if the compatibility layer ever grows the field, this type still costs nothing.
     """
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OPENAI_COMPATIBLE = "openai_compatible"
+    OLLAMA = "ollama"
 
     CHOICES = (
         (OPENAI, "OpenAI"),
         (ANTHROPIC, "Anthropic"),
         (OPENAI_COMPATIBLE, "OpenAI-compatible"),
+        (OLLAMA, "Ollama"),
     )
 
 
@@ -121,7 +132,17 @@ LITELLM_PROVIDER_PREFIXES = {
     LLMProviderTypeChoices.OPENAI: "openai",
     LLMProviderTypeChoices.ANTHROPIC: "anthropic",
     LLMProviderTypeChoices.OPENAI_COMPATIBLE: "openai",
+    # `ollama`, not `ollama_chat`. litellm offers both and the second is the one usually
+    # recommended; it was the first that returned native tool calls when this was measured, and
+    # the second that did not.
+    LLMProviderTypeChoices.OLLAMA: "ollama",
 }
+
+#: Provider types that are an address rather than a service: litellm would otherwise fall back to a
+#: default endpoint, which for `openai` is somebody else's API and for `ollama` is a loopback
+#: address that means nothing inside a container. Both are refused without a URL, at save time and
+#: again at call time.
+PROVIDER_TYPES_REQUIRING_A_URL = frozenset({LLMProviderTypeChoices.OPENAI_COMPATIBLE, LLMProviderTypeChoices.OLLAMA})
 
 
 class LLMPurposeChoices(ChoiceSet):

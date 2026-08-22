@@ -1,0 +1,53 @@
+---
+# The netmiko MCP server: somewhere the agent can go and ask a device a question.
+#
+# An overlay you opt into, like the lab's own. It is only useful with the lab running, because the
+# inventory it serves is the lab's three SR Linux nodes - so add it beside
+# `docker-compose.redpanda.yml` in `compose_files`, or use `invoke lab-up`, which brings both.
+#
+# Why this and not stdio: netmiko-mcp offers both transports, and ADR 0007 accepts only streamable
+# HTTP. That is not a preference. stdio means the app spawning a local process whose command line
+# comes from a database row, and this repository has a guard asserting no module can start a
+# process at all.
+services:
+  # The same token reaches Nautobot, where a Secret reads it out of the environment and a
+  # SecretsGroup on the MCP server's ExternalIntegration presents it. Nothing key-shaped is stored
+  # on an Event Tracker record or in PLUGINS_CONFIG - rule M3, exercised rather than described.
+  nautobot:
+    environment:
+      NETMIKO_MCP_TOKEN: "${NETMIKO_MCP_TOKEN:-event-tracker-lab-token}"
+
+  worker:
+    environment:
+      NETMIKO_MCP_TOKEN: "${NETMIKO_MCP_TOKEN:-event-tracker-lab-token}"
+
+  netmiko-mcp:
+    build:
+      context: "./netmiko-mcp"
+    image: "nautobot-event-tracker/netmiko-mcp:0.2.0"
+    volumes:
+      - "./netmiko-mcp/netmiko-mcp.yml:/config/netmiko-mcp.yml:ro"
+      - "./netmiko-mcp/netmiko.yml:/config/netmiko.yml:ro"
+      - "./netmiko-mcp/commands.yml:/config/commands.yml:ro"
+    environment:
+      # netmiko-mcp takes the bearer token from the environment and from nowhere else, which is the
+      # right call on its part. The same value goes into a Nautobot Secret, so the two ends of this
+      # connection are configured in the two places each is configured from.
+      #
+      # A default so the lab starts without ceremony; override it in your shell for anything that is
+      # not a laptop. It is a shared secret between two containers on one machine, not a credential
+      # to a system anybody else can reach.
+      NETMIKO_MCP_HTTP_BEARER_TOKEN: "${NETMIKO_MCP_TOKEN:-event-tracker-lab-token}"
+    networks:
+      # Two networks, and it needs both: `default` is how Nautobot reaches it by service name, and
+      # the management network is how it reaches the devices. It is the only container in the stack
+      # that has business on both, which is a fair description of what an MCP server is.
+      default: {}
+      event-tracker-mgmt: {}
+    restart: "on-failure"
+
+networks:
+  # Made by containerlab, adopted here. Same arrangement, and same reason, as the lab overlay's.
+  event-tracker-mgmt:
+    external: true
+    name: "event-tracker-mgmt"

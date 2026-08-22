@@ -304,6 +304,10 @@ development/*.txt
 # Invoke overrides
 invoke.yml
 
+# containerlab writes its runtime state beside the topology: per-node directories, a generated
+# SSH key, and an inventory. `invoke lab-down` removes the lab but not always this.
+development/containerlab/clab-*/
+
 # Docs
 public
 /compose.yaml

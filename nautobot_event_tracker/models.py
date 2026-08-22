@@ -15,6 +15,7 @@ from nautobot.apps.models import BaseModel, ChangeLoggedModel, OrganizationalMod
 from nautobot_event_tracker.choices import (
     AGENT_RUN_LIVE_STATUSES,
     ATTACHMENT_UPDATE_TYPES,
+    PROVIDER_TYPES_REQUIRING_A_URL,
     TERMINAL_STATUSES,
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
@@ -431,17 +432,18 @@ class LLMProvider(PrimaryModel):  # pylint: disable=too-many-ancestors
         return self.name
 
     def clean(self):
-        """An OpenAI-compatible endpoint is unreachable without a URL to reach it at."""
+        """A self-hosted endpoint is unreachable without a URL to reach it at."""
         super().clean()
         if (
-            self.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE
+            self.provider_type in PROVIDER_TYPES_REQUIRING_A_URL
             and self.external_integration_id is not None
             and not self.external_integration.remote_url
         ):
             raise ValidationError(
                 {
                     "external_integration": (
-                        "An OpenAI-compatible provider needs an external integration with a remote URL."
+                        f"A '{self.get_provider_type_display()}' provider needs an external "
+                        "integration with a remote URL."
                     )
                 }
             )
