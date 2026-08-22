@@ -176,12 +176,49 @@ class TestCredentials(TestCase):
 
         self.assertEqual(client.calls[0]["api_key"], "sk-plain-secret")
 
-    def test_a_keyless_endpoint_sends_no_key(self):
-        """An on-premises endpoint without auth gets no empty api_key argument."""
+    def test_a_keyless_openai_compatible_endpoint_gets_a_placeholder(self):
+        """ADR 0006 makes an unauthenticated on-premises endpoint first-class; this is the cost.
+
+        litellm builds an OpenAI client for the `openai/` prefix, and that client raises "Missing
+        credentials" locally - before any request leaves the process - when it has no key at all.
+        So "this endpoint needs no key" has to be spelled as a value rather than as an absence, or
+        the deployment ADR 0006 exists to support cannot make a single call.
+        """
         model = fixtures.create_llmmodel()
+
         client = FakeLLMClient()
         call(model, client)
+
+        self.assertEqual(client.calls[0]["api_key"], llm_service.NO_CREDENTIAL_PLACEHOLDER)
+
+    def test_a_keyless_first_party_provider_sends_no_key(self):
+        """Only OpenAI-compatible gets the placeholder.
+
+        A real OpenAI or Anthropic endpoint with no key configured is a misconfiguration, and it
+        should fail with the provider's own message on the record - not with a placeholder this app
+        invented, which would read as a rejected credential rather than as a missing one.
+        """
+        provider = fixtures.create_llmprovider(name="First Party", provider_type=LLMProviderTypeChoices.ANTHROPIC)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
         self.assertNotIn("api_key", client.calls[0])
+
+    def test_a_configured_secret_wins_over_the_placeholder(self):
+        """The placeholder is what "nobody configured one" looks like, never an override."""
+        self._set_key("sk-real-key")
+        integration = fixtures.create_external_integration(name="Authenticated Endpoint")
+        integration.secrets_group = self._secrets_group(SecretsGroupSecretTypeChoices.TYPE_TOKEN)
+        integration.save()
+        provider = fixtures.create_llmprovider(name="Authenticated Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["api_key"], "sk-real-key")
 
     def test_a_templated_remote_url_is_rendered(self):
         """Nautobot supports Jinja2 on remote_url; read raw it reaches litellm as a literal brace."""

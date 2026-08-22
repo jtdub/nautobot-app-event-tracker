@@ -182,3 +182,20 @@ elif LAB_INGESTION is not None:
         "stats_flush_seconds": 5,
         "topics": LAB_INGESTION["topics"],
     }
+
+# The agent (Phase 4B). Off in a stock install, and on here: a development stack that cannot run
+# the thing being developed is not much of a development stack. Every value is overridable, because
+# which model you have pulled is a property of your laptop rather than of this repository.
+#
+# The provider and the model name registry objects, not endpoints - the endpoint and the credential
+# live on the provider's ExternalIntegration (ADR 0006). Point that at your Ollama, which from
+# inside these containers is `host.docker.internal`, not `localhost`.
+PLUGINS_CONFIG["nautobot_event_tracker"]["agent"] = {
+    "enabled": is_truthy(os.getenv("EVENT_TRACKER_AGENT", "true")),
+    "provider": os.getenv("EVENT_TRACKER_AGENT_PROVIDER", "ollama"),
+    "model": os.getenv("EVENT_TRACKER_AGENT_MODEL", "qwen2.5-coder:7b"),
+    # A 7B model on a laptop is slow, and the stock 60 seconds times out a cold first call rather
+    # than a broken one. The tool timeout is raised for the same reason.
+    "timeout_seconds": 180,
+    "tool_timeout_seconds": 60,
+}

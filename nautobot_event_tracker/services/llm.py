@@ -56,6 +56,11 @@ DEFAULT_TIMEOUT_SECONDS = 30
 #: and why a call failed, not to archive a stack trace.
 ERROR_TEXT_CAP = 1000
 
+#: Sent as the API key to an OpenAI-compatible endpoint whose integration configures no secret.
+#: Deliberately not key-shaped: it is meant to be obvious in a log or a traceback that nobody
+#: configured a credential, rather than to look like one that failed.
+NO_CREDENTIAL_PLACEHOLDER = "not-required"
+
 TOKENS_PER_MILLION = 1_000_000
 
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
@@ -337,7 +342,9 @@ def _connection_kwargs(provider):
     A missing key is not an error here: an on-premises endpoint may not want one, and one that
     does will refuse the call itself, which the record then shows. Prefers the token secret type
     and falls back to the plain secret type, so either way an operator has modeled "the key"
-    works.
+    works. An OpenAI-compatible provider with no secret configured gets a placeholder rather than
+    nothing, because litellm's OpenAI client refuses to make the call at all without one - see
+    `NO_CREDENTIAL_PLACEHOLDER`.
 
     `extra_config` is deliberately not passed. It is untyped operator JSON, and splatting it into
     the call would reopen, one door along, exactly the hole `ALLOWED_PARAMETERS` closed. If a
@@ -363,6 +370,28 @@ def _connection_kwargs(provider):
         if key:
             kwargs["api_key"] = key
             break
+    else:
+        if integration.secrets_group_id is not None:
+            # A group is configured and neither secret type resolved: either it holds no token or
+            # secret at all, which is fine and common for a shared group, or the one it holds is
+            # broken. Not raised, because the first case is legitimate and refusing it would break
+            # working deployments - but said, because the second case otherwise ends as a silent
+            # downgrade to no authentication against an endpoint that does not check.
+            logger.warning(
+                "LLM provider %s has secrets group '%s' but no token or secret resolved from it; "
+                "calling without a credential.",
+                provider,
+                integration.secrets_group,
+            )
+        if provider.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE:
+            # ADR 0006 makes an unauthenticated on-premises endpoint a first-class case, and this
+            # is what it takes to actually be one: litellm builds an OpenAI client for the
+            # `openai/` prefix, and that client raises "Missing credentials" locally, before any
+            # request is made, when it has no key. So "no key" has to be spelled as a value.
+            # Only for this provider type - a real OpenAI or Anthropic endpoint with no key
+            # configured should fail with the provider's own message, on the record, rather than
+            # with a placeholder this app invented.
+            kwargs["api_key"] = NO_CREDENTIAL_PLACEHOLDER
 
     headers = _rendered(integration, "render_headers", provider)
     if headers:

@@ -651,6 +651,15 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   Nautobot ships a modal button component for exactly this and it is private, experimental and
   outside the `nautobot.apps` surface this app otherwise keeps to. The run form is also the better
   page: it shows the Job, its description and its time limit before anything starts.
+- **The agent's own reports about its own runs are kept out of its next prompt.** Step 3 says the
+  prompt carries the ticket's recent trail, and it does - minus the "the agent run failed" and
+  "the agent stopped at" comments this module writes. Those are facts about the app's
+  configuration, not about the network, and a model handed one reports it as the root cause of the
+  fault it was asked about. Observed, not theorised: on a misconfigured endpoint the first run left
+  a "Missing credentials" comment, and the next two runs each reported a missing API key as the
+  cause of an interface being down, each reading the last one's complaint. Conclusions stay in, so
+  a second run can build on the first; the error stays on the `AgentRun` row and on the ticket for
+  a person to read.
 - **`complete()` reports an unusable answer as itself.** Section 8 said unparsable arguments raise
   `LLMResponseError`, which they do. What the sketch did not cover is that a model asking for a tool
   sends no message content - so the pre-existing "the response carried no message content" error had

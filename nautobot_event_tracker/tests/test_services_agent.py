@@ -66,8 +66,14 @@ class TestTheSettings(TestCase):
     """The `agent` block: defaults, and the values that cannot work."""
 
     def test_agents_are_off_by_default(self):
-        """An app installed before anybody configured one must not try to call a model."""
-        settings = agent_service.get_settings()
+        """An app installed before anybody configured one must not try to call a model.
+
+        Under `app_settings()`, which is a stock install: the app's own `default_settings` and
+        nothing else. Read from the ambient configuration instead, this would assert whatever the
+        deployment running the tests happens to have set.
+        """
+        with fixtures.app_settings():
+            settings = agent_service.get_settings()
 
         self.assertFalse(settings.enabled)
         self.assertEqual(settings.max_iterations, 8)
@@ -114,7 +120,7 @@ class TestStartingARun(AgentTestCase):
 
     def test_a_disabled_agent_is_refused(self):
         """The Job is visible to anyone with `run` on it; "not configured" is a sentence."""
-        with self.assertRaises(AgentConfigurationError) as caught:
+        with fixtures.app_settings(), self.assertRaises(AgentConfigurationError) as caught:
             agent_service.run_agent(ticket=self.ticket, user=self.user, complete=fixtures.FakeAgentComplete())
 
         self.assertIn("not enabled", str(caught.exception))
@@ -271,6 +277,60 @@ class TestAPlainRun(AgentTestCase):
         run, _ = self.run_agent("Nothing to report.")
 
         self.assertIn(location.name, self.messages(run, "user")[0]["content"])
+
+    def test_the_agent_s_own_failures_are_kept_out_of_the_next_prompt(self):
+        """A run reading its own past failure off the ticket diagnoses the app, not the fault.
+
+        Observed rather than theorised: on a misconfigured endpoint the first run left "the agent
+        run failed: ... Missing credentials", and the next run reported a missing OpenAI key as the
+        root cause of an interface being down - then left that conclusion for the run after it.
+        """
+        with fixtures.agent_settings():
+            agent_service.run_agent(
+                ticket=self.ticket,
+                user=self.user,
+                complete=_failing_complete(LLMCallError("Missing credentials")),
+            )
+
+        run, _ = self.run_agent("Nothing to report.")
+
+        prompt = self.messages(run, "user")[0]["content"]
+        self.assertNotIn("Missing credentials", prompt)
+        self.assertNotIn(agent_service.FAILURE_COMMENT_PREFIX, prompt)
+
+    def test_a_bound_report_is_kept_out_too(self):
+        """ "The agent stopped at the limit of 3 model calls" is not a fact about the network."""
+        fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        self.run_agent([fixtures.fake_tool_call("look")])
+
+        run, _ = self.run_agent("Nothing to report.")
+
+        self.assertNotIn(agent_service.BOUND_COMMENT_PREFIX, self.messages(run, "user")[0]["content"])
+
+    def test_a_previous_conclusion_is_still_carried(self):
+        """What a run *found* is history worth having; a second run should build on the first."""
+        self.run_agent("The optic on ethernet-1/1 is failing.")
+
+        run, _ = self.run_agent("Agreed.")
+
+        self.assertIn("The optic on ethernet-1/1 is failing.", self.messages(run, "user")[0]["content"])
+
+    def test_a_human_comment_is_still_carried(self):
+        """Only the agent's reports about itself are filtered, never anybody else's words."""
+        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
+
+        ticket_service.add_comment(
+            ticket=self.ticket,
+            message="The agent run failed: I am a human quoting the agent.",
+            source=TicketSourceChoices.HUMAN,
+            user=self.user,
+        )
+
+        run, _ = self.run_agent("Noted.")
+
+        # Matched on the prefix, so a person quoting it is filtered too. Acceptable: the cost is a
+        # dropped line in one prompt, and the alternative is a marker field on every update row.
+        self.assertNotIn("I am a human quoting the agent", self.messages(run, "user")[0]["content"])
 
     def test_an_empty_answer_still_concludes(self):
         """A model with nothing to say is a completed run, not a failed one."""

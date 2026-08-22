@@ -987,10 +987,17 @@ class TicketAgentPanelTest(TestCase):
         self.assertIn("nautobot_event_tracker.jobs.EventTicketAgentJob", content)
 
     def test_the_investigate_button_is_hidden_when_agents_are_off(self):
-        """A button that leads to a refusal is worse than no button."""
+        """A button that leads to a refusal is worse than no button.
+
+        Under `app_settings()` rather than the ambient configuration, so this asserts what a stock
+        install does rather than what the machine running the tests is configured for.
+        """
         self.add_permissions("extras.run_job")
 
-        self.assertNotIn("Investigate with Agent", self.page())
+        with fixtures.app_settings():
+            content = self.page()
+
+        self.assertNotIn("Investigate with Agent", content)
 
     def test_the_investigate_button_is_hidden_on_a_finished_ticket(self):
         """S3 - an agent may not work a resolved ticket, so the page does not offer it."""
