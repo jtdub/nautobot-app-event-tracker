@@ -58,9 +58,8 @@ Three things worth knowing before you enable it:
 
 ### MCP servers
 
-When an operator registers an MCP server and enables tools on it, the app can call those tools. In
-this release nothing does: the registry, the discovery pass and the allowlist ship first, and the
-agent that would use them arrives next.
+When an operator registers an MCP server and enables tools on it, the [agent](../admin/agents.md)
+can call those tools. Nothing else in the app calls one, and the agent is off by default.
 
 | | |
 | --- | --- |
@@ -113,6 +112,9 @@ curl -H "Authorization: Token $NAUTOBOT_TOKEN" \
 | `llm-providers/`, `llm-models/` | Full CRUD | The registry |
 | `mcp-servers/`, `mcp-tools/` | Full CRUD | The MCP registry. Enabling a tool is an operator decision an operator may script; no route calls one |
 | `llm-usage/` | `GET`, `HEAD`, `OPTIONS` | Written by the service layer alone; writes are 405 |
+| `agent-runs/` | `GET`, `HEAD`, `OPTIONS` | Written by the agent service; writes are 405 |
+| `agent-tool-calls/` | `GET`, `HEAD`, `OPTIONS`, plus actions | Read-only apart from the two decisions below |
+| `agent-tool-calls/<id>/approve/`, `deny/` | `POST` | Decide a proposed tool call. Needs `approve_agenttoolcall`, which `change` does not imply |
 
 To move a ticket through the workflow, post to the transition action rather than patching `status`:
 
@@ -126,6 +128,18 @@ curl -X POST \
 
 A transition the workflow graph does not permit is refused with a message naming the statuses that
 are reachable from the current one.
+
+Approving a proposed tool call is the same shape, and it approves exactly what was proposed — there
+is no way to send different arguments with an approval:
+
+```bash
+curl -X POST \
+     -H "Authorization: Token $NAUTOBOT_TOKEN" \
+     https://nautobot.example.com/api/plugins/event-tracker/agent-tool-calls/<id>/approve/
+```
+
+Approving over REST records the decision and nothing more; it does not start the resumption run.
+Running the agent is a Nautobot Job with its own endpoint and its own permission.
 
 ### GraphQL
 

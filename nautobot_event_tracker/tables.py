@@ -4,6 +4,8 @@ import django_tables2 as tables
 from nautobot.apps.tables import BaseTable, BooleanColumn, ButtonsColumn, LinkedCountColumn, ToggleColumn
 
 from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
     EventTicket,
     EventType,
     IngestionStats,
@@ -314,4 +316,72 @@ class MCPToolTable(BaseTable):
             "last_seen_at",
             "actions",
         )
+        default_columns = fields
+
+
+#: The run's own fields, in the order they read best: whose ticket, how it went, and what it cost.
+#: Shared by the list table and the detail panel so the two cannot drift apart.
+AGENT_RUN_FIELDS = (
+    "started_at",
+    "ticket",
+    "status",
+    "started_by",
+    "iterations",
+    "finished_at",
+)
+
+#: The same for a tool call: what was asked for, what was decided, and what came of it.
+AGENT_TOOL_CALL_FIELDS = (
+    "proposed_at",
+    "run",
+    "tool",
+    "status",
+    "decided_by",
+    "decided_at",
+    "latency_ms",
+    "called_at",
+)
+
+
+class AgentRunTable(BaseTable):
+    # pylint: disable=R0903
+    """Table for the Agent Run list view and the ticket detail panel.
+
+    No ToggleColumn and no ButtonsColumn: a run is a record of what happened, and nothing outside
+    `services/agent.py` writes one.
+    """
+
+    started_at = tables.DateTimeColumn(linkify=True, verbose_name="Started")
+    ticket = tables.Column(linkify=True)
+    # Not linkified: Nautobot's User model has no absolute URL.
+    started_by = tables.Column(verbose_name="Started By", default="—")
+    tool_call_count = tables.Column(verbose_name="Tool Calls", orderable=False, default=0)
+
+    class Meta(BaseTable.Meta):
+        """Meta attributes."""
+
+        model = AgentRun
+        fields = (*AGENT_RUN_FIELDS, "tool_call_count")
+        default_columns = fields
+
+
+class AgentToolCallTable(BaseTable):
+    # pylint: disable=R0903
+    """Table for the Agent Tool Call list view, the run panel and the ticket panel.
+
+    The status column is the one that matters: `proposed` is somebody's decision waiting to be
+    made, and it is the only state in this table that anybody has to act on.
+    """
+
+    proposed_at = tables.DateTimeColumn(linkify=True, verbose_name="Proposed")
+    run = tables.Column(linkify=True)
+    tool = tables.Column(linkify=True)
+    # Not linkified: Nautobot's User model has no absolute URL.
+    decided_by = tables.Column(verbose_name="Decided By", default="—")
+
+    class Meta(BaseTable.Meta):
+        """Meta attributes."""
+
+        model = AgentToolCall
+        fields = AGENT_TOOL_CALL_FIELDS
         default_columns = fields

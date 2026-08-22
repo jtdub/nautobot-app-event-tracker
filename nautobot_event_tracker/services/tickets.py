@@ -11,7 +11,13 @@ Rules implemented here, referenced by number from the Phase 1 spec:
 * **S3** An AI actor may not mutate a resolved or closed ticket.
 * **S4** `source=human` requires a user; `source` in (ai, system) requires no user.
 * **S5** Creation with a dedup key joins an existing open ticket instead of duplicating it.
+
+Phase 4B adds the approval gate's three trail entries - proposed, decided, executed. They live
+here rather than in `services/agent.py` for the ADR 0001 reason and no other: they are
+`TicketUpdate` rows, and this module writes those.
 """
+
+import json
 
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
@@ -49,11 +55,25 @@ __all__ = [
     "get_attachable_object_types",
     "get_related_objects",
     "join_ticket",
+    "record_tool_decision",
+    "record_tool_proposal",
+    "record_tool_result",
     "resolve_object",
     "set_severity",
     "ticket_ids_with_attached_types",
     "transition",
 ]
+
+
+#: How much of a proposal's arguments goes on the ticket's trail. The arguments are the thing an
+#: approver is reading, so the cap is generous; it exists because they arrive from a model and a
+#: trail entry is not a place to put an unbounded string.
+TOOL_ARGUMENT_CAP = 2000
+
+#: How much of a tool's answer goes on the trail. Shorter than the arguments on purpose: the full
+#: result is on the `AgentToolCall` and linked from the run, and the line here exists to say that
+#: the call happened and roughly what came back.
+TOOL_RESULT_CAP = 500
 
 
 def content_type_label(content_type):
@@ -461,6 +481,94 @@ def add_comment(*, ticket, message, source, user=None):
             source=source,
             user=user,
             message=message,
+        )
+
+
+def _rendered_arguments(tool_call):
+    """The arguments a proposal carries, as a person has to read them (7.3).
+
+    Rendered from the stored JSON rather than from anything the model said about it: the point of
+    naming the server, the tool and the exact arguments is that an approver reads what will be
+    sent, not a summary of it.
+    """
+    try:
+        rendered = json.dumps(tool_call.arguments or {}, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        # A JSONField holds what it was given, and a fixture or a direct write could have given it
+        # something unserializable. An unreadable argument list must still reach the trail.
+        rendered = repr(tool_call.arguments)
+    if len(rendered) > TOOL_ARGUMENT_CAP:
+        rendered = rendered[:TOOL_ARGUMENT_CAP] + "…(truncated)"
+    return rendered
+
+
+def record_tool_proposal(*, ticket, tool_call):
+    """Record that an agent wants to call a mutating tool, and is waiting for a person (7.1).
+
+    Written as `source=ai` with no user, like everything else the model decided (A4). Nothing has
+    been called when this is written, and nothing will be until somebody presses Approve.
+    """
+    _check_mutable(ticket, TicketSourceChoices.AI)
+
+    with transaction.atomic():
+        return _record(
+            ticket=ticket,
+            update_type=UpdateTypeChoices.TOOL_PROPOSED,
+            source=TicketSourceChoices.AI,
+            message=(
+                f"Agent proposes calling '{tool_call.tool.name}' on MCP server "
+                f"'{tool_call.tool.server.name}' with arguments {_rendered_arguments(tool_call)}. "
+                "Nothing has been called; this needs a human decision."
+            ),
+        )
+
+
+def record_tool_decision(*, ticket, tool_call, approved, user):
+    """Record a person approving or denying a proposed tool call (7.2, 7.3).
+
+    `source=human` and a user are not optional here, and that is the mechanism rather than the
+    policy: S4 refuses a human action with no user, so an AI cannot approve its own proposal by
+    calling this function. The caller checks the permission; this checks the actor.
+    """
+    _validate_actor(TicketSourceChoices.HUMAN, user)
+
+    verb = "approved" if approved else "denied"
+    with transaction.atomic():
+        return _record(
+            ticket=ticket,
+            update_type=UpdateTypeChoices.TOOL_DECIDED,
+            source=TicketSourceChoices.HUMAN,
+            user=user,
+            message=(
+                f"{user} {verb} calling '{tool_call.tool.name}' on MCP server "
+                f"'{tool_call.tool.server.name}' with arguments {_rendered_arguments(tool_call)}."
+            ),
+        )
+
+
+def record_tool_result(*, ticket, tool_call):
+    """Record what a tool call did (7.4).
+
+    Written for every executed call, read-only or approved, successful or not - the trail is where
+    somebody answers "what has been done to this ticket", and a failed call against the network is
+    as much of an answer as a successful one.
+    """
+    _check_mutable(ticket, TicketSourceChoices.AI)
+
+    outcome = tool_call.error or (tool_call.result or {}).get("text") or "The call returned nothing."
+    outcome = str(outcome)
+    if len(outcome) > TOOL_RESULT_CAP:
+        outcome = outcome[:TOOL_RESULT_CAP] + "…(truncated)"
+
+    with transaction.atomic():
+        return _record(
+            ticket=ticket,
+            update_type=UpdateTypeChoices.TOOL_EXECUTED,
+            source=TicketSourceChoices.AI,
+            message=(
+                f"Called '{tool_call.tool.name}' on MCP server '{tool_call.tool.server.name}' "
+                f"({tool_call.status}, {tool_call.latency_ms} ms): {outcome}"
+            ),
         )
 
 

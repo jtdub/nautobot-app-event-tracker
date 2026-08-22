@@ -316,8 +316,8 @@ public
 CLAUDE.local.md
 
 # OpenAI Codex CLI
-AGENTS.md
-AGENTS.override.md
+/AGENTS.md
+/AGENTS.override.md
 .codex/
 
 # Google Gemini CLI

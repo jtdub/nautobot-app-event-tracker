@@ -48,6 +48,10 @@ class EventTrackerConfig(NautobotAppConfig):
         # and credentials are registry objects, never settings (ADR 0006). See the Phase 3 spec,
         # section 3.
         "llm": {},
+        # The agent (Phase 4B, spec section 3). Empty for the same merge reason as the two above:
+        # the defaults for the keys inside it are applied by `services.agent`. Agents are off until
+        # a deployment names a provider and a model and switches them on.
+        "agent": {},
     }
     docs_view_name = "plugins:nautobot_event_tracker:docs"
     searchable_models = ["eventticket", "eventtype"]

@@ -73,6 +73,16 @@ items = (
         name="MCP Tools",
         permissions=["nautobot_event_tracker.view_mcptool"],
     ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:agentrun_list",
+        name="Agent Runs",
+        permissions=["nautobot_event_tracker.view_agentrun"],
+    ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:agenttoolcall_list",
+        name="Agent Tool Calls",
+        permissions=["nautobot_event_tracker.view_agenttoolcall"],
+    ),
 )
 
 menu_items = (

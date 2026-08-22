@@ -105,7 +105,7 @@ Resolves references in raw event payloads (a hostname, an interface name, an IP)
 
 ### Agents
 
-Tool-using loops that work a ticket. Their reach is bounded twice over: they can only call MCP tools that an operator has explicitly allowlisted, and any action with a side effect passes an approval gate. A run is a Nautobot Job that ends at that gate rather than waiting at it. See [ADR 0007](decisions/0007-mcp-tools-streamable-http-and-default-deny.md), [ADR 0009](decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) and the [Phase 4B spec](specs/phase-4b-agents.md).
+Tool-using loops that work a ticket. Their reach is bounded twice over: they can only call MCP tools that an operator has explicitly allowlisted, and any action with a side effect passes an approval gate. A run is a Nautobot Job that ends at that gate rather than waiting at it, so a proposal can wait for a person over a weekend without holding a worker. Every run is bounded four ways, every model call is accounted, and every ticket write goes through the same service layer a human uses, as `ai` with no user. See [ADR 0007](decisions/0007-mcp-tools-streamable-http-and-default-deny.md), [ADR 0009](decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md), the [Phase 4B spec](specs/phase-4b-agents.md) and [Running the Agent](admin/agents.md).
 
 ### LLM service layer
 

@@ -1,0 +1,1 @@
+`.gitignore` anchors the Codex CLI's `AGENTS.md` entries to the repository root. Unanchored, they matched `docs/admin/agents.md` on a case-insensitive filesystem, so the agent's own documentation page was silently ignored.

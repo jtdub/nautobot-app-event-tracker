@@ -4,11 +4,11 @@ An MCP server is somewhere Event Tracker can go and ask a question — a device 
 monitoring system, a change-management API. This page is how you register one and decide what, if
 anything, this deployment may call on it.
 
-!!! info "Nothing calls a tool yet"
-    This release ships the registry, the discovery pass and the allowlist. The agent that would use
-    them arrives in the next one. Registering a server now is safe and useful: the review is the
-    slow part, and doing it before an agent exists means the day it does, the answer to "what may
-    it reach" is already written down.
+!!! info "Registering a server grants nothing"
+    Registering a server makes it *known*. Every tool on it arrives disabled and classified as
+    changing the network, and stays that way until a person says otherwise. The
+    [agent](agents.md) is the only thing that calls one, it is off by default, and it stops at
+    every mutating tool to ask.
 
 ## Before you start
 
@@ -108,4 +108,5 @@ can be made to do.
 
 - [MCP Server](../models/mcpserver.md) and [MCP Tool](../models/mcptool.md) — the records
 - [ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md) — transport and default-deny
-- [ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) — how the approval gate will work
+- [Running the Agent](agents.md) — the thing that calls what you enable here
+- [ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) — how the approval gate works

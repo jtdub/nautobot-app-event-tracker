@@ -3,12 +3,16 @@
 from nautobot.apps.testing import FilterTestCases
 
 from nautobot_event_tracker.choices import (
+    AgentRunStatusChoices,
+    AgentToolCallStatusChoices,
     LLMProviderTypeChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
 )
 from nautobot_event_tracker.filters import (
+    AgentRunFilterSet,
+    AgentToolCallFilterSet,
     EventTicketFilterSet,
     EventTypeFilterSet,
     LLMModelFilterSet,
@@ -19,6 +23,8 @@ from nautobot_event_tracker.filters import (
     TicketUpdateFilterSet,
 )
 from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
     EventTicket,
     EventType,
     LLMModel,
@@ -420,3 +426,97 @@ class MCPToolFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-
         self.assertEqual(self.filterset({"mutating": True}, self.queryset).qs.count(), 2)
         self.assertEqual(self.filterset({"mutating": False}, self.queryset).qs.count(), 1)
         self.assertEqual(self.queryset.count(), 3)
+
+
+class AgentRunFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
+    """Filters for AgentRun. `status` is the one that matters: it is the queue of decisions."""
+
+    queryset = AgentRun.objects.all()
+    filterset = AgentRunFilterSet
+    generic_filter_tests = (["status"],)
+
+    @classmethod
+    def setUpTestData(cls):
+        """Runs in three states across two tickets."""
+        user = fixtures.create_user(username="agent-runner")
+        first = fixtures.create_ticket(user=user, title="First ticket")
+        second = fixtures.create_ticket(user=user, title="Second ticket")
+        fixtures.create_agentrun(ticket=first, status=AgentRunStatusChoices.WAITING_APPROVAL, started_by=user)
+        fixtures.create_agentrun(ticket=first, status=AgentRunStatusChoices.COMPLETED, started_by=user)
+        fixtures.create_agentrun(ticket=second, status=AgentRunStatusChoices.COMPLETED)
+        # Two more states, so the generic multi-value filter test has enough to work with.
+        fixtures.create_agentrun(ticket=second, status=AgentRunStatusChoices.FAILED)
+        fixtures.create_agentrun(ticket=second, status=AgentRunStatusChoices.DENIED)
+
+    def test_waiting_runs_are_findable(self):
+        """ "What is waiting on somebody" is the question this page exists to answer."""
+        waiting = self.filterset({"status": [AgentRunStatusChoices.WAITING_APPROVAL]}, self.queryset).qs
+
+        self.assertEqual(waiting.count(), 1)
+
+    def test_by_ticket(self):
+        """A ticket's runs, without reading the whole table."""
+        ticket = EventTicket.objects.get(title="First ticket")
+
+        self.assertEqual(self.filterset({"ticket": [ticket.pk]}, self.queryset).qs.count(), 2)
+
+    def test_by_who_started_it(self):
+        """Not the actor, and still the thing somebody searches by."""
+        self.assertEqual(self.filterset({"started_by": ["agent-runner"]}, self.queryset).qs.count(), 2)
+
+    def test_q_matches_the_ticket_title(self):
+        """A run has no name of its own, so the ticket's title is what a person types."""
+        self.assertEqual(self.filterset({"q": "Second"}, self.queryset).qs.count(), 3)
+        self.assertEqual(self.filterset({"q": "First"}, self.queryset).qs.count(), 2)
+
+
+class AgentToolCallFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
+    """Filters for AgentToolCall. Filtering on `proposed` is an approver's work queue."""
+
+    queryset = AgentToolCall.objects.all()
+    filterset = AgentToolCallFilterSet
+    generic_filter_tests = (["status"],)
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three calls: one waiting, one approved, one executed read-only call."""
+        ticket = fixtures.create_ticket(title="Agent ticket")
+        run = fixtures.create_agentrun(ticket=ticket)
+        server = fixtures.create_mcpserver()
+        fixtures.create_agenttoolcall(
+            run=run,
+            tool=fixtures.create_mcptool(server=server, name="push_config", mutating=True),
+            status=AgentToolCallStatusChoices.PROPOSED,
+        )
+        fixtures.create_agenttoolcall(
+            run=run,
+            tool=fixtures.create_mcptool(server=server, name="reload_device", mutating=True),
+            status=AgentToolCallStatusChoices.APPROVED,
+        )
+        fixtures.create_agenttoolcall(
+            run=fixtures.create_agentrun(),
+            tool=fixtures.create_mcptool(server=server, name="get_device", mutating=False),
+            status=AgentToolCallStatusChoices.EXECUTED,
+        )
+
+    def test_proposals_are_findable(self):
+        """The queue: what has been asked for and not yet decided."""
+        proposed = self.filterset({"status": [AgentToolCallStatusChoices.PROPOSED]}, self.queryset).qs
+
+        self.assertEqual(proposed.count(), 1)
+
+    def test_by_ticket(self):
+        """Through the run, because a decision is about a specific ticket."""
+        ticket = EventTicket.objects.get(title="Agent ticket")
+
+        self.assertEqual(self.filterset({"ticket": [ticket.pk]}, self.queryset).qs.count(), 2)
+
+    def test_by_tool(self):
+        """ "Has anything ever called this" is worth being able to ask of the registry."""
+        tool = MCPTool.objects.get(name="push_config")
+
+        self.assertEqual(self.filterset({"tool": [tool.pk]}, self.queryset).qs.count(), 1)
+
+    def test_q_matches_the_tool_name(self):
+        """A call has no name of its own either."""
+        self.assertEqual(self.filterset({"q": "push_config"}, self.queryset).qs.count(), 1)

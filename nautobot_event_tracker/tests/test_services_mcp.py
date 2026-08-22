@@ -1,7 +1,7 @@
 """The MCP service layer: what it reads off an integration, and what discovery refuses to grant.
 
-Phase 4B rules M1, M3, M5 and M8. Nothing here opens a socket: the client seam is the boundary,
-and no test mocks the SDK's internals.
+Phase 4B rules M1, M3, M4, M5, M6, M7 and M8. Nothing here opens a socket: the client seam is
+the boundary, and no test mocks the SDK's internals.
 """
 
 from unittest import mock
@@ -9,6 +9,7 @@ from unittest import mock
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
+from nautobot_event_tracker.choices import AgentToolCallStatusChoices
 from nautobot_event_tracker.models import MCPTool
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError
@@ -342,3 +343,202 @@ class TestTheClientSeam(TestCase):
                 mcp_service.require_client()
 
         self.assertIn("mcp", str(caught.exception).lower())
+
+
+class CallToolTestCase(TestCase):
+    """A proposed call on an enabled tool, which is the state every rule here starts from."""
+
+    def setUp(self):
+        """One server, one enabled read-only tool, and one call asking for it."""
+        self.server = fixtures.create_mcpserver()
+        self.tool = fixtures.create_mcptool(server=self.server, enabled=True, mutating=False)
+        self.run = fixtures.create_agentrun()
+        self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, arguments={"device": "leaf-01"})
+
+    def call_tool(self, client=None, **kwargs):
+        """Call the tool through the service with a fake wire underneath."""
+        caller = client if client is not None else fixtures.FakeMCPCaller()
+        record = mcp_service.call_tool(tool_call=self.call, client=caller, **kwargs)
+        self.caller = caller  # pylint: disable=attribute-defined-outside-init
+        return record
+
+
+class TestCallingATool(CallToolTestCase):
+    """M7 and M8: what reaches the wire, and what comes back onto the row."""
+
+    def test_the_tool_name_and_arguments_go_over_the_wire(self):
+        """The server's own name for the tool, not the name a model was offered."""
+        self.call_tool()
+
+        self.assertEqual(self.caller.calls[0]["name"], self.tool.name)
+        self.assertEqual(self.caller.calls[0]["arguments"], {"device": "leaf-01"})
+
+    def test_the_result_is_recorded_before_the_caller_sees_it(self):
+        """M7 - the row carries the answer, and the row is what is handed back."""
+        record = self.call_tool(client=fixtures.FakeMCPCaller(fixtures.FakeCallToolResult("ethernet-1/1 is down")))
+
+        self.assertEqual(record.status, AgentToolCallStatusChoices.EXECUTED)
+        self.assertEqual(record.result["text"], "ethernet-1/1 is down")
+        self.assertEqual(record.error, "")
+        self.assertIsNotNone(record.called_at)
+
+    def test_structured_content_is_kept_when_a_server_sends_it(self):
+        """A tool that answers in JSON is answering in JSON, and that is worth storing."""
+        result = fixtures.FakeCallToolResult("ok", structured_content={"admin": "up"})
+
+        record = self.call_tool(client=fixtures.FakeMCPCaller(result))
+
+        self.assertEqual(record.result["structured_content"], {"admin": "up"})
+
+    def test_a_server_reported_error_is_a_failed_row_rather_than_an_exception(self):
+        """7.4 - the server was reached and had something to say, and it is the model's to read."""
+        result = fixtures.FakeCallToolResult("no such interface", is_error=True)
+
+        record = self.call_tool(client=fixtures.FakeMCPCaller(result))
+
+        self.assertEqual(record.status, AgentToolCallStatusChoices.FAILED)
+        self.assertIn("no such interface", record.error)
+
+    def test_a_transport_failure_is_recorded_and_raised(self):
+        """M7 first, then the exception: the row exists whatever the caller does next."""
+        with self.assertRaises(MCPCallError):
+            self.call_tool(client=fixtures.FakeMCPCaller(error=OSError("connection refused")))
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
+        self.assertIn("connection refused", self.call.error)
+
+    def test_no_sdk_exception_escapes(self):
+        """The L4 arrangement, applied to the other kind of call this app makes."""
+        with self.assertRaises(MCPCallError):
+            self.call_tool(client=fixtures.FakeMCPCaller(error=ValueError("something SDK-shaped")))
+
+    def test_a_huge_answer_is_capped(self):
+        """M8 - forty megabytes of counters must not become a prompt, or a row."""
+        result = fixtures.FakeCallToolResult("x" * 50_000)
+
+        record = self.call_tool(client=fixtures.FakeMCPCaller(result), max_result_chars=100)
+
+        self.assertTrue(record.result["truncated"])
+        self.assertEqual(len(record.result["text"]), 100)
+
+    def test_structured_content_is_dropped_only_when_capping_the_text_was_not_enough(self):
+        """The text is what a model and a person both read, so it is capped first."""
+        result = fixtures.FakeCallToolResult("short", structured_content={"blob": "y" * 50_000})
+
+        record = self.call_tool(client=fixtures.FakeMCPCaller(result), max_result_chars=100)
+
+        self.assertNotIn("structured_content", record.result)
+
+    def test_a_non_text_content_block_is_named_rather_than_dropped(self):
+        """A model reading the transcript can tell an image it cannot see from an empty answer."""
+        result = fixtures.FakeCallToolResult(None)
+        result.content = [object()]
+
+        record = self.call_tool(client=fixtures.FakeMCPCaller(result))
+
+        self.assertEqual(record.result["text"], "<content>")
+
+    def test_the_timeout_reaches_the_connection(self):
+        """M8 - there is no unbounded wait on this path either."""
+        self.call_tool(timeout=7)
+
+        self.assertEqual(self.caller.calls[0]["connection"].timeout, 7)
+
+    def test_the_integration_s_timeout_applies_when_the_caller_names_none(self):
+        """The operator's number, where the operator set it."""
+        self.call_tool()
+
+        self.assertEqual(self.caller.calls[0]["connection"].timeout, self.server.external_integration.timeout)
+
+
+class TestCallRefusals(CallToolTestCase):
+    """M4 and M6: everything refused before any network I/O, and recorded when it is."""
+
+    def assert_refused(self, fragment, client=None):
+        """Assert the call was refused, said why, and never reached the wire."""
+        caller = client if client is not None else fixtures.FakeMCPCaller()
+        with self.assertRaises(MCPConfigurationError) as caught:
+            mcp_service.call_tool(tool_call=self.call, client=caller)
+
+        self.assertIn(fragment, str(caught.exception))
+        self.assertEqual(caller.calls, [])
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
+        self.assertIn(fragment, self.call.error)
+
+    def test_a_disabled_tool_is_refused(self):
+        """M4 - the allowlist is a table, and it is read here as well as when tools are offered."""
+        self.tool.enabled = False
+        self.tool.validated_save()
+
+        self.assert_refused("is not enabled")
+
+    def test_a_tool_on_a_disabled_server_is_refused(self):
+        """The server-level off switch works everywhere at once."""
+        self.server.enabled = False
+        self.server.validated_save()
+
+        self.assert_refused("is disabled")
+
+    def test_an_unapproved_mutating_tool_is_refused(self):
+        """M6 - the one rule this whole phase is built around."""
+        self.tool.mutating = True
+        self.tool.validated_save()
+
+        self.assert_refused("not approved")
+
+    def test_an_approved_mutating_tool_runs(self):
+        """The other half of M6, or the gate would just be a wall."""
+        self.tool.mutating = True
+        self.tool.validated_save()
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.APPROVED
+        )
+
+        record = self.call_tool()
+
+        self.assertEqual(record.status, AgentToolCallStatusChoices.EXECUTED)
+        self.assertEqual(len(self.caller.calls), 1)
+
+    def test_a_call_that_already_ran_is_not_run_again(self):
+        """An executed row is a decision that has happened; re-running it is a second call."""
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.EXECUTED
+        )
+
+        self.assert_refused("already been decided")
+
+    def test_a_denied_call_is_not_run(self):
+        """13.8 - denying is an answer, not a pause."""
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.DENIED
+        )
+
+        self.assert_refused("already been decided")
+
+    def test_a_tool_re_advertised_since_the_proposal_is_refused(self):
+        """M6's second half: what was approved was a call on the tool as it read then."""
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, tool_fingerprint="the digest when this was proposed"
+        )
+        self.tool.definition_fingerprint = "a different digest"
+        self.tool.validated_save()
+
+        self.assert_refused("re-advertised")
+
+    def test_a_matching_fingerprint_passes(self):
+        """The check is a comparison, not a bar on every call that carries a digest."""
+        self.tool.definition_fingerprint = "same"
+        self.tool.validated_save()
+        self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, tool_fingerprint="same")
+
+        self.assertEqual(self.call_tool().status, AgentToolCallStatusChoices.EXECUTED)
+
+    def test_the_tool_is_re_read_rather_than_trusted_as_handed_over(self):
+        """The stale instance a caller holds would notice none of the events above."""
+        MCPTool.objects.filter(pk=self.tool.pk).update(enabled=False)
+        # `self.tool` still says enabled, and so does the instance the call points at.
+
+        with self.assertRaises(MCPConfigurationError):
+            mcp_service.call_tool(tool_call=self.call, client=fixtures.FakeMCPCaller())

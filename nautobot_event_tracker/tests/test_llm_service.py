@@ -585,3 +585,112 @@ class TestRetention(TestCase):
         # And with the day marked, the next call does not try again.
         with mock.patch("django.db.models.query.QuerySet.delete", side_effect=AssertionError("tried again")):
             llm_service._maybe_prune()  # pylint: disable=protected-access
+
+
+class TestToolCalls(TestCase):
+    """Section 8 - the tool-calling extension. One new field, two new arguments, no new rule."""
+
+    def setUp(self):
+        """One registered model to call."""
+        self.model = fixtures.create_llmmodel()
+
+    def complete(self, response, **kwargs):
+        """One call through the service with this canned response."""
+        client = FakeLLMClient(response)
+        result = llm_service.complete(
+            model=self.model,
+            messages=[{"role": "user", "content": "hello"}],
+            purpose=LLMPurposeChoices.AGENT,
+            client=client,
+            **kwargs,
+        )
+        self.client = client  # pylint: disable=attribute-defined-outside-init
+        return result
+
+    def test_a_plain_completion_asks_for_no_tools(self):
+        """A call made without `tools` is exactly the call it was before this phase."""
+        response = self.complete(FakeLLMResponse("hello"))
+
+        self.assertEqual(response.tool_calls, ())
+        self.assertNotIn("tools", self.client.calls[0])
+
+    def test_tool_definitions_reach_the_client(self):
+        """litellm translates them per provider; the app builds them from the registry."""
+        definitions = [{"type": "function", "function": {"name": "look", "parameters": {}}}]
+
+        self.complete(FakeLLMResponse("hello"), tools=definitions, tool_choice="auto")
+
+        self.assertEqual(self.client.calls[0]["tools"], definitions)
+        self.assertEqual(self.client.calls[0]["tool_choice"], "auto")
+
+    def test_the_calls_a_model_asked_for_are_parsed(self):
+        """Arguments arrive as a JSON string and are handed back as a dictionary."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", {"device": "leaf-01"})])
+
+        response = self.complete(raw)
+
+        self.assertEqual(len(response.tool_calls), 1)
+        parsed = response.tool_calls[0]
+        self.assertEqual((parsed.identifier, parsed.name), ("call-1", "look"))
+        self.assertEqual(parsed.arguments, {"device": "leaf-01"})
+
+    def test_a_tool_call_with_no_content_is_a_complete_answer(self):
+        """A model that asked for a tool sends no message text, and that is not an empty answer."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look")])
+
+        response = self.complete(raw)
+
+        self.assertEqual(response.text, "")
+        self.assertTrue(response.record.success)
+
+    def test_an_argument_less_tool_is_ordinary(self):
+        """Providers spell "no arguments" three different ways, and all three mean this."""
+        for arguments in ("", "{}", None):
+            with self.subTest(arguments=arguments):
+                raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", arguments)])
+
+                response = self.complete(raw)
+
+                self.assertEqual(response.tool_calls[0].arguments, {})
+
+    def test_unparsable_arguments_are_a_response_error(self):
+        """A call the app cannot read is not a call it should guess at."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", "{not json")])
+
+        with self.assertRaises(LLMResponseError) as caught:
+            self.complete(raw)
+
+        self.assertIn("not valid JSON", str(caught.exception))
+
+    def test_an_unusable_tool_call_is_still_on_the_record(self):
+        """L1 - the call was made and paid for, whatever came back."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", "{not json")])
+
+        with self.assertRaises(LLMResponseError) as caught:
+            self.complete(raw)
+
+        record = caught.exception.record
+        self.assertFalse(record.success)
+        self.assertIn("not valid JSON", record.error)
+        self.assertEqual(LLMUsageRecord.objects.count(), 1)
+
+    def test_a_tool_call_with_no_name_is_a_response_error(self):
+        """There is nothing to look up, and guessing is how a call reaches the wrong tool."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("")])
+
+        with self.assertRaises(LLMResponseError):
+            self.complete(raw)
+
+    def test_an_empty_answer_is_still_an_error(self):
+        """Neither text nor tool calls is the case the old message was written for."""
+        with self.assertRaises(LLMResponseError):
+            self.complete(FakeLLMResponse(None))
+
+    def test_a_tool_calling_response_is_priced_like_any_other(self):
+        """L5 is untouched: a call that asked for tools costs what its tokens cost."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look")])
+
+        response = self.complete(raw)
+
+        self.assertEqual(response.prompt_tokens, 10)
+        self.assertEqual(response.completion_tokens, 5)

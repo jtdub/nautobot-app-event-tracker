@@ -1,0 +1,1 @@
+`services/llm.py::complete()` takes `tools` and `tool_choice`, and `LLMResponse` carries the tool calls a model asked for (Phase 4B section 8). Rules L1 to L8 are untouched: a call that asked for tools writes one usage record and is priced exactly like one that did not.

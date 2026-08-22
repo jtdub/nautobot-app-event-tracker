@@ -16,6 +16,8 @@ from nautobot.extras.models import CustomField
 from nautobot_event_tracker import forms
 from nautobot_event_tracker.api.serializers import SERVICE_OWNED_FIELDS
 from nautobot_event_tracker.choices import (
+    AgentRunStatusChoices,
+    AgentToolCallStatusChoices,
     LLMProviderTypeChoices,
     SeverityChoices,
     TicketSourceChoices,
@@ -23,6 +25,8 @@ from nautobot_event_tracker.choices import (
     UpdateTypeChoices,
 )
 from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
     EventTicket,
     EventType,
     LLMModel,
@@ -31,6 +35,7 @@ from nautobot_event_tracker.models import (
     MCPServer,
     MCPTool,
 )
+from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import MCPCallError
@@ -789,3 +794,210 @@ class MCPServerDiscoverViewTest(TestCase):
             response = self.client.post(self.url)
 
         self.assertHttpStatus(response, 302)
+
+
+class AgentRunViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+):
+    """List and detail only: a run is started by the Job and edited by nobody."""
+
+    model = AgentRun
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three runs on one ticket."""
+        ticket = fixtures.create_ticket()
+        for _ in range(3):
+            fixtures.create_agentrun(ticket=ticket)
+
+    def test_there_is_no_add_route(self):
+        """The router must not register an add view for a service-written model."""
+        with self.assertRaises(NoReverseMatch):
+            reverse("plugins:nautobot_event_tracker:agentrun_add")
+
+    def test_the_detail_page_shows_the_transcript(self):
+        """A person asking "why did it want to do that" reads this page (A7)."""
+        self.add_permissions("nautobot_event_tracker.view_agentrun")
+        run = fixtures.create_agentrun(transcript=[{"role": "assistant", "content": "the answer"}])
+
+        response = self.client.get(run.get_absolute_url())
+
+        self.assertHttpStatus(response, 200)
+        content = response.content.decode()
+        # The framework upper-cases a panel label when it renders the header.
+        self.assertIn("TRANSCRIPT", content)
+        self.assertIn("the answer", content)
+
+
+class AgentToolCallViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+):
+    """List and detail only, plus the two decision controls."""
+
+    model = AgentToolCall
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three calls on one run."""
+        run = fixtures.create_agentrun()
+        server = fixtures.create_mcpserver()
+        for name in ("one", "two", "three"):
+            fixtures.create_agenttoolcall(run=run, tool=fixtures.create_mcptool(server=server, name=name))
+
+    def test_there_is_no_add_route(self):
+        """A call is asked for by a model, never by a form."""
+        with self.assertRaises(NoReverseMatch):
+            reverse("plugins:nautobot_event_tracker:agenttoolcall_add")
+
+
+class AgentDecisionViewTest(TestCase):
+    """The approve and deny routes: who may press them, what they write, and what they refuse."""
+
+    user_permissions = ["nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.view_eventticket"]
+
+    def setUp(self):
+        """A ticket with a run waiting on one proposal."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.ticket = fixtures.create_ticket(user=self.user)
+        self.run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, arguments={"device": "leaf-01"})
+        self.approve_url = reverse("plugins:nautobot_event_tracker:agenttoolcall_approve", kwargs={"pk": self.call.pk})
+        self.deny_url = reverse("plugins:nautobot_event_tracker:agenttoolcall_deny", kwargs={"pk": self.call.pk})
+
+    def test_deciding_needs_its_own_permission(self):
+        """`change_agenttoolcall` does not imply it, and neither does `view` (7.3)."""
+        self.assertHttpStatus(self.client.post(self.approve_url), 403)
+
+        self.add_permissions("nautobot_event_tracker.change_agenttoolcall")
+
+        self.assertHttpStatus(self.client.post(self.approve_url), 403)
+
+    def test_a_get_does_not_decide(self):
+        """POST only: approving a call against the network is not a thing a link may do."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+
+        self.assertHttpStatus(self.client.get(self.approve_url), 405)
+
+    def test_denying_records_the_decision_and_ends_the_run(self):
+        """13.8 - the chain ends, and the trail says who ended it."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+
+        response = self.client.post(self.deny_url)
+
+        self.assertHttpStatus(response, 302)
+        self.call.refresh_from_db()
+        self.run.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.DENIED)
+        self.assertEqual(self.call.decided_by, self.user)
+        self.assertEqual(self.run.status, AgentRunStatusChoices.DENIED)
+
+    def test_approving_records_the_decision(self):
+        """The resumption may or may not start; the approval is recorded either way."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+
+        response = self.client.post(self.approve_url)
+
+        self.assertHttpStatus(response, 302)
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.APPROVED)
+        self.assertEqual(self.call.decided_by, self.user)
+
+    def test_deciding_twice_is_a_message_rather_than_a_second_decision(self):
+        """A call is decided once, and the second press says so."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+        self.client.post(self.approve_url)
+
+        response = self.client.post(self.deny_url, follow=True)
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.APPROVED)
+        self.assertIn("already", response.content.decode())
+
+
+class TicketAgentPanelTest(TestCase):
+    """The ticket page: the runs, the proposal, and the two buttons that decide it."""
+
+    user_permissions = ["nautobot_event_tracker.view_eventticket", "nautobot_event_tracker.view_agentrun"]
+
+    def setUp(self):
+        """A ticket with a run waiting on a proposal."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.ticket = fixtures.create_ticket(user=self.user)
+        self.run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, arguments={"device": "leaf-01", "config": "shutdown"}
+        )
+
+    def page(self):
+        """The ticket detail page, rendered."""
+        return self.client.get(self.ticket.get_absolute_url()).content.decode()
+
+    def test_the_runs_panel_renders(self):
+        """A person reading a ticket can see that an agent has been at it."""
+        self.assertIn("Agent Runs", self.page())
+
+    def test_the_proposal_is_spelled_out(self):
+        """Section 11 - the gate is only as good as what the approver is shown."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+
+        content = self.page()
+
+        self.assertIn("WAITING FOR YOUR DECISION", content)
+        self.assertIn("push_config", content)
+        self.assertIn("leaf-01", content)
+        self.assertIn("shutdown", content)
+
+    def test_the_decision_buttons_post(self):
+        """A control that issues a GET is a control a link preview can press."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+        approve_url = reverse("plugins:nautobot_event_tracker:agenttoolcall_approve", kwargs={"pk": self.call.pk})
+
+        self.assertIn(f'<form method="post" action="{approve_url}"', self.page())
+
+    def test_the_buttons_are_hidden_without_the_permission(self):
+        """Offering an action that would be refused teaches people to ignore buttons."""
+        approve_url = reverse("plugins:nautobot_event_tracker:agenttoolcall_approve", kwargs={"pk": self.call.pk})
+
+        self.assertNotIn(approve_url, self.page())
+
+    def test_the_buttons_are_hidden_when_nothing_is_waiting(self):
+        """The panel and the buttons both exist only while there is a decision to make."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+        agent_service.deny_tool_call(tool_call=self.call, user=self.user)
+
+        content = self.page()
+
+        self.assertNotIn("WAITING FOR YOUR DECISION", content)
+        self.assertNotIn("Approve Tool Call", content)
+
+    def test_the_investigate_button_appears_when_agents_are_on(self):
+        """It leads to the Job's own run form, which is where the permissions are written."""
+        self.add_permissions("extras.run_job")
+
+        with fixtures.agent_settings():
+            content = self.page()
+
+        self.assertIn("Investigate with Agent", content)
+        self.assertIn("nautobot_event_tracker.jobs.EventTicketAgentJob", content)
+
+    def test_the_investigate_button_is_hidden_when_agents_are_off(self):
+        """A button that leads to a refusal is worse than no button."""
+        self.add_permissions("extras.run_job")
+
+        self.assertNotIn("Investigate with Agent", self.page())
+
+    def test_the_investigate_button_is_hidden_on_a_finished_ticket(self):
+        """S3 - an agent may not work a resolved ticket, so the page does not offer it."""
+        self.add_permissions("extras.run_job")
+        ticket = fixtures.create_ticket_in_status(TicketStatusChoices.RESOLVED, user=self.user)
+
+        with fixtures.agent_settings():
+            content = self.client.get(ticket.get_absolute_url()).content.decode()
+
+        self.assertNotIn("Investigate with Agent", content)

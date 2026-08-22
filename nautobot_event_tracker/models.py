@@ -13,8 +13,11 @@ from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.models import BaseModel, ChangeLoggedModel, OrganizationalModel, PrimaryModel, extras_features
 
 from nautobot_event_tracker.choices import (
+    AGENT_RUN_LIVE_STATUSES,
     ATTACHMENT_UPDATE_TYPES,
     TERMINAL_STATUSES,
+    AgentRunStatusChoices,
+    AgentToolCallStatusChoices,
     LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
@@ -789,3 +792,173 @@ class MCPTool(PrimaryModel):  # pylint: disable=too-many-ancestors
         classified that way. It is a prompt to look, never an argument to believe.
         """
         return self.advertised_read_only is True and self.mutating
+
+
+class AgentRun(BaseModel):
+    """One pass of the agent loop over one ticket (ADR 0009).
+
+    Deliberately neither a PrimaryModel nor change-logged, for the IngestionStats and
+    LLMUsageRecord reason: it records what happened, not what anyone meant. What anyone meant is
+    on the ticket's own trail, where a person looks.
+
+    Written only by `services.agent` (section 10's guard). No UI or API route offers a write
+    method, and `waiting_approval` is a finished run rather than a blocked one: the loop ends at
+    the gate and hands its worker slot back.
+    """
+
+    ticket = models.ForeignKey(
+        to=EventTicket,
+        on_delete=models.CASCADE,
+        related_name="agent_runs",
+        help_text="A run is about exactly one ticket.",
+    )
+    status = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        choices=AgentRunStatusChoices,
+        default=AgentRunStatusChoices.RUNNING,
+        db_index=True,
+    )
+    started_by = models.ForeignKey(
+        to=settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="agent_runs",
+        null=True,
+        blank=True,
+        help_text=(
+            "The person who launched this run. Not the actor: everything the model decided is "
+            "recorded on the ticket as 'ai' with no user (rule S4)."
+        ),
+    )
+    job_result = models.ForeignKey(
+        to="extras.JobResult",
+        on_delete=models.SET_NULL,
+        related_name="event_tracker_agent_runs",
+        null=True,
+        blank=True,
+        help_text="The Nautobot-side record of the same run, when one launched it.",
+    )
+    parent = models.ForeignKey(
+        to="self",
+        on_delete=models.SET_NULL,
+        related_name="resumptions",
+        null=True,
+        blank=True,
+        help_text="The run this one resumed after a person approved its proposal.",
+    )
+    transcript = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Every message, tool call and tool result, in the order the model saw them (rule A7). "
+            "Resumption replays it, and a person asking why the model wanted to do that reads it."
+        ),
+    )
+    iterations = models.PositiveIntegerField(default=0, help_text="Model calls this run spent.")
+    error = models.TextField(blank=True, help_text="Why the run failed, when it did. Capped by the service.")
+    started_at = models.DateTimeField(default=timezone.now, db_index=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    # A record of what happened is identified by nothing but itself.
+    natural_key_field_names = ["pk"]
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["-started_at"]
+        get_latest_by = "started_at"
+        verbose_name = "Agent Run"
+        verbose_name_plural = "Agent Runs"
+
+    def __str__(self):
+        """Stringify instance."""
+        return f"Agent run on {self.ticket_id} ({self.status})"
+
+    @property
+    def is_live(self):
+        """Whether this run is still part of the ticket's current chain (rule A9)."""
+        return self.status in AGENT_RUN_LIVE_STATUSES
+
+
+class AgentToolCall(BaseModel):
+    """One tool call an agent asked for, and what became of it.
+
+    Written only by `services.agent` and `services.mcp`. Every call is on the record before its
+    caller sees the answer (rule M7), which is the same promise rule L1 makes about model calls.
+    """
+
+    run = models.ForeignKey(
+        to=AgentRun,
+        on_delete=models.CASCADE,
+        related_name="tool_calls",
+    )
+    tool = models.ForeignKey(
+        to=MCPTool,
+        on_delete=models.PROTECT,
+        related_name="calls",
+        help_text="PROTECT, so the record of a call outlives a tidy-up of the registry.",
+    )
+    arguments = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="What the model asked for, as it asked. Frozen at proposal: approving approves these (7.3).",
+    )
+    status = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        choices=AgentToolCallStatusChoices,
+        default=AgentToolCallStatusChoices.PROPOSED,
+        db_index=True,
+    )
+    tool_fingerprint = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        blank=True,
+        help_text=(
+            "The tool's definition digest when this call was proposed. Re-checked before the call "
+            "runs (rule M6): what was approved was a call on the tool as it read then."
+        ),
+    )
+    decided_by = models.ForeignKey(
+        to=settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="agent_tool_decisions",
+        null=True,
+        blank=True,
+        help_text="Who approved or denied this call. A decision without a person is refused (7.3).",
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    result = models.JSONField(default=dict, blank=True, help_text="What came back, capped by the service (rule M8).")
+    error = models.TextField(blank=True, help_text="Why the call failed, when it did. Capped by the service.")
+    latency_ms = models.PositiveIntegerField(default=0)
+    proposed_at = models.DateTimeField(
+        default=timezone.now,
+        db_index=True,
+        help_text="When the model asked for this call. A BaseModel has no timestamps of its own.",
+    )
+    called_at = models.DateTimeField(null=True, blank=True, help_text="When the call actually reached the server.")
+
+    # A record of what happened is identified by nothing but itself.
+    natural_key_field_names = ["pk"]
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["proposed_at"]
+        get_latest_by = "proposed_at"
+        verbose_name = "Agent Tool Call"
+        verbose_name_plural = "Agent Tool Calls"
+        # Deciding is its own permission, and `change_agenttoolcall` does not imply it (7.3).
+        # Approving a call against the network is not the same right as editing a row.
+        permissions = [("approve_agenttoolcall", "Can approve or deny a proposed agent tool call")]
+
+    def __str__(self):
+        """Stringify instance."""
+        return f"{self.tool} ({self.status})"
+
+    @property
+    def awaits_decision(self):
+        """Whether somebody still has to approve or deny this call."""
+        return self.status == AgentToolCallStatusChoices.PROPOSED
+
+    @property
+    def is_decided(self):
+        """Whether a decision has already been made. A call is decided once, and only once (7.3)."""
+        return self.decided_at is not None or self.status != AgentToolCallStatusChoices.PROPOSED

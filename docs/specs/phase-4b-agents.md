@@ -1,8 +1,9 @@
 # Phase 4B — Agents, MCP Tooling and the Approval Gate
 
-!!! warning "Draft — not yet approved"
-    Nothing in this spec is implemented. It is written to be argued with; section 13 lists the
-    calls that most deserve it.
+!!! info "Implemented"
+    Phase 4B is implemented and merged, in the two PRs section 1 describes. Section 13's nine
+    questions were decided as each proposed, and now read as the decisions taken rather than as
+    open ones. Section 14 records where the implementation departed from what is written here.
 
 Phases 1, 2, 2.5, 3 and 4A are implemented and merged; this spec builds on them and cites their
 rules by number (S1–S5, F1–F6, I1–I8, L1–L8, T1–T9, E1–E10) rather than restating them.
@@ -248,6 +249,19 @@ supplies one. No test opens a socket.
 - **M6 — A mutating tool needs an approved call.** `call_tool()` requires `status=approved` on the
   `AgentToolCall` when the tool is mutating, and refuses otherwise. One gate, in the layer that
   owns the rule — the argument `join_ticket` already makes about where a check belongs.
+
+    **The gate reads `mutating`, and reads nothing else.** Not `advertised_read_only`, which the
+    server wrote; not the tool's name; not what the model said the call was for. One boolean, set
+    by a person, is the whole test. A second input would be a second thing to get wrong, and the
+    only candidate for it is the field 4.2 already refuses to act on.
+
+    **An approved call re-checks the definition it was approved against.** The `AgentToolCall`
+    stores the tool's `definition_fingerprint` at proposal, and `call_tool()` refuses when the
+    stored digest no longer matches the tool. M5 disabling a changed tool covers most of this, and
+    not all of it: discovery can change a definition, M5 can disable the tool, an operator can
+    review the *new* definition and re-enable it, and the proposal an approver is looking at was
+    written against the old one. The approver approved a call on the tool as it read then. This is
+    that sentence, enforced.
 - **M7 — Every call is recorded.** Success or failure, the `AgentToolCall` carries the arguments,
   the result, the latency and the error before the caller sees any of them. L1's rule, applied to
   the other kind of call this app makes.
@@ -381,6 +395,9 @@ the agent is not invited to try again with a different argument (13.8).
   what happened.
 - The **arguments are frozen** at proposal. Approving approves what was proposed, byte for byte;
   an operator who wants different arguments denies and says so in the ticket.
+- The **tool is frozen** at proposal too, per M6: a call whose tool has been re-advertised since
+  the proposal was written is refused at execution rather than run against a definition nobody
+  approved.
 
 ### 7.4 Executing
 
@@ -579,3 +596,64 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   a traceback where the documentation promises a sentence.
 - **An unchanged tool is not rewritten.** `MCPTool` is change-logged, and stamping `last_seen_at`
   on every pass filed one `ObjectChange` per tool per night recording that nothing had happened.
+
+### PR B
+
+- **`abandoned` became `superseded`.** Section 4.3 listed a run status nothing could set: a run is
+  only ever left `running` by a process that died, and no code inside a dead process marks its own
+  row. What does happen, several times a day in a deployment that uses the gate, is a
+  `waiting_approval` run whose approved call is taken over by a resumption. That run did not
+  complete and was not abandoned - it handed over - and it now says so.
+- **One tool call is executed per turn.** Section 6.2 did not say what happens when a model asks
+  for three at once. The answer is that the first runs and the others are told, in the transcript,
+  that they were not executed; a model that still wants them asks again next turn. The alternatives
+  were a gate holding several proposals at once, or a run making two changes from one approval, and
+  neither is a thing to build. It also keeps the message sequence valid, since every tool call in
+  an assistant message must be answered before the next request.
+- **A tool call that fails does not fail the run.** Step 8 listed `MCPError` beside `LLMError` as a
+  thing that ends a run, and section 7.4 said the opposite in the specific case it cared about. The
+  narrower reading won: a tool that was reached and refused, or that answered badly, is a fact about
+  the world the model should see, and the run carries on with that in its transcript. What ends a
+  run is the app being unable to continue - a model error, a ticket that will not take a write, or a
+  fault nobody anticipated. Nothing is hidden either way: the failure is on the `AgentToolCall`, on
+  the ticket's trail, and in the transcript. `max_tool_calls` bounds a model that keeps retrying.
+- **A5's "attach" half is not exercised.** An agent comments and moves a `new` ticket to `triaged`,
+  and that is the whole of what it does to a ticket. Attaching would need either a tool that
+  returns Nautobot object identifiers or a second parsing contract on the model's prose, and Phase
+  4A already attaches what an event names. The permission is not withheld - `attach_object` is
+  reachable through the same service - it is simply not something this loop does yet.
+- **The `agent` block's defaults are validated at first use, not at startup.** `ingestion.config`
+  validates the consumer's settings before the consumer starts because the consumer is a long-lived
+  process that would otherwise crash-loop. A Job is not: the Job's first act is to read the block,
+  and a fault there is one message in a JobResult, on the run somebody just started.
+- **The Job's input stays one ticket, and "start or resume" is the service's decision.** Section
+  6.3 gives the Job a single `ObjectVar`, and 7.2 says approving enqueues a resumption - which
+  would have needed a second input naming the approved call. It does not: `run_agent()` looks for a
+  waiting run with an approved call on the ticket and continues it, or starts fresh. That keeps
+  `has_sensitive_variables = False` honest, keeps the Job schedulable, and means the button on the
+  ticket page does the right thing whichever state the ticket is in.
+- **A resolved ticket is refused before the model is called.** A4 said S3 refuses an agent working a
+  resolved ticket, which was true and expensive: the refusal would have arrived on the first ticket
+  write, after a model call somebody paid for. It is checked with the other refusals now, before a
+  run row exists.
+- **The gate reads `mutating` and re-checks the definition.** Both were questions the Phase 4B
+  review left for this PR, and both are now written into M6 rather than settled in code alone. The
+  gate's only input is the operator's boolean; and an `AgentToolCall` stores the tool's
+  `definition_fingerprint` at proposal, which `call_tool()` re-checks before the call runs. M5
+  covers most of the second one already - a changed definition disables the tool - and not the case
+  where an operator reviews the new definition and re-enables it while an older proposal is still
+  waiting.
+- **Approving over REST does not enqueue the resumption.** The UI does, because a person who
+  pressed Approve is sitting in front of the page. A REST client is not, and running the agent is a
+  Job with its own endpoint and its own permission; a decision endpoint that silently started a
+  billable loop would be a surprise.
+- **The Investigate control is a link to the Job's run form**, not a button that enqueues the Job.
+  Nautobot ships a modal button component for exactly this and it is private, experimental and
+  outside the `nautobot.apps` surface this app otherwise keeps to. The run form is also the better
+  page: it shows the Job, its description and its time limit before anything starts.
+- **`complete()` reports an unusable answer as itself.** Section 8 said unparsable arguments raise
+  `LLMResponseError`, which they do. What the sketch did not cover is that a model asking for a tool
+  sends no message content - so the pre-existing "the response carried no message content" error had
+  to learn that a tool call is a complete answer, and the two faults had to be told apart on the
+  usage record rather than collapsed into one message pointing somewhere unhelpful.
+

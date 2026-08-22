@@ -21,9 +21,10 @@ Rules implemented here, referenced by number from the Phase 3 spec:
   record: rule L1 covers calls, and a refused call never left the process.
 """
 
+import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from django.conf import settings as django_settings
@@ -70,8 +71,23 @@ MAX_PRUNE_FAILURES = 3
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """One tool the model asked to call, read out of a provider-shaped response.
+
+    `arguments` is a dictionary because the caller needs one; the provider sends a JSON string,
+    and a string that will not parse is a failed response rather than a call anybody makes
+    (section 8). `identifier` is the provider's own id for the call, which the next request has to
+    echo back on the result, so it is carried rather than regenerated.
+    """
+
+    identifier: str
+    name: str
+    arguments: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class LLMResponse:
-    """What a successful call returns: the text, and the accounting row that priced it.
+    """What a successful call returns: the text, the tool calls, and the row that priced it.
 
     The numbers live on the record alone; the properties are conveniences, not copies, so a new
     accounting field is added in one place.
@@ -79,6 +95,9 @@ class LLMResponse:
 
     text: str
     record: LLMUsageRecord
+    #: The tools the model asked for, in the order it asked. Empty for a plain completion, and
+    #: empty for every call made without `tools`.
+    tool_calls: tuple = ()
 
     @property
     def prompt_tokens(self):
@@ -162,6 +181,8 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     max_tokens=None,
     timeout=None,
     response_format=None,
+    tools=None,
+    tool_choice=None,
     client=None,
 ):
     """One model call: refuse (L8), resolve credentials (L3), call (L6), record (L1), price (L5).
@@ -170,6 +191,11 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     litellm-shaped response object. The default is litellm itself, resolved before anything is
     attempted so that a missing package is a plain `ImproperlyConfigured` - a deployment fault,
     not a failed call, and not on the record (section 5.2 of the spec).
+
+    `tools` is a list of OpenAI-shaped tool definitions, which litellm translates per provider.
+    The app builds them from `MCPTool.input_schema` and never from anything a model said (Phase 4B
+    section 8). A call that asked for tools and one that did not are priced identically: L1 through
+    L8 are untouched by this argument.
 
     Returns an `LLMResponse`. Raises `LLMConfigurationError` before any network traffic,
     `LLMCallError` when the call fails, and `LLMResponseError` when what came back is unusable -
@@ -208,6 +234,10 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         call_kwargs["max_tokens"] = effective_max_tokens
     if response_format is not None:
         call_kwargs["response_format"] = response_format
+    if tools:
+        call_kwargs["tools"] = tools
+        if tool_choice is not None:
+            call_kwargs["tool_choice"] = tool_choice
 
     # Resolved before the try, like the client above: a routing fault is a refusal, and inside
     # the block it would be recorded and re-raised as a failed call it never became.
@@ -232,6 +262,15 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     latency_ms = _elapsed_ms(started)
     prompt_tokens, completion_tokens = _token_usage(raw)
     text = _response_text(raw)
+    tool_calls, tool_call_problem = _response_tool_calls(raw)
+
+    # A model that asked for a tool sends no message content, and that is a complete answer rather
+    # than an empty one. The "nothing came back" error therefore fires only when neither half is
+    # there - and an unparsable set of arguments is its own fault, reported as itself, because
+    # "the model returned no content" would send an operator looking in the wrong place.
+    problem = tool_call_problem
+    if problem is None and text is None and not tool_calls:
+        problem = "The response carried no message content."
 
     record = _record_usage(
         model=model,
@@ -242,12 +281,12 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         completion_tokens=completion_tokens,
         cost=_cost(model, prompt_tokens, completion_tokens),
         request_id=str(getattr(raw, "id", "") or ""),
-        error=None if text is not None else "The response carried no message content.",
+        error=problem,
     )
-    if text is None:
-        raise LLMResponseError(f"LLM call to {model} returned no usable content.", record=record)
+    if problem is not None:
+        raise LLMResponseError(f"LLM call to {model} returned no usable content: {problem}", record=record)
 
-    return LLMResponse(text=text, record=record)
+    return LLMResponse(text=text or "", record=record, tool_calls=tool_calls)
 
 
 def link_usage_records(record_ids, ticket):
@@ -402,6 +441,51 @@ def _response_text(raw):
     if content is None:
         return None
     return str(content)
+
+
+def _response_tool_calls(raw):
+    """The tools the model asked for, and the reason the answer is unusable when it is.
+
+    Returns `(tool_calls, problem)` rather than raising: the caller has to write the usage record
+    before anything is raised (L1), and returning the fault lets it do that once for both halves
+    of an unusable answer.
+
+    Defensive throughout, because this is the shape a provider is most likely to differ on: a
+    missing field reads as "no tool calls", which is a plain completion and always safe. The one
+    thing that is not waved through is arguments that will not parse - a tool call the app cannot
+    read is not a tool call it should guess at, and section 8 says it raises.
+    """
+    choices = getattr(raw, "choices", None)
+    if not choices:
+        return (), None
+    message = getattr(choices[0], "message", None)
+    raw_calls = getattr(message, "tool_calls", None) or []
+
+    calls = []
+    for raw_call in raw_calls:
+        function = getattr(raw_call, "function", None)
+        name = str(getattr(function, "name", "") or "")
+        if not name:
+            return (), "A tool call arrived with no tool name."
+
+        raw_arguments = getattr(function, "arguments", None)
+        if raw_arguments is None or raw_arguments == "":
+            # An argument-less tool is ordinary, and providers spell "none" as an empty string, a
+            # missing field or "{}" depending on the day.
+            arguments = {}
+        elif isinstance(raw_arguments, dict):
+            arguments = raw_arguments
+        else:
+            try:
+                arguments = json.loads(raw_arguments)
+            except (TypeError, ValueError):
+                return (), f"The arguments for '{name}' are not valid JSON."
+            if not isinstance(arguments, dict):
+                return (), f"The arguments for '{name}' are not a JSON object."
+
+        calls.append(ToolCall(identifier=str(getattr(raw_call, "id", "") or ""), name=name, arguments=arguments))
+
+    return tuple(calls), None
 
 
 def _record_usage(  # pylint: disable=too-many-arguments

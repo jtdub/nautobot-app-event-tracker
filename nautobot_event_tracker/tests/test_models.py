@@ -11,6 +11,8 @@ from nautobot.apps.testing import ModelTestCases, TestCase
 
 from nautobot_event_tracker import models
 from nautobot_event_tracker.choices import (
+    AgentRunStatusChoices,
+    AgentToolCallStatusChoices,
     LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
@@ -762,3 +764,132 @@ class TestMCPTool(ModelTestCases.BaseModelTestCase):
         fixtures.create_mcptool(server=server, name="twice")
         with self.assertRaises((IntegrityError, ValidationError)):
             fixtures.create_mcptool(server=server, name="twice")
+
+
+class TestAgentRun(ModelTestCases.BaseModelTestCase):
+    """The record of one agent run. Constructed directly only here and in the fixtures."""
+
+    model = models.AgentRun
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three runs, so the generic suite has a queryset to work through."""
+        super().setUpTestData()
+        ticket = fixtures.create_ticket()
+        for _ in range(3):
+            fixtures.create_agentrun(ticket=ticket)
+
+    def test_a_run_starts_running_with_an_empty_transcript(self):
+        """A row exists from the first moment, so a killed worker still left something."""
+        run = fixtures.create_agentrun()
+
+        self.assertEqual(run.status, AgentRunStatusChoices.RUNNING)
+        self.assertEqual(run.transcript, [])
+        self.assertEqual(run.iterations, 0)
+        self.assertTrue(run.is_live)
+
+    def test_a_completed_run_is_not_live(self):
+        """A9 reads this: only a live run holds a ticket."""
+        run = fixtures.create_agentrun(status=AgentRunStatusChoices.COMPLETED)
+
+        self.assertFalse(run.is_live)
+
+    def test_a_run_waiting_for_approval_is_live(self):
+        """The chain is not over: somebody still has a decision to make."""
+        run = fixtures.create_agentrun(status=AgentRunStatusChoices.WAITING_APPROVAL)
+
+        self.assertTrue(run.is_live)
+
+    def test_a_deleted_ticket_takes_its_runs_with_it(self):
+        """A run is about exactly one ticket and means nothing without it."""
+        ticket = fixtures.create_ticket(title="Doomed")
+        run = fixtures.create_agentrun(ticket=ticket)
+
+        ticket.delete()
+
+        self.assertFalse(models.AgentRun.objects.filter(pk=run.pk).exists())
+
+    def test_a_deleted_user_leaves_the_run(self):
+        """Who launched it is worth losing; the record of what happened is not."""
+        user = fixtures.create_user(username="leaving")
+        run = fixtures.create_agentrun(started_by=user)
+
+        user.delete()
+        run.refresh_from_db()
+
+        self.assertIsNone(run.started_by)
+
+    def test_runs_are_not_change_logged(self):
+        """One ObjectChange per message appended would bury the change log."""
+        self.assertFalse(hasattr(fixtures.create_agentrun(), "to_objectchange"))
+
+    def test_ordering_is_newest_first(self):
+        """The list view answers "what just happened" without a sort."""
+        older = fixtures.create_agentrun(started_at=timezone.now() - timedelta(minutes=5))
+        newer = fixtures.create_agentrun()
+
+        ordered = models.AgentRun.objects.filter(pk__in=[older.pk, newer.pk])
+
+        self.assertEqual(list(ordered), [newer, older])
+
+
+class TestAgentToolCall(ModelTestCases.BaseModelTestCase):
+    """The record of one tool call, and the two properties the gate reads."""
+
+    model = models.AgentToolCall
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three calls, so the generic suite has a queryset to work through."""
+        super().setUpTestData()
+        run = fixtures.create_agentrun()
+        server = fixtures.create_mcpserver()
+        for name in ("call_one", "call_two", "call_three"):
+            fixtures.create_agenttoolcall(run=run, tool=fixtures.create_mcptool(server=server, name=name))
+
+    def test_str_names_the_tool_and_what_became_of_it(self):
+        """The two things a person scanning a list is looking for."""
+        call = fixtures.create_agenttoolcall()
+
+        self.assertEqual(str(call), f"{call.tool} ({call.status})")
+
+    def test_a_new_call_is_waiting(self):
+        """Every call starts proposed, whether or not anybody has to decide it."""
+        call = fixtures.create_agenttoolcall()
+
+        self.assertTrue(call.awaits_decision)
+        self.assertFalse(call.is_decided)
+
+    def test_a_decided_call_is_not_waiting(self):
+        """A call is decided once (7.3), and this is the check that says so."""
+        call = fixtures.create_agenttoolcall(status=AgentToolCallStatusChoices.APPROVED)
+
+        self.assertFalse(call.awaits_decision)
+        self.assertTrue(call.is_decided)
+
+    def test_an_executed_read_only_call_is_not_waiting_on_anybody(self):
+        """13.4 - reading needs no approval, so an executed row has no decider."""
+        call = fixtures.create_agenttoolcall(status=AgentToolCallStatusChoices.EXECUTED)
+
+        self.assertIsNone(call.decided_by)
+        self.assertTrue(call.is_decided)
+
+    def test_the_tool_is_protected_while_calls_exist(self):
+        """The record of a call outlives a tidy-up of the registry."""
+        call = fixtures.create_agenttoolcall(tool=fixtures.create_mcptool(name="protected_tool"))
+
+        with self.assertRaises(ProtectedError):
+            call.tool.delete()
+
+    def test_a_deleted_run_takes_its_calls_with_it(self):
+        """A call means nothing without the run that asked for it."""
+        run = fixtures.create_agentrun()
+        call = fixtures.create_agenttoolcall(run=run)
+
+        run.delete()
+
+        self.assertFalse(models.AgentToolCall.objects.filter(pk=call.pk).exists())
+
+    def test_calls_are_not_change_logged(self):
+        """A record of what happened, like every other row of this kind."""
+        self.assertFalse(hasattr(fixtures.create_agenttoolcall(), "to_objectchange"))

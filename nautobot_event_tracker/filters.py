@@ -16,6 +16,8 @@ from nautobot.apps.filters import (
 
 from nautobot_event_tracker.choices import TERMINAL_STATUSES
 from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
     EventTicket,
     EventType,
     IngestionStats,
@@ -282,3 +284,57 @@ class MCPToolFilterSet(NautobotFilterSet):
             "advertised_read_only",
             "tags",
         ]
+
+
+class AgentRunFilterSet(NautobotFilterSet):
+    """Filter for AgentRun.
+
+    The questions the page exists to answer: which ticket, how it ended, and who started it.
+    `status` is the one that matters - `waiting_approval` is the queue of decisions nobody has
+    made yet.
+    """
+
+    q = SearchFilter(filter_predicates={"ticket__title": "icontains", "status": "icontains", "error": "icontains"})
+    ticket = django_filters.ModelMultipleChoiceFilter(queryset=EventTicket.objects.all(), label="Ticket")
+    started_by = NaturalKeyOrPKMultipleChoiceFilter(
+        queryset=get_user_model().objects.all(),
+        to_field_name="username",
+        label="Started by (username or ID)",
+    )
+    status = MultiValueCharFilter(label="Status")
+    started_at = MultiValueDateTimeFilter(label="Started at")
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = AgentRun
+        fields = ["ticket", "status", "started_by"]  # pylint: disable=nb-use-fields-all
+
+
+class AgentToolCallFilterSet(NautobotFilterSet):
+    """Filter for AgentToolCall.
+
+    Filtering on `status=proposed` is the work queue an approver lives in, which is why the tool
+    and the run are both here: a decision is made about a specific tool on a specific ticket.
+    """
+
+    q = SearchFilter(filter_predicates={"tool__name": "icontains", "status": "icontains", "error": "icontains"})
+    run = django_filters.ModelMultipleChoiceFilter(queryset=AgentRun.objects.all(), label="Run")
+    tool = django_filters.ModelMultipleChoiceFilter(queryset=MCPTool.objects.all(), label="Tool")
+    ticket = django_filters.ModelMultipleChoiceFilter(
+        field_name="run__ticket",
+        queryset=EventTicket.objects.all(),
+        label="Ticket",
+    )
+    decided_by = NaturalKeyOrPKMultipleChoiceFilter(
+        queryset=get_user_model().objects.all(),
+        to_field_name="username",
+        label="Decided by (username or ID)",
+    )
+    status = MultiValueCharFilter(label="Status")
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = AgentToolCall
+        fields = ["run", "tool", "status", "decided_by"]  # pylint: disable=nb-use-fields-all

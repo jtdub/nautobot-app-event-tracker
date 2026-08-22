@@ -2,16 +2,22 @@
 
 Nautobot offers two ways to put a model on the GraphQL schema, and a model takes exactly one of
 them. `EventType`, `EventTicket`, `LLMProvider` and `LLMModel` take the first: the `graphql` entry
-in their `extras_features`, which generates a type for them. `TicketUpdate`, `IngestionStats` and
-`LLMUsageRecord` take the second - the explicit types below - and so deliberately carry no
-`graphql` feature, which would register a second, competing type for the same model. They need
-the explicit form because each wires a `filterset_class` of its own.
+in their `extras_features`, which generates a type for them. `TicketUpdate`, `IngestionStats`,
+`LLMUsageRecord`, `AgentRun` and `AgentToolCall` take the second - the explicit types below - and
+so deliberately carry no `graphql` feature, which would register a second, competing type for the
+same model. They need the explicit form because each wires a `filterset_class` of its own.
 """
 
 from nautobot.apps.graphql import OptimizedNautobotObjectType
 
-from nautobot_event_tracker.filters import IngestionStatsFilterSet, LLMUsageRecordFilterSet, TicketUpdateFilterSet
-from nautobot_event_tracker.models import IngestionStats, LLMUsageRecord, TicketUpdate
+from nautobot_event_tracker.filters import (
+    AgentRunFilterSet,
+    AgentToolCallFilterSet,
+    IngestionStatsFilterSet,
+    LLMUsageRecordFilterSet,
+    TicketUpdateFilterSet,
+)
+from nautobot_event_tracker.models import AgentRun, AgentToolCall, IngestionStats, LLMUsageRecord, TicketUpdate
 
 
 class TicketUpdateType(OptimizedNautobotObjectType):
@@ -59,4 +65,38 @@ class LLMUsageRecordType(OptimizedNautobotObjectType):
         filterset_class = LLMUsageRecordFilterSet
 
 
-graphql_types = [TicketUpdateType, IngestionStatsType, LLMUsageRecordType]
+class AgentRunType(OptimizedNautobotObjectType):
+    """GraphQL type for AgentRun.
+
+    Query-only, like everything else here, and for the same reason: a run is what happened, and
+    `services/agent.py` is the only thing that writes one.
+    """
+
+    class Meta:  # pylint: disable=too-few-public-methods
+        """Meta attributes."""
+
+        model = AgentRun
+        filterset_class = AgentRunFilterSet
+
+
+class AgentToolCallType(OptimizedNautobotObjectType):
+    """GraphQL type for AgentToolCall.
+
+    Query-only. Approving is a decision with its own permission and its own trail entry, so it
+    happens through the REST action rather than through a mutation nobody would notice.
+    """
+
+    class Meta:  # pylint: disable=too-few-public-methods
+        """Meta attributes."""
+
+        model = AgentToolCall
+        filterset_class = AgentToolCallFilterSet
+
+
+graphql_types = [
+    TicketUpdateType,
+    IngestionStatsType,
+    LLMUsageRecordType,
+    AgentRunType,
+    AgentToolCallType,
+]

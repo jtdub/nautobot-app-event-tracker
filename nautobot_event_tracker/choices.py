@@ -71,6 +71,13 @@ class UpdateTypeChoices(ChoiceSet):
     OBJECT_ATTACHED = "object_attached"
     OBJECT_DETACHED = "object_detached"
     RECURRENCE = "recurrence"
+    # The approval gate's three moments (Phase 4B, section 7). They are on the ticket's own trail
+    # rather than only on the run, because the trail is where a person looks to answer "what was
+    # done to this ticket, by whom" - and a tool call against the network is the loudest possible
+    # answer to that question.
+    TOOL_PROPOSED = "tool_proposed"
+    TOOL_DECIDED = "tool_decided"
+    TOOL_EXECUTED = "tool_executed"
 
     CHOICES = (
         (CREATED, "Created"),
@@ -81,6 +88,9 @@ class UpdateTypeChoices(ChoiceSet):
         (OBJECT_ATTACHED, "Object Attached"),
         (OBJECT_DETACHED, "Object Detached"),
         (RECURRENCE, "Recurrence"),
+        (TOOL_PROPOSED, "Tool Proposed"),
+        (TOOL_DECIDED, "Tool Decided"),
+        (TOOL_EXECUTED, "Tool Executed"),
     )
 
 
@@ -122,8 +132,71 @@ class LLMPurposeChoices(ChoiceSet):
     """
 
     TRIAGE = "triage"
+    AGENT = "agent"
 
-    CHOICES = ((TRIAGE, "Triage"),)
+    CHOICES = (
+        (TRIAGE, "Triage"),
+        (AGENT, "Agent"),
+    )
+
+
+class AgentRunStatusChoices(ChoiceSet):
+    """Where one agent run got to.
+
+    Five of the six are ends. `waiting_approval` is the one that is not an end and is still a
+    finished run: the loop stops at a mutating proposal and hands the worker slot back, so a run in
+    this state is not executing anything and is not waiting on a lock (ADR 0009).
+    """
+
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    DENIED = "denied"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+    CHOICES = (
+        (RUNNING, "Running"),
+        (WAITING_APPROVAL, "Waiting for Approval"),
+        (COMPLETED, "Completed"),
+        (DENIED, "Denied"),
+        (FAILED, "Failed"),
+        (SUPERSEDED, "Superseded"),
+    )
+
+
+class AgentToolCallStatusChoices(ChoiceSet):
+    """What became of one tool call an agent asked for.
+
+    A read-only call is written straight to `executed` or `failed` and never has a decider; a
+    mutating one passes through `proposed` and then `approved` or `denied`. That is the entire
+    difference between the two kinds, and it is one column.
+    """
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DENIED = "denied"
+    EXECUTED = "executed"
+    FAILED = "failed"
+
+    CHOICES = (
+        (PROPOSED, "Proposed"),
+        (APPROVED, "Approved"),
+        (DENIED, "Denied"),
+        (EXECUTED, "Executed"),
+        (FAILED, "Failed"),
+    )
+
+
+#: Run states in which a run is part of the ticket's current chain, so a second launch would be a
+#: second agent on one ticket (rule A9). `waiting_approval` is in here because the chain is not
+#: over: somebody still has a decision to make, or has made one that nothing has acted on yet.
+AGENT_RUN_LIVE_STATUSES = frozenset({AgentRunStatusChoices.RUNNING, AgentRunStatusChoices.WAITING_APPROVAL})
+
+#: The statuses an agent may move a ticket into (rule A5). Resolving and closing are a person's
+#: judgement: a wrongly closed ticket looks exactly like a solved one, which is what makes it the
+#: one mistake nobody sees.
+AGENT_ALLOWED_TRANSITIONS = frozenset({TicketStatusChoices.TRIAGED, TicketStatusChoices.IN_PROGRESS})
 
 
 #: Numeric weights for severity, so that ordering and comparison do not depend on alphabetical

@@ -4,6 +4,7 @@ Built on NautobotUIViewSet and the UI Component Framework only. The app ships no
 See ADR 0008.
 """
 
+import json
 from contextlib import contextmanager
 
 from django.contrib import messages
@@ -37,10 +38,12 @@ from nautobot.apps.views import (
 
 from nautobot_event_tracker import filters, forms, models, tables
 from nautobot_event_tracker.api import serializers
-from nautobot_event_tracker.choices import TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.choices import AgentToolCallStatusChoices, TicketSourceChoices, TicketStatusChoices
+from nautobot_event_tracker.jobs import EventTicketAgentJob
+from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import tickets as ticket_service
-from nautobot_event_tracker.services.exceptions import MCPError, TicketServiceError
+from nautobot_event_tracker.services.exceptions import AgentError, MCPError, TicketServiceError
 
 TRANSITION_PERMISSION = "nautobot_event_tracker.transition_eventticket"
 CHANGE_PERMISSION = "nautobot_event_tracker.change_eventticket"
@@ -50,6 +53,12 @@ CHANGE_PERMISSION = "nautobot_event_tracker.change_eventticket"
 #: restriction. Editing a server does not carry the right to widen what may be called.
 DISCOVER_PERMISSION = "nautobot_event_tracker.change_mcpserver"
 DISCOVER_TOOL_PERMISSION = "nautobot_event_tracker.add_mcptool"
+#: Deciding a proposed tool call is its own permission, and `change_agenttoolcall` does not imply
+#: it (7.3). Approving a call against the network is not the same right as editing a row.
+APPROVE_PERMISSION = "nautobot_event_tracker.approve_agenttoolcall"
+#: Running a Job is Nautobot's own permission, and the agent is a Job (ADR 0009). There is nothing
+#: for this app to invent.
+RUN_JOB_PERMISSION = "extras.run_job"
 
 
 def _render_object_form(request, ticket, form):
@@ -211,6 +220,112 @@ class AttachObjectButton(Button):
         return ticket.is_open
 
 
+def pending_proposal(ticket):
+    """The tool call on this ticket that somebody still has to decide, or None.
+
+    Read through the agent service rather than queried here, so "which run owns this ticket" has
+    one definition. Cached on the ticket for the life of the instance: the framework calls a
+    panel's `get_data()` twice per render, and the cache belongs on the object rather than on the
+    panel, which is a module-level singleton shared across requests and threads.
+    """
+    cached = getattr(ticket, "_pending_proposal_cache", None)
+    if cached is None:
+        cached = (agent_service.pending_call(agent_service.live_run(ticket)),)
+        ticket._pending_proposal_cache = cached  # pylint: disable=protected-access
+    return cached[0]
+
+
+class AgentProposalPanel(KeyValueTablePanel):
+    """The tool call waiting on a decision, spelled out: which server, which tool, which arguments.
+
+    The arguments are rendered in full rather than summarized, and that is the whole point of the
+    panel. A gate is only as good as the person reading it, and what they have to read is what
+    will actually be sent - not the model's account of it (section 11).
+    """
+
+    def get_data(self, context):
+        """The proposal's own fields, or nothing when this ticket has no decision waiting."""
+        ticket = context.get("object")
+        if ticket is None:
+            return {}
+        proposal = pending_proposal(ticket)
+        if proposal is None:
+            return {}
+        return {
+            "MCP server": proposal.tool.server.name,
+            "Tool": proposal.tool.name,
+            "Arguments": format_html('<pre class="mb-0">{}</pre>', json.dumps(proposal.arguments, indent=2)),
+            "Proposed": proposal.proposed_at,
+        }
+
+
+class AgentDecisionButton(PostButton):
+    """Approve or deny the proposal waiting on this ticket. Hidden when there is none.
+
+    A `PostButton`, like Discover Tools and for the same reason: this writes rows and calls a
+    network tool, and a control that issues a GET is a control a link preview can press.
+    """
+
+    required_permissions = (APPROVE_PERMISSION,)
+
+    def __init__(self, approve, **kwargs):
+        """Record which decision this button makes."""
+        self.approve = approve
+        super().__init__(**kwargs)
+
+    def get_link(self, context):
+        """Link to the decision view for the proposal, not for the ticket."""
+        ticket = context.get("object")
+        proposal = pending_proposal(ticket) if ticket is not None else None
+        if proposal is None:
+            return None
+        name = "agenttoolcall_approve" if self.approve else "agenttoolcall_deny"
+        return reverse(f"plugins:nautobot_event_tracker:{name}", kwargs={"pk": proposal.pk})
+
+    def should_render(self, context):
+        """Only when there is something to decide, on top of the framework's permission check."""
+        ticket = context.get("object")
+        if ticket is None or not super().should_render(context):
+            return False
+        return pending_proposal(ticket) is not None
+
+
+class RunAgentButton(Button):
+    """Launch the agent Job on this ticket, from the page a person is standing on when they want it.
+
+    A link to Nautobot's own Job run form with the ticket pre-filled, rather than a control that
+    enqueues the Job itself: the run form is where a person sees the Job's name, its description
+    and its time limit, and it is the page Nautobot's own permissions are written against.
+    """
+
+    required_permissions = (RUN_JOB_PERMISSION,)
+
+    def get_link(self, context):
+        """The Job run form, with this ticket filled in."""
+        ticket = context.get("object")
+        if ticket is None:
+            return None
+        base = reverse(
+            "extras:job_run_by_class_path",
+            kwargs={"class_path": f"{EventTicketAgentJob.__module__}.{EventTicketAgentJob.__name__}"},
+        )
+        return f"{base}?ticket={ticket.pk}"
+
+    def should_render(self, context):
+        """Only for a ticket an agent may act on at all (S3), and only when agents are configured."""
+        ticket = context.get("object")
+        if ticket is None or not super().should_render(context):
+            return False
+        if not ticket.is_open:
+            return False
+        try:
+            return agent_service.get_settings().enabled
+        except DjangoImproperlyConfigured:
+            # A settings fault is worth showing rather than hiding: the button leads to the Job,
+            # and the Job's own refusal says what is wrong in one sentence.
+            return True
+
+
 class EventTypeUIViewSet(NautobotUIViewSet):
     """ViewSet for EventType views."""
 
@@ -360,6 +475,24 @@ class EventTicketUIViewSet(NautobotUIViewSet):
                 enable_related_link=False,
                 include_columns=["created", "update_type", "source", "user", "message", "related_object"],
             ),
+            AgentProposalPanel(
+                weight=450,
+                section=SectionChoices.RIGHT_HALF,
+                label="Waiting for Your Decision",
+                body_id="agent-proposal",
+            ),
+            ObjectsTablePanel(
+                weight=550,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.AgentRunTable,
+                table_filter="ticket",
+                label="Agent Runs",
+                select_related_fields=["started_by"],
+                enable_bulk_actions=False,
+                # A run is started by the Job, never from a form, so there is nothing to add here.
+                add_button_route=None,
+                include_columns=["started_at", "status", "started_by", "iterations", "finished_at"],
+            ),
             ObjectsTablePanel(
                 weight=600,
                 section=SectionChoices.FULL_WIDTH,
@@ -384,6 +517,26 @@ class EventTicketUIViewSet(NautobotUIViewSet):
         ],
         extra_buttons=[
             AttachObjectButton(weight=100, label="Attach Object", icon="mdi-link-variant"),
+            RunAgentButton(
+                weight=150,
+                label="Investigate with Agent",
+                icon="mdi-robot-outline",
+                color=ButtonColorChoices.BLUE,
+            ),
+            AgentDecisionButton(
+                True,
+                weight=160,
+                label="Approve Tool Call",
+                icon="mdi-check-bold",
+                color=ButtonColorChoices.GREEN,
+            ),
+            AgentDecisionButton(
+                False,
+                weight=170,
+                label="Deny Tool Call",
+                icon="mdi-close-thick",
+                color=ButtonColorChoices.RED,
+            ),
             TransitionDropdownButton(
                 weight=200,
                 label="Transition",
@@ -840,3 +993,203 @@ class MCPServerDiscoverView(ObjectPermissionRequiredMixin, GenericView):
                 "These tools are disabled and need review: " + ", ".join(tool.name for tool in report.needs_attention),
             )
         return redirect(server.get_absolute_url())
+
+
+class CallDecisionButton(PostButton):
+    """Approve or deny, on the tool call's own page. Hidden once the call has been decided."""
+
+    required_permissions = (APPROVE_PERMISSION,)
+
+    def __init__(self, approve, **kwargs):
+        """Record which decision this button makes."""
+        self.approve = approve
+        super().__init__(**kwargs)
+
+    def get_link(self, context):
+        """Link to this call's decision route."""
+        call = context.get("object")
+        if call is None:
+            return None
+        name = "agenttoolcall_approve" if self.approve else "agenttoolcall_deny"
+        return reverse(f"plugins:nautobot_event_tracker:{name}", kwargs={"pk": call.pk})
+
+    def should_render(self, context):
+        """Only while the call is still waiting: a call is decided once (7.3)."""
+        call = context.get("object")
+        if call is None or not super().should_render(context):
+            return False
+        return call.status == AgentToolCallStatusChoices.PROPOSED
+
+
+class AgentRunUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
+    """Read-only views for agent runs: `services/agent.py` is the only writer.
+
+    No add form, and no edit form either. A run is started by the Job, and what it did is not a
+    thing anybody edits afterwards - which is most of what makes the transcript worth reading.
+    """
+
+    queryset = models.AgentRun.objects.select_related("ticket", "started_by", "job_result").annotate(
+        tool_call_count=count_related(models.AgentToolCall, "run")
+    )
+    table_class = tables.AgentRunTable
+    filterset_class = filters.AgentRunFilterSet
+    filterset_form_class = forms.AgentRunFilterForm
+    serializer_class = serializers.AgentRunSerializer
+
+    object_detail_content = ObjectDetailContent(
+        panels=(
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=(*tables.AGENT_RUN_FIELDS, "job_result", "parent", "error"),
+            ),
+            ObjectTextPanel(
+                weight=200,
+                section=SectionChoices.RIGHT_HALF,
+                label="Transcript",
+                object_field="transcript",
+                render_as=ObjectTextPanel.RenderOptions.JSON,
+            ),
+            ObjectsTablePanel(
+                weight=300,
+                section=SectionChoices.FULL_WIDTH,
+                table_class=tables.AgentToolCallTable,
+                table_filter="run",
+                related_field_name="run",
+                label="Tool Calls",
+                select_related_fields=["tool__server", "decided_by"],
+                enable_bulk_actions=False,
+                add_button_route=None,
+            ),
+        ),
+    )
+
+
+class AgentToolCallUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
+    """Read-only views for agent tool calls, with the two decision controls.
+
+    Read-only in the ordinary sense - nothing here edits a row - and yet this is where a person
+    approves a call against the network. The two are not in tension: approving is its own action
+    with its own permission and its own trail entry, and it is not an edit.
+    """
+
+    queryset = models.AgentToolCall.objects.select_related("run__ticket", "tool__server", "decided_by")
+    table_class = tables.AgentToolCallTable
+    filterset_class = filters.AgentToolCallFilterSet
+    filterset_form_class = forms.AgentToolCallFilterForm
+    serializer_class = serializers.AgentToolCallSerializer
+
+    object_detail_content = ObjectDetailContent(
+        panels=(
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=(*tables.AGENT_TOOL_CALL_FIELDS, "tool_fingerprint", "error"),
+            ),
+            ObjectTextPanel(
+                weight=200,
+                section=SectionChoices.RIGHT_HALF,
+                label="Arguments",
+                object_field="arguments",
+                render_as=ObjectTextPanel.RenderOptions.JSON,
+            ),
+            ObjectTextPanel(
+                weight=300,
+                section=SectionChoices.FULL_WIDTH,
+                label="Result",
+                object_field="result",
+                render_as=ObjectTextPanel.RenderOptions.JSON,
+            ),
+        ),
+        extra_buttons=(
+            CallDecisionButton(
+                True,
+                weight=100,
+                label="Approve",
+                icon="mdi-check-bold",
+                color=ButtonColorChoices.GREEN,
+            ),
+            CallDecisionButton(
+                False,
+                weight=200,
+                label="Deny",
+                icon="mdi-close-thick",
+                color=ButtonColorChoices.RED,
+            ),
+        ),
+    )
+
+
+class AgentToolCallDecisionView(ObjectPermissionRequiredMixin, GenericView):
+    """Approve or deny one proposed tool call (7.2).
+
+    POST only. Approving a call is the moment this whole phase exists to control, and a control
+    reachable by following a link is one a crawler, a link preview or a prefetching browser can
+    press. Both buttons post.
+
+    `approve` is set by the URL rather than read from the request, so the two decisions are two
+    routes and neither can be reached by editing a form field.
+    """
+
+    queryset = models.AgentToolCall.objects.select_related("run__ticket", "tool__server")
+    approve = True
+
+    def get_required_permission(self):
+        """Deciding needs its own permission; `change` does not imply it."""
+        return APPROVE_PERMISSION
+
+    def post(self, request, pk):
+        """Record the decision, then enqueue the resumption when the answer was yes."""
+        tool_call = get_object_or_404(self.queryset, pk=pk)
+        ticket = tool_call.run.ticket
+
+        try:
+            if self.approve:
+                agent_service.approve_tool_call(tool_call=tool_call, user=request.user)
+            else:
+                agent_service.deny_tool_call(tool_call=tool_call, user=request.user)
+        except (AgentError, TicketServiceError) as error:
+            messages.error(request, str(error))
+            return redirect(ticket.get_absolute_url())
+
+        if not self.approve:
+            messages.success(request, f"Denied '{tool_call.tool}'. The run has ended.")
+            return redirect(ticket.get_absolute_url())
+
+        messages.success(request, f"Approved '{tool_call.tool}'.")
+        self._enqueue_resumption(request, ticket)
+        return redirect(ticket.get_absolute_url())
+
+    @staticmethod
+    def _enqueue_resumption(request, ticket):
+        """Start the run that makes the approved call, and say so if it cannot be started.
+
+        Enqueued rather than run here: the call is a network call with a timeout, and a web request
+        is not the place for it. A deployment with no worker, or with the Job disabled, gets a
+        message saying to run it from the ticket - the approval itself has already been recorded
+        and is not lost.
+        """
+        from nautobot.extras.models import Job, JobResult  # pylint: disable=import-outside-toplevel
+
+        class_path = f"{EventTicketAgentJob.__module__}.{EventTicketAgentJob.__name__}"
+        try:
+            job_model = Job.objects.restrict(request.user, "run").get_for_class_path(class_path)
+            JobResult.enqueue_job(job_model, request.user, job_kwargs={"ticket": str(ticket.pk)})
+        except Exception as error:  # pylint: disable=broad-except
+            messages.warning(
+                request,
+                f"The approved call was recorded but the agent could not be restarted ({error}). "
+                "Run the agent on this ticket again to make the call.",
+            )
+
+
+class AgentToolCallApproveView(AgentToolCallDecisionView):
+    """Approve one proposed tool call."""
+
+    approve = True
+
+
+class AgentToolCallDenyView(AgentToolCallDecisionView):
+    """Deny one proposed tool call, which ends the run (13.8)."""
+
+    approve = False

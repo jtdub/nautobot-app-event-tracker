@@ -1,0 +1,1 @@
+[Running the Agent](../admin/agents.md), covering configuration, the approval gate, what an agent may and may not do to a ticket, and - stated plainly rather than left implied - what none of it protects against. Plus reference pages for [Agent Run](../models/agentrun.md) and [Agent Tool Call](../models/agenttoolcall.md).
