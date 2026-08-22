@@ -10,6 +10,8 @@ from nautobot_event_tracker.models import (
     LLMModel,
     LLMProvider,
     LLMUsageRecord,
+    MCPServer,
+    MCPTool,
     TicketUpdate,
 )
 
@@ -237,4 +239,75 @@ class LLMUsageRecordTable(BaseTable):
 
         model = LLMUsageRecord
         fields = LLM_USAGE_FIELDS
+        default_columns = fields
+
+
+class MCPServerTable(BaseTable):
+    # pylint: disable=R0903
+    """Table for the MCPServer list view."""
+
+    pk = ToggleColumn()
+    name = tables.Column(linkify=True)
+    external_integration = tables.Column(linkify=True)
+    tool_count = LinkedCountColumn(
+        viewname="plugins:nautobot_event_tracker:mcptool_list",
+        url_params={"server": "pk"},
+        verbose_name="Tools",
+    )
+    # A plain column rather than a second LinkedCountColumn: two of those on one relation collide
+    # in django-tables2's lookup cache ("already seen with a different queryset"). The count comes
+    # from an annotation on the viewset's queryset, which is one subquery either way.
+    enabled_tool_count = tables.Column(verbose_name="Enabled", orderable=False)
+    actions = ButtonsColumn(MCPServer, pk_field="pk")
+
+    class Meta(BaseTable.Meta):
+        """Meta attributes."""
+
+        model = MCPServer
+        # Both counts, because the gap between them is the thing worth seeing: a server offering
+        # forty tools of which two are enabled is the default-deny rule working, not a fault.
+        fields = (
+            "pk",
+            "name",
+            "description",
+            "external_integration",
+            "enabled",
+            "tool_count",
+            "enabled_tool_count",
+            "last_discovered_at",
+            "actions",
+        )
+        default_columns = fields
+
+
+class MCPToolTable(BaseTable):
+    # pylint: disable=R0903
+    """Table for the MCPTool list view and the server detail panel.
+
+    This is the table an operator reviews a newly discovered server in, so bulk selection is the
+    point of it: ADR 0007 admitted that onboarding is tedious in proportion to tool count, and
+    bulk enable is the only place that is answerable.
+    """
+
+    pk = ToggleColumn()
+    name = tables.Column(linkify=True)
+    server = tables.Column(linkify=True)
+    enabled = BooleanColumn()
+    mutating = BooleanColumn(verbose_name="Mutating")
+    actions = ButtonsColumn(MCPTool, pk_field="pk")
+
+    class Meta(BaseTable.Meta):
+        """Meta attributes."""
+
+        model = MCPTool
+        fields = (
+            "pk",
+            "name",
+            "server",
+            "description",
+            "enabled",
+            "mutating",
+            "last_seen_at",
+            "actions",
+        )
         default_columns = fields

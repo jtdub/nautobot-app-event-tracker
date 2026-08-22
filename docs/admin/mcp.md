@@ -1,0 +1,106 @@
+# Registering MCP Servers and Tools
+
+An MCP server is somewhere Event Tracker can go and ask a question — a device inventory, a
+monitoring system, a change-management API. This page is how you register one and decide what, if
+anything, this deployment may call on it.
+
+!!! info "Nothing calls a tool yet"
+    This release ships the registry, the discovery pass and the allowlist. The agent that would use
+    them arrives in the next one. Registering a server now is safe and useful: the review is the
+    slow part, and doing it before an agent exists means the day it does, the answer to "what may
+    it reach" is already written down.
+
+## Before you start
+
+Install the app with the `mcp` extra, or discovery will refuse with a line telling you so:
+
+```shell
+pip install nautobot-event-tracker[mcp]
+```
+
+The server must speak **streamable HTTP**. stdio servers — of which there are many — cannot be used
+without an HTTP bridge in front of them. That is a deliberate refusal, not an omission:
+[ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md) says why.
+
+## 1. Create an External Integration
+
+The server's address and credentials live in a Nautobot **External Integration**, the same as every
+other outbound connection this app makes:
+
+| Field | Use |
+| --- | --- |
+| Remote URL | The server's streamable HTTP endpoint. Jinja2 templating works here. |
+| Secrets Group | The credential, under access type *generic*, secret type *token* (or *secret*). Sent as `Authorization: Bearer …`. |
+| HTTP Headers | Anything else the server wants. An `Authorization` header you write yourself wins over the secret, for a server that authenticates some other way. |
+| SSL Verification / CA File Path | Honoured. Unticking verification wins over a CA path. |
+| Timeout | Applied to discovery and to every tool call. |
+
+Nothing key-shaped is stored on the app's own records or in `PLUGINS_CONFIG`.
+
+## 2. Register the server
+
+**Apps → Event Tracker → MCP Servers → Add.** Name it, point it at the integration, leave it
+enabled.
+
+At this point the server is *known*. Nothing on it is callable.
+
+## 3. Discover its tools
+
+**Discover Tools** on the server's page, or:
+
+```shell
+nautobot-server discovermcptools --server "Device Inventory"
+nautobot-server discovermcptools            # every enabled server
+```
+
+Discovery reads the advertised tool list and writes one **MCP Tool** record per tool. Every new
+tool arrives **disabled** and marked **mutating**. A server advertising forty tools has granted
+access to none of them.
+
+## 4. Review, which is the actual work
+
+Go through the tool list and make two decisions per tool:
+
+- **Is it mutating?** Does calling it change something — on a device, in another system, anywhere?
+  If it only reads, untick **Mutating**. If you are not sure, leave it ticked.
+- **Should this deployment be able to call it at all?** If yes, tick **Enabled**.
+
+A read-only tool is not automatically a harmless tool. It is a decision about what the author of an
+event — who may not be someone you trust — can eventually cause to be read.
+
+Filter the tool list by server, sort by **Mutating**, and use bulk edit. Reviewing forty tools one
+row at a time is how people end up enabling all forty to be done with it, and ADR 0007 admits this
+friction rather than pretending it away.
+
+## Re-discovery
+
+Run discovery again whenever the server changes, or on a schedule. Three things can happen:
+
+- **A new tool appears.** It arrives disabled. It is named in the result so you can go and look.
+- **A tool's argument schema changed.** If that tool was enabled, it is **disabled again** and
+  named. The schema is what you reviewed; if it has changed, the thing you allowed is not the thing
+  now on offer.
+- **A tool is no longer advertised.** It is reported and otherwise left alone. A server having a
+  bad minute must not silently undo your decisions.
+
+Nothing discovery does ever enables a tool or reclassifies one you have classified.
+
+## The off switches
+
+| Switch | Effect |
+| --- | --- |
+| **Enabled** on a tool | That tool becomes uncallable. |
+| **Enabled** on a server | Every tool on it becomes uncallable at once, whatever the tools say. |
+| Uninstalling the `mcp` extra | Nothing can be called and discovery refuses with a message naming the extra. |
+
+## Permissions
+
+Discovery writes tool records, so it needs `add_mcptool` — not merely `view_mcpserver`. Enabling a
+tool is `change_mcptool`. Treat both as privileged: between them they decide what this deployment
+can be made to do.
+
+## Further reading
+
+- [MCP Server](../models/mcpserver.md) and [MCP Tool](../models/mcptool.md) — the records
+- [ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md) — transport and default-deny
+- [ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) — how the approval gate will work

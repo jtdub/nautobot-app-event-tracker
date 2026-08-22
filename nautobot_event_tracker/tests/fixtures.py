@@ -385,6 +385,75 @@ def create_llmusagerecord(model=None, ticket=None, **complete_kwargs):
     return response.record
 
 
+def create_mcpserver(name="Test MCP Server", **overrides):
+    """One registered MCP server, pointing at an integration made for it.
+
+    Reuses a server of this name when one already exists, so that `create_mcptool()` can fall back
+    to a default server without every caller having to know whether somebody made it first.
+    """
+    from nautobot_event_tracker.models import MCPServer  # pylint: disable=import-outside-toplevel
+
+    existing = MCPServer.objects.filter(name=name).first()
+    if existing is not None and not overrides:
+        return existing
+
+    defaults = {
+        "external_integration": create_external_integration(
+            name=f"{name} Endpoint", remote_url="https://mcp.example.test/mcp"
+        ),
+    }
+    server = MCPServer(name=name, **{**defaults, **overrides})
+    server.validated_save()
+    return server
+
+
+def create_mcptool(server=None, name="get_interface_status", **overrides):
+    """One tool on a server, disabled and mutating unless a test says otherwise.
+
+    The defaults are the model's own, restated here so a test that wants a callable tool has to
+    say so - which is the same thing an operator has to do.
+    """
+    from nautobot_event_tracker.models import MCPTool  # pylint: disable=import-outside-toplevel
+
+    if server is None:
+        server = create_mcpserver()
+    tool = MCPTool(server=server, name=name, **overrides)
+    tool.validated_save()
+    return tool
+
+
+class FakeMCPClient:  # pylint: disable=too-few-public-methods
+    """The `client` seam of `services.mcp`: records connections, returns canned tool lists.
+
+    Tests inject this rather than mocking the MCP SDK's internals, so they exercise everything up
+    to the wire and no test opens a socket.
+    """
+
+    def __init__(self, tools=(), *, error=None):
+        """Advertise these tools, or raise this error instead."""
+        self.tools = tuple(tools)
+        self.error = error
+        self.connections = []
+
+    def list_tools(self, connection):
+        """Record the connection, then answer or refuse."""
+        self.connections.append(connection)
+        if self.error is not None:
+            raise self.error
+        return self.tools
+
+
+def tool_definition(name="get_interface_status", **overrides):
+    """One advertised tool, as `services.mcp` models what a server said."""
+    from nautobot_event_tracker.services.mcp import ToolDefinition  # pylint: disable=import-outside-toplevel
+
+    defaults = {
+        "description": "Read an interface's operational state.",
+        "input_schema": {"type": "object", "properties": {"device": {"type": "string"}}},
+    }
+    return ToolDefinition(name=name, **{**defaults, **overrides})
+
+
 class RefusalAssertions:  # pylint: disable=too-few-public-methods
     """Assert that something was refused, and that the message says why.
 

@@ -44,3 +44,20 @@ class LLMCallError(LLMError):
 
 class LLMResponseError(LLMError):
     """The call returned, but what came back is not usable."""
+
+
+class MCPError(Exception):
+    """Base class for every error the MCP service raises.
+
+    Separate from `LLMError` on purpose: a tool failing and a model failing are different events
+    with different answers, and the agent loop reads them apart. Neither family lets a library's
+    own exception escape the service that owns it.
+    """
+
+
+class MCPConfigurationError(MCPError):
+    """The server or tool is disabled, unreachable by configuration, or not allowed (rules M4, M6)."""
+
+
+class MCPCallError(MCPError):
+    """The call was attempted and did not come back usable."""

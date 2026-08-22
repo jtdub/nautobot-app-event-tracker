@@ -37,6 +37,10 @@ confluent-kafka = { version = ">=2.0.0,<3.0.0", optional = true }
 # The one LLM runtime dependency (ADR 0006), optional for the same reason: a deployment that has
 # not enabled triage installs no model client. Imported only by services/llm.py (rule L2).
 litellm = { version = ">=1.74.0,<2.0.0", optional = true }
+# The MCP client (ADR 0007), optional for the same reason and imported only by services/mcp.py
+# (rule M1). Pinned to 2.x: 2.0 renamed the streamable HTTP transport and moved the tool fields to
+# snake_case, so a 1.x client is not the one this app is written against.
+mcp = { version = ">=2.0.0,<3.0.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 coverage = "*"
@@ -76,9 +80,11 @@ mkdocs-glightbox = "~0.5.2"
 [tool.poetry.extras]
 kafka = ["confluent-kafka"]
 llm = ["litellm"]
+mcp = ["mcp"]
 all = [
     "confluent-kafka",
     "litellm",
+    "mcp",
 ]
 
 [tool.pylint.main]

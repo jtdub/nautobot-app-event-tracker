@@ -633,3 +633,134 @@ class LLMUsageRecord(BaseModel):
     def __str__(self):
         """Stringify instance."""
         return f"{self.purpose} call at {self.called_at:%Y-%m-%d %H:%M:%S}"
+
+
+@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
+class MCPServer(PrimaryModel):  # pylint: disable=too-many-ancestors
+    """An MCP server the app may reach, registered by an operator (ADR 0007).
+
+    Carries no credentials of its own: the ExternalIntegration it points at holds the endpoint URL,
+    its headers and its TLS settings, and that integration's secrets group holds whatever
+    authenticates to it. The same arrangement `LLMProvider` uses, read by the same code shape.
+
+    Registering a server makes it known. It does not make anything callable: every tool arrives
+    disabled and stays that way until somebody enables it (rule M4).
+    """
+
+    name = models.CharField(max_length=CHARFIELD_MAX_LENGTH, unique=True)
+    description = models.CharField(max_length=CHARFIELD_MAX_LENGTH, blank=True)
+    external_integration = models.ForeignKey(
+        to="extras.ExternalIntegration",
+        on_delete=models.PROTECT,
+        related_name="mcp_servers",
+        help_text="Carries the streamable HTTP endpoint, its headers and TLS settings, and its secrets group.",
+    )
+    enabled = models.BooleanField(
+        default=True,
+        help_text="A disabled server refuses every tool call before any network traffic (rule M4).",
+    )
+    last_discovered_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When this server's tool list was last read. Discovery never enables anything (rule M5).",
+    )
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["name"]
+        verbose_name = "MCP Server"
+        verbose_name_plural = "MCP Servers"
+
+    def __str__(self):
+        """Stringify instance."""
+        return self.name
+
+    def clean(self):
+        """A server with no URL is a server nothing can reach.
+
+        Checked here rather than left to the first call: an integration is a shared object, and the
+        one being pointed at may have been made for something that did not need a remote URL.
+        """
+        super().clean()
+        if self.external_integration_id is not None and not self.external_integration.remote_url:
+            raise ValidationError(
+                {"external_integration": "An MCP server needs an external integration with a remote URL."}
+            )
+
+
+@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
+class MCPTool(PrimaryModel):  # pylint: disable=too-many-ancestors
+    """One tool a server advertises, and whether an operator has allowed it (ADR 0007).
+
+    Both booleans below default the unhelpful way on purpose, and that is the whole security
+    argument of this model: a server advertising forty tools grants access to none of them, and a
+    tool nobody has classified is treated as though it changes the network.
+    """
+
+    server = models.ForeignKey(
+        to=MCPServer,
+        on_delete=models.CASCADE,
+        related_name="tools",
+        help_text="A tool cannot outlive the server that offers it.",
+    )
+    name = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        help_text="The tool name sent on the wire.",
+    )
+    description = models.TextField(blank=True, help_text="As the server advertised it.")
+    input_schema = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="The JSON Schema the server advertised for this tool's arguments.",
+    )
+    mutating = models.BooleanField(
+        default=True,
+        help_text=(
+            "Whether calling this tool changes something. A mutating tool never runs without a "
+            "human approving that call (rule M6). True until a person says otherwise: guessing "
+            "wrong this way costs a click, and guessing wrong the other way changes the network."
+        ),
+    )
+    enabled = models.BooleanField(
+        default=False,
+        help_text="Disabled means uncallable, whatever a model asks for (rule M4). Discovery never enables.",
+    )
+    schema_fingerprint = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        blank=True,
+        help_text="Digest of the advertised schema when this tool was last reviewed. A change disables it (rule M5).",
+    )
+    last_seen_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When discovery last saw this tool advertised. An older time means the server stopped offering it.",
+    )
+
+    natural_key_field_names = ["server", "name"]
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["server__name", "name"]
+        verbose_name = "MCP Tool"
+        verbose_name_plural = "MCP Tools"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["server", "name"],
+                name="event_tracker_mcptool_server_name_unique",
+            ),
+        ]
+
+    def __str__(self):
+        """Stringify instance."""
+        return f"{self.server.name}: {self.name}"
+
+    @property
+    def is_callable(self):
+        """Whether a call to this tool could reach the server at all (rule M4).
+
+        Read by the service layer before any network traffic, and by the UI to explain why a tool
+        an operator enabled is still not being offered to a model.
+        """
+        return self.enabled and self.server.enabled

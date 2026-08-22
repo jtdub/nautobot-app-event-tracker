@@ -29,6 +29,8 @@ from nautobot_event_tracker.models import (
     LLMModel,
     LLMProvider,
     LLMUsageRecord,
+    MCPServer,
+    MCPTool,
     TicketUpdate,
 )
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -160,6 +162,27 @@ class LLMUsageRecordViewSet(RecordViewSet):  # pylint: disable=too-many-ancestor
     queryset = LLMUsageRecord.objects.select_related("model__provider", "ticket")
     serializer_class = serializers.LLMUsageRecordSerializer
     filterset_class = filters.LLMUsageRecordFilterSet
+
+
+class MCPServerViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
+    """MCPServer viewset."""
+
+    queryset = MCPServer.objects.select_related("external_integration")
+    serializer_class = serializers.MCPServerSerializer
+    filterset_class = filters.MCPServerFilterSet
+
+
+class MCPToolViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
+    """MCPTool viewset.
+
+    Writable, because enabling a tool is an operator decision and an operator may reasonably make
+    it from a script. It is the same decision the UI offers and it needs the same permission; what
+    no route offers is a way to call one.
+    """
+
+    queryset = MCPTool.objects.select_related("server")
+    serializer_class = serializers.MCPToolSerializer
+    filterset_class = filters.MCPToolFilterSet
 
 
 class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors

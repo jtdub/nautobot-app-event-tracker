@@ -10,6 +10,8 @@ from nautobot_event_tracker.models import (
     LLMModel,
     LLMProvider,
     LLMUsageRecord,
+    MCPServer,
+    MCPTool,
     TicketUpdate,
 )
 
@@ -214,3 +216,23 @@ class LLMUsageRecordSerializer(BaseModelSerializer):
             "called_at",
         ]
         read_only_fields = fields
+
+
+class MCPServerSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
+    """MCPServer Serializer."""
+
+    class Meta:
+        """Meta attributes."""
+
+        model = MCPServer
+        fields = "__all__"
+
+
+class MCPToolSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
+    """MCPTool Serializer."""
+
+    class Meta:
+        """Meta attributes."""
+
+        model = MCPTool
+        fields = "__all__"

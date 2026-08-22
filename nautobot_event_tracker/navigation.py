@@ -57,6 +57,22 @@ items = (
         name="LLM Usage",
         permissions=["nautobot_event_tracker.view_llmusagerecord"],
     ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:mcpserver_list",
+        name="MCP Servers",
+        permissions=["nautobot_event_tracker.view_mcpserver"],
+        buttons=(
+            NavMenuAddButton(
+                link="plugins:nautobot_event_tracker:mcpserver_add",
+                permissions=["nautobot_event_tracker.add_mcpserver"],
+            ),
+        ),
+    ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:mcptool_list",
+        name="MCP Tools",
+        permissions=["nautobot_event_tracker.view_mcptool"],
+    ),
 )
 
 menu_items = (

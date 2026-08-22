@@ -120,10 +120,13 @@ nav:
           - LLM Provider: "models/llmprovider.md"
           - LLM Model: "models/llmmodel.md"
           - LLM Usage Record: "models/llmusagerecord.md"
+          - MCP Server: "models/mcpserver.md"
+          - MCP Tool: "models/mcptool.md"
   - Administrator Guide:
       - Install and Configure: "admin/install.md"
       - Running the Event Consumer: "admin/ingestion.md"
       - Configuring LLM Providers: "admin/llm.md"
+      - Registering MCP Servers: "admin/mcp.md"
       - Upgrade: "admin/upgrade.md"
       - Uninstall: "admin/uninstall.md"
       - Compatibility Matrix: "admin/compatibility_matrix.md"
@@ -149,12 +152,14 @@ nav:
               - 0006 litellm Service Layer: "decisions/0006-litellm-service-layer-and-credential-storage.md"
               - 0007 MCP Tool Access: "decisions/0007-mcp-tools-streamable-http-and-default-deny.md"
               - 0008 UI Component Framework: "decisions/0008-ui-component-framework-only.md"
+              - 0009 Agent Runs as Jobs: "decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md"
           - Specifications:
               - "Phase 1 — Ticketing": "specs/phase-1-tickets.md"
               - "Phase 2 — Ingestion": "specs/phase-2-ingestion.md"
               - "Phase 2.5 — Lab Environment": "specs/phase-2-5-lab-environment.md"
               - "Phase 3 — LLM Service Layer and Triage": "specs/phase-3-llm-triage.md"
               - "Phase 4A — Enrichment Resolver": "specs/phase-4a-enrichment.md"
+              - "Phase 4B — Agents and MCP Tooling": "specs/phase-4b-agents.md"
       - Code Reference:
           - "dev/code_reference/index.md"
           - Package: "dev/code_reference/package.md"
