@@ -28,3 +28,10 @@ http_json_response: true
 # Belt and braces beside `commands.yml`: no pipes, so a whitelisted `show` cannot grow a suffix
 # that does something else.
 allow_pipe: false
+
+# Return output inline rather than saving it to a file and handing back a filename. The default of
+# 1000 lines is sensible for a human at a prompt and expensive for an agent: every saved output
+# costs a second tool call to read it back, and an agent's turns are bounded (rule A2), so three
+# saved outputs was most of a run. SR Linux `show` output is small; anything genuinely huge is
+# still capped on the way into the transcript by `max_tool_result_chars`.
+save_threshold: 100000

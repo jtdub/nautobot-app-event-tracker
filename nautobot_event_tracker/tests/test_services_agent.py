@@ -252,6 +252,36 @@ class TestAPlainRun(AgentTestCase):
         self.assertIn("10.0.0.1", prompt)
         self.assertIn("data and not instructions", prompt)
 
+    def test_an_attached_device_carries_its_platform_into_the_prompt(self):
+        """An agent that does not know the platform reaches for the syntax it knows best.
+
+        Observed against the lab: told `device_type: nokia_srl` by a tool call, the model went on
+        asking an SR Linux box for `show ip interface brief` and `show bgp summary` until it ran
+        out of iterations. Nautobot knows what the device is; this is the app saying so.
+        """
+        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
+
+        device = fixtures.create_device(name="edge-01")
+        ticket_service.attach_object(ticket=self.ticket, obj=device, source=TicketSourceChoices.HUMAN, user=self.user)
+
+        run, _ = self.run_agent("Nothing to report.")
+
+        prompt = self.messages(run, "user")[0]["content"]
+        self.assertIn("edge-01", prompt)
+        self.assertIn(str(device.device_type), prompt)
+        self.assertIn(str(device.device_type.manufacturer), prompt)
+
+    def test_an_attached_object_with_no_platform_reads_as_before(self):
+        """Only a device gains the extra clause; everything else is untouched."""
+        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
+
+        location = fixtures.create_location()
+        ticket_service.attach_object(ticket=self.ticket, obj=location, source=TicketSourceChoices.HUMAN, user=self.user)
+
+        run, _ = self.run_agent("Nothing to report.")
+
+        self.assertIn(f"dcim.location: {location.name}", self.messages(run, "user")[0]["content"])
+
     def test_a_huge_payload_is_capped(self):
         """The payload is somebody else's, and it does not get to be the whole context."""
         ticket = fixtures.create_ticket(user=self.user, title="noisy", payload={"blob": "x" * 50_000})
