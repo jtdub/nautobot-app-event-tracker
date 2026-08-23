@@ -197,6 +197,11 @@ class AgentToolCallStatusChoices(ChoiceSet):
     PROPOSED = "proposed"
     APPROVED = "approved"
     DENIED = "denied"
+    #: Claimed by a caller and in flight. Exists so that "may this run" and "this is running" are
+    #: one atomic step: without it the check and the call are separate, and two callers can both
+    #: pass the check before either writes. A row left here is a process that died mid-call, which
+    #: is worth being able to see.
+    EXECUTING = "executing"
     EXECUTED = "executed"
     FAILED = "failed"
 
@@ -204,6 +209,7 @@ class AgentToolCallStatusChoices(ChoiceSet):
         (PROPOSED, "Proposed"),
         (APPROVED, "Approved"),
         (DENIED, "Denied"),
+        (EXECUTING, "Executing"),
         (EXECUTED, "Executed"),
         (FAILED, "Failed"),
     )

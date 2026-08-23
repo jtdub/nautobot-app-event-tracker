@@ -29,6 +29,17 @@ http_json_response: true
 # that does something else.
 allow_pipe: false
 
+# `allowed_command_chars` is deliberately left at its default. A review asked whether a command
+# allowlist of prefix globs can be walked past with an embedded separator, and it was worth
+# checking: `show interface brief; tools system reboot`, `&&` and backticks are all refused, and
+# `show interface brief\ntools system reboot` is ACCEPTED by the allowlist.
+#
+# It is not an injection. netmiko-mcp collapses every run of whitespace to a single space before
+# it validates, and the normalised string is the one it forwards - so the device receives
+# `show interface brief tools system reboot` as one line and rejects it as a parse error. The
+# string that was checked and the string that is sent are the same string, which is the property
+# that matters. Verified against netmiko-mcp 0.2.0 (`security.py::validate_command`).
+
 # Return output inline rather than saving it to a file and handing back a filename. The default of
 # 1000 lines is sensible for a human at a prompt and expensive for an agent: every saved output
 # costs a second tool call to read it back, and an agent's turns are bounded (rule A2), so three

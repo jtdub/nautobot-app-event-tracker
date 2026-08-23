@@ -7,8 +7,8 @@ in `test_services_agent.py`, where the loop lives.
 
 from unittest import mock
 
+from nautobot.apps.choices import JobResultStatusChoices
 from nautobot.apps.testing import TestCase, TransactionTestCase, create_job_result_and_run_job
-from nautobot.extras.choices import JobResultStatusChoices
 from nautobot.extras.models import Job
 
 from nautobot_event_tracker.choices import AgentRunStatusChoices, TicketStatusChoices

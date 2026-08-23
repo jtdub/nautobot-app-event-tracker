@@ -10,7 +10,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from nautobot_event_tracker.choices import AgentToolCallStatusChoices
-from nautobot_event_tracker.models import MCPTool
+from nautobot_event_tracker.models import AgentToolCall, MCPTool
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError
 from nautobot_event_tracker.tests import fixtures
@@ -534,6 +534,65 @@ class TestCallRefusals(CallToolTestCase):
         self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, tool_fingerprint="same")
 
         self.assertEqual(self.call_tool().status, AgentToolCallStatusChoices.EXECUTED)
+
+    def test_a_call_is_claimed_so_two_callers_cannot_both_make_it(self):
+        """One approval must not become two commands against a device.
+
+        The check and the call were separate steps, so two resumptions opened together could both
+        pass the status check before either wrote a result. The claim is a conditional UPDATE, so
+        exactly one caller wins it.
+        """
+        # Read before the first call, so this instance genuinely holds the pre-call status - which
+        # is exactly what a second resumption racing the first would be holding. Hand-setting the
+        # field would also trip the status-assignment guard, and rightly.
+        stale = AgentToolCall.objects.get(pk=self.call.pk)
+
+        first = fixtures.FakeMCPCaller()
+        mcp_service.call_tool(tool_call=self.call, client=first)
+
+        second = fixtures.FakeMCPCaller()
+
+        with self.assertRaises(MCPConfigurationError) as caught:
+            mcp_service.call_tool(tool_call=stale, client=second)
+
+        self.assertIn("already taken", str(caught.exception))
+        self.assertEqual(len(first.calls), 1)
+        self.assertEqual(second.calls, [])
+
+    def test_a_failure_resolving_the_connection_is_recorded(self):
+        """M7 - every call is on the record, including the ones that never left the process.
+
+        `connection_for()` and the client resolution sat outside the recorded region, so an
+        integration blanked of its URL left the row untouched and the agent was told the call
+        "returned nothing" rather than that the server was misconfigured.
+        """
+        integration = self.server.external_integration
+        integration.remote_url = ""
+        integration.save()
+
+        with self.assertRaises(MCPConfigurationError):
+            mcp_service.call_tool(tool_call=self.call, client=fixtures.FakeMCPCaller())
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
+        self.assertIn("no remote URL", self.call.error)
+
+    def test_a_tool_that_gains_a_fingerprint_after_the_proposal_is_refused(self):
+        """The empty-digest case, which used to skip the check entirely.
+
+        A tool created by hand rather than by discovery carries no fingerprint, so every proposal
+        against it stored an empty one - and the guard `if tool_call.tool_fingerprint and ...`
+        then skipped the comparison forever, including after discovery wrote a real digest and an
+        operator re-enabled the tool. That is exactly the sequence M6 exists to catch.
+        """
+        self.assertEqual(self.call.tool_fingerprint, "")
+        self.tool.definition_fingerprint = "a digest discovery wrote afterwards"
+        self.tool.validated_save()
+
+        with self.assertRaises(MCPConfigurationError) as caught:
+            mcp_service.call_tool(tool_call=self.call, client=fixtures.FakeMCPCaller())
+
+        self.assertIn("re-advertised", str(caught.exception))
 
     def test_the_tool_is_re_read_rather_than_trusted_as_handed_over(self):
         """The stale instance a caller holds would notice none of the events above."""

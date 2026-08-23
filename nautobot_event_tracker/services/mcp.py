@@ -17,8 +17,9 @@ Rules implemented here, referenced by number from the Phase 4B spec:
 * **M5** - discovery never grants. New tools arrive disabled and mutating, whatever the server
   claims about them; anything the server advertises differently under an enabled tool disables it
   and reports it.
-* **M6** - a mutating tool runs only from an approved `AgentToolCall`, and only against the tool
-  definition that call was approved against.
+* **M6** - a mutating tool runs only from an approved `AgentToolCall`, only against the tool
+  definition that call was approved against, and only once: the row is claimed atomically before
+  the call, so two callers cannot both make it.
 * **M7** - every call is on the record - arguments, result, latency, error - before its caller
   sees any of it. Rule L1's promise, made about the other kind of call this app makes.
 * **M8** - every call is bounded in both directions: a timeout going out, and a cap on the result
@@ -38,9 +39,9 @@ from django.utils import timezone
 from nautobot.apps.choices import SecretsGroupSecretTypeChoices
 
 from nautobot_event_tracker.choices import AgentToolCallStatusChoices
-from nautobot_event_tracker.models import MCPTool
+from nautobot_event_tracker.models import AgentToolCall, MCPTool
 from nautobot_event_tracker.secrets import read_secret
-from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError
+from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError, MCPError
 
 logger = logging.getLogger(__name__)
 
@@ -240,19 +241,29 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     # notice. A cached row would notice none of them.
     tool = MCPTool.objects.select_related("server__external_integration__secrets_group").get(pk=tool_call.tool_id)
     _check_callable(tool_call, tool)
-
-    connection = connection_for(tool.server)
-    if timeout:
-        connection = replace(connection, timeout=float(timeout))
-    caller = client if client is not None else _default_client()
+    _claim(tool_call, tool)
 
     started = time.monotonic()
     try:
+        # Inside the recorded region, all of it. Resolving the connection can fail on its own -
+        # an integration blanked of its URL, a Jinja2 field that will not render - and so can
+        # resolving the client, when the `mcp` extra is not installed. Left outside, those two
+        # returned to the caller with nothing written on the row: M7 broken, the row stranded in
+        # whatever state the claim left it, and the agent told "the call returned nothing" when
+        # the truth was "this server is misconfigured".
+        connection = connection_for(tool.server)
+        if timeout:
+            connection = replace(connection, timeout=float(timeout))
+        caller = client if client is not None else _default_client()
         raw = caller.call_tool(connection, tool.name, dict(tool_call.arguments or {}))
     except Exception as error:  # pylint: disable=broad-except
-        # M7 - on the record first, then the caller hears about it. Whatever the client raised,
-        # the caller sees one family (rule L4's arrangement, applied to the other kind of call).
+        # M7 - on the record first, then the caller hears about it.
         _finish(tool_call, latency_ms=_elapsed_ms(started), error=f"The call failed: {error}")
+        # The family the caller expects is preserved: a configuration fault stays one, and a
+        # missing extra stays the deployment fault it is (deliberately outside `MCPError`, so
+        # nothing on the agent's path swallows it as a bad tool call).
+        if isinstance(error, (MCPError, ImproperlyConfigured)):
+            raise
         raise MCPCallError(f"Calling '{tool}' failed: {error}") from error
 
     result, truncated = _capped_result(raw, cap)
@@ -264,6 +275,33 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
         error = result.get("text") or "The server reported an error and said nothing about it."
     _finish(tool_call, latency_ms=_elapsed_ms(started), result=result, error=error)
     return tool_call
+
+
+def _claim(tool_call, tool):
+    """Take this call, atomically, so that exactly one caller can make it.
+
+    `_check_callable` reads; this writes, and the two have to be one step. Checking and then
+    calling leaves a window in which two callers both pass the check and both reach the server -
+    and for a mutating tool that means a change a person approved once being applied twice, which
+    is not the same thing as applying it once. `services/agent.py` serializes launches per ticket
+    as well; this is the check in the layer that owns the rule, and it is the one that holds if
+    anything ever calls `call_tool()` from somewhere else.
+
+    A conditional UPDATE rather than a lock held across the call: the call is network I/O and may
+    take a tool timeout to return, and no row lock should be open that long. The status is the
+    claim, so a row left in `executing` is a process that died mid-call.
+    """
+    claimed = (
+        AgentToolCall.objects.filter(pk=tool_call.pk, status=tool_call.status)
+        .exclude(status=AgentToolCallStatusChoices.EXECUTING)
+        .update(status=AgentToolCallStatusChoices.EXECUTING)
+    )
+    if not claimed:
+        # Somebody else moved the row between the check above and this line. Deliberately not
+        # written to the row: whoever holds the claim owns its outcome, and recording a refusal
+        # here would overwrite the result of the call that is actually running.
+        raise MCPConfigurationError(f"This call on '{tool}' was already taken by another caller and is not run twice.")
+    tool_call.status = AgentToolCallStatusChoices.EXECUTING
 
 
 def _check_callable(tool_call, tool):
@@ -298,7 +336,11 @@ def _check_callable(tool_call, tool):
     # not all of it: an operator may review the new definition and re-enable the tool while a
     # proposal written against the old one is still waiting. What was approved was a call on the
     # tool as it read then.
-    if tool_call.tool_fingerprint and tool_call.tool_fingerprint != tool.definition_fingerprint:
+    # Compared unconditionally. Guarding on `tool_call.tool_fingerprint` being truthy skipped the
+    # check entirely for a tool created by hand through the form or the API, which carries no
+    # fingerprint - and kept skipping it after discovery later wrote a real one, which is exactly
+    # the drift this check exists to catch.
+    if tool_call.tool_fingerprint != tool.definition_fingerprint:
         _refuse(
             tool_call,
             f"'{tool}' has been re-advertised since this call was proposed. "

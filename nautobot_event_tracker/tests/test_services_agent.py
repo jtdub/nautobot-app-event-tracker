@@ -621,6 +621,44 @@ class TestDecisions(AgentTestCase):
         self.assertEqual(self.run.status, AgentRunStatusChoices.DENIED)
         self.assertIsNotNone(self.run.finished_at)
 
+    def test_a_read_only_call_in_flight_is_not_offered_for_decision(self):
+        """A read-only call is written `proposed` before it runs, and needs no decision (13.4).
+
+        Filtering the gate on status alone surfaced Approve and Deny for a call the agent was
+        already making: press Approve in that window and the ticket's trail records a human
+        approving something nobody was asked about.
+        """
+        read_only = fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.RUNNING)
+        fixtures.create_agenttoolcall(run=run, tool=read_only)
+
+        self.assertIsNone(agent_service.pending_call(run))
+
+    def test_a_stranded_read_only_call_cannot_hide_the_real_proposal(self):
+        """The compounding case: the gate must show the mutating call, not the oldest row.
+
+        A read-only row left `proposed` by a failure sorts first by `proposed_at`, so the ticket
+        page showed it and the genuine mutating proposal was never offered to anybody.
+        """
+        read_only = fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
+        fixtures.create_agenttoolcall(run=run, tool=read_only)
+        real = fixtures.create_agenttoolcall(run=run, tool=self.tool)
+
+        self.assertEqual(agent_service.pending_call(run), real)
+
+    def test_denying_does_not_rewrite_a_run_that_already_finished(self):
+        """A stale proposal on a completed run must not turn that run into a denied one."""
+        run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.COMPLETED)
+        stale = fixtures.create_agenttoolcall(run=run, tool=self.tool)
+
+        agent_service.deny_tool_call(tool_call=stale, user=self.user)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, AgentToolCallStatusChoices.DENIED)
+
     def test_a_decision_without_a_user_is_refused(self):
         """The AI cannot approve its own proposal, because the function will not let it."""
         with self.assertRaises(AgentDecisionError):

@@ -56,7 +56,7 @@ from nautobot_event_tracker.choices import (
     TicketStatusChoices,
     UpdateTypeChoices,
 )
-from nautobot_event_tracker.models import AgentRun, AgentToolCall, MCPTool
+from nautobot_event_tracker.models import AgentRun, AgentToolCall, EventTicket, MCPTool
 from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -227,10 +227,21 @@ def live_run(ticket):
 
 
 def pending_call(run):
-    """The proposal on this run that somebody still has to decide, or None."""
+    """The proposal on this run that somebody still has to decide, or None.
+
+    Mutating only. A read-only call is also written `proposed` before it runs (13.4 - it needs no
+    decision), so filtering on the status alone offered Approve and Deny for a call the agent was
+    already making: press Approve during the window and the ticket's trail records a human
+    approving something nobody was asked about. Worse, a read-only row stranded in `proposed` by a
+    failure sorts first and would hide the real proposal behind it.
+    """
     if run is None:
         return None
-    return run.tool_calls.filter(status=AgentToolCallStatusChoices.PROPOSED).select_related("tool__server").first()
+    return (
+        run.tool_calls.filter(status=AgentToolCallStatusChoices.PROPOSED, tool__mutating=True)
+        .select_related("tool__server")
+        .first()
+    )
 
 
 def run_agent(*, ticket, user=None, job_result=None, complete=None, call_tool=None):
@@ -268,8 +279,14 @@ def run_agent(*, ticket, user=None, job_result=None, complete=None, call_tool=No
     # only to record that it could not start (rule L8's posture, applied one layer up).
     model = llm_service.get_model(settings.provider, settings.model)
 
-    parent = _resumable_run(ticket)
-    run = _open_run(ticket=ticket, user=user, job_result=job_result, parent=parent)
+    # And the same for the MCP client, when there is anything to call. A missing `mcp` extra is an
+    # `ImproperlyConfigured` raised deep inside the first tool call - a deployment fault that would
+    # otherwise surface as a failed run halfway through, with a tool call row recording it. Asked
+    # here, it is one sentence before anything starts.
+    if enabled_tools().exists():
+        mcp_service.require_client()
+
+    run = _claim_run(ticket=ticket, user=user, job_result=job_result)
     return _Loop(
         run=run,
         settings=settings,
@@ -324,7 +341,9 @@ def _decide(*, tool_call, user, approved):
             ticket=tool_call.run.ticket, tool_call=tool_call, approved=approved, user=user
         )
 
-        if not approved:
+        if not approved and tool_call.run.status == AgentRunStatusChoices.WAITING_APPROVAL:
+            # Only a run that is actually waiting. Denying a stale proposal on a run that already
+            # failed or completed would rewrite what that run is recorded as having done.
             run = tool_call.run
             run.status = AgentRunStatusChoices.DENIED
             run.finished_at = timezone.now()
@@ -365,6 +384,27 @@ def _resumable_run(ticket):
         )
 
     return existing
+
+
+def _claim_run(*, ticket, user, job_result):
+    """Decide whether this launch starts a run or resumes one, and open it - in one step.
+
+    A9 is a check followed by an act, and the two were separate: two Jobs launched together both
+    saw no live run, or both saw the same approved proposal, and both proceeded. Two runs on one
+    ticket is untidy; two runs each executing the same approved mutating call is one human
+    approval becoming two changes on a device, which is the thing this whole phase exists to
+    prevent.
+
+    Serialized on the ticket row, because that is what "one live run per ticket" is about and it
+    is the one row that always exists - a fresh launch has no run to lock. The precedent is
+    `services/tickets.py::_lock_dedup_key`, which locks for the same shape of reason.
+
+    The lock is held only long enough to open the row. The loop runs outside it: it makes network
+    calls and takes minutes, and no transaction should be open across that.
+    """
+    with transaction.atomic():
+        EventTicket.objects.select_for_update().get(pk=ticket.pk)
+        return _open_run(ticket=ticket, user=user, job_result=job_result, parent=_resumable_run(ticket))
 
 
 def _open_run(*, ticket, user, job_result, parent):
