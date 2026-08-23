@@ -24,13 +24,22 @@ stored and rotated where every other credential in your deployment is.
    secret type *Token* (a *Secret*-typed entry works too). Skip this for an endpoint that needs
    no key.
 2. Create an **External Integration**: the *Remote URL* is the endpoint's base URL (for an
-   OpenAI-compatible endpoint, the URL up to and including `/v1`), and the *Secrets Group* is the
-   one from step 1.
+   OpenAI-compatible endpoint, the URL up to and including `/v1`; for Ollama, without it), and the
+   *Secrets Group* is the one from step 1.
 3. Create an **LLM Provider** (Apps → Event Tracker → LLM Providers) pointing at that
    integration, choosing the provider type:
     - **OpenAI-compatible** — any self-hosted or third-party endpoint speaking the OpenAI
-      protocol: vLLM, Ollama, llama.cpp, a gateway. The integration must carry a remote URL.
-      This is the first-class path for deployments that cannot send event data to a third party.
+      protocol: vLLM, llama.cpp, a gateway. The integration must carry a remote URL. This is the
+      first-class path for deployments that cannot send event data to a third party.
+    - **Ollama** — Ollama specifically, reached through its own API rather than its
+      OpenAI-compatibility layer. Give the integration Ollama's base URL with **no `/v1`**
+      (`http://ollama.example.com:11434`); a key is not needed, though one is sent if you
+      configure it, for an Ollama behind an authenticating proxy.
+
+        Use this rather than OpenAI-compatible if you want the [agent](agents.md) to call tools.
+        Ollama's compatibility layer does not return tool calls in the `tool_calls` field — a
+        model asked for a tool answers with the JSON call written into the message content, where
+        nothing can act on it. Triage works either way, since it asks for no tools.
     - **OpenAI** / **Anthropic** — the hosted services. Nautobot requires a remote URL on every
       external integration, so give it the service's own base URL
       (`https://api.openai.com/v1`, `https://api.anthropic.com`).
@@ -45,12 +54,34 @@ The integration decides more than the address. Four of its fields are read on ev
 | *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the LLM Provider |
 | *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
 | *Headers* | Sent with every request, templated the same way |
-| *SSL Verification* | Unticked, the call does not verify the certificate |
-| *CA File Path* | A private CA bundle, used when verification is on |
+| *SSL Verification* | **Not applied to LLM calls** — see below |
+| *CA File Path* | **Not applied to LLM calls** — see below |
 | *Timeout* | The call's timeout, unless the model row or the caller states one |
 
 *Extra Config* is deliberately not sent. It is untyped, and splatting it into a call would reopen
 the hole that limiting a model's parameters closed.
+
+!!! warning "TLS settings on an LLM provider's integration are not applied"
+    litellm takes no per-call TLS argument. It reads the `SSL_VERIFY` and `SSL_CERT_FILE`
+    environment variables, or its own process-wide global, and nothing else — so *SSL Verification*
+    and *CA File Path* on the integration cannot be honoured for one provider without changing
+    every other provider's calls in the same process. A worker runs several at once, so applying
+    one provider's setting would silently disable verification on another's connection.
+
+    To reach an LLM endpoint with a **private CA**, set `SSL_CERT_FILE` in the environment of
+    every process that calls a model — Nautobot, the worker and the event consumer. That is
+    additive and safe: it adds a trust anchor without weakening anything.
+
+    There is **no recommended way to disable verification for one provider**. `SSL_VERIFY=False`
+    would work, and it turns verification off for every provider in that process — a wider blast
+    radius than the per-provider setting this app declines to apply. If an endpoint's certificate
+    cannot be verified, fix the certificate or add its CA.
+
+    The app logs a warning naming the fields it skipped whenever either is set, so this is visible
+    rather than silent.
+
+    MCP servers are not affected: `services/mcp.py` builds its own HTTP client per call and does
+    honour both fields.
 
 Disabling a provider or a model (the `enabled` flag on either) refuses every call through it
 before any network traffic, everywhere at once.

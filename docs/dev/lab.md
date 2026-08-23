@@ -202,6 +202,80 @@ your `compose_files` but `lab: true` is not set. `invoke lab-down && invoke lab-
 created that network. `docker network create --subnet 172.30.30.0/24 event-tracker-mgmt`, or just
 use `invoke start`, which does it for you.
 
+## Letting the agent talk to the devices
+
+The lab makes events. This makes the [agent](../admin/agents.md) able to go and look at what
+caused one, instead of reasoning from the ticket alone.
+
+[netmiko_mcp](https://github.com/ktbyers/netmiko_mcp) is an MCP server that SSHes to devices and
+runs `show` commands. It offers stdio and streamable HTTP; this app takes only the second
+([ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md)), which it speaks
+natively, so no bridge is involved.
+
+### 1. Start it
+
+Uncomment `docker-compose.netmiko-mcp.yml` in your `invoke.yml`, then:
+
+```shell
+invoke start
+```
+
+It attaches to two networks, and needs both: the compose default so Nautobot can reach it by
+service name, and containerlab's management network so it can reach the devices. So it wants the
+lab up.
+
+Three files configure it, in `development/netmiko-mcp/`:
+
+| File | What it is |
+| --- | --- |
+| `netmiko-mcp.yml` | Transport and paths. Streamable HTTP on `0.0.0.0:8000/mcp`, bearer auth on. |
+| `netmiko.yml` | The inventory: the three SR Linux nodes and two groups. Device names match Nautobot's on purpose, so a name the agent reads off a ticket is a name it can ask about. |
+| `commands.yml` | The command whitelist. netmiko-mcp permits nothing by default; this allows a handful of `show` commands and denies the imperative tree. |
+
+The credential is Nokia's published default for the free SR Linux image, on a private network, on
+a lab `invoke lab-down` destroys. It is not a pattern to copy.
+
+### 2. Register it in Nautobot
+
+The token the container was started with also goes into a Nautobot Secret, so the credential path
+is the real one rather than a shortcut:
+
+- **Secret** — provider *Environment Variable*, variable `NETMIKO_MCP_TOKEN`.
+- **Secrets Group** — that secret, access type *Generic*, secret type *Token*.
+- **External Integration** — Remote URL `http://netmiko-mcp:8000/mcp`, that secrets group.
+- **MCP Server** (Apps → Event Tracker → MCP Servers) — pointing at the integration.
+
+Then **Discover Tools** on the server's page. Seven tools appear, and every one of them arrives
+**disabled** and marked **mutating**, whatever the server says about itself. That is rule M5, and
+it is the point: registering a server grants nothing.
+
+### 3. Review them
+
+All seven are read-only — they run `show` commands and read saved output, and the whitelist denies
+anything else. Untick **Mutating** and tick **Enabled** on each; the tool list's bulk edit is there
+for exactly this.
+
+This is the step the design refuses to do for you. A read-only tool is still a decision about what
+the author of an event can eventually cause to be read.
+
+### 4. Watch it work
+
+```shell
+invoke lab-break --event interface
+```
+
+Open the ticket that appears and press **Investigate with Agent**. In the run's transcript you
+should see it call `send_show_command` against a device and reason from what came back.
+
+A local 7B model will guess Cisco syntax at an SR Linux box and get refused by the whitelist —
+`show ip interface brief` is not a command here. The refusal is the whitelist working; whether the
+agent recovers from it is a question about the model. `show interface ethernet-1/1` and
+`show network-instance default protocols bgp neighbor` both work.
+
+If you are running the agent on Ollama, use the **Ollama** provider type and not
+OpenAI-compatible. Its compatibility layer cannot return tool calls, so the agent silently gets
+none — see [Configuring LLM Providers](../admin/llm.md).
+
 ## Tearing it down
 
 ```shell

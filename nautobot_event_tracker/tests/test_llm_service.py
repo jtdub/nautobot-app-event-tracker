@@ -176,12 +176,98 @@ class TestCredentials(TestCase):
 
         self.assertEqual(client.calls[0]["api_key"], "sk-plain-secret")
 
-    def test_a_keyless_endpoint_sends_no_key(self):
-        """An on-premises endpoint without auth gets no empty api_key argument."""
+    def test_a_keyless_openai_compatible_endpoint_gets_a_placeholder(self):
+        """ADR 0006 makes an unauthenticated on-premises endpoint first-class; this is the cost.
+
+        litellm builds an OpenAI client for the `openai/` prefix, and that client raises "Missing
+        credentials" locally - before any request leaves the process - when it has no key at all.
+        So "this endpoint needs no key" has to be spelled as a value rather than as an absence, or
+        the deployment ADR 0006 exists to support cannot make a single call.
+        """
         model = fixtures.create_llmmodel()
+
         client = FakeLLMClient()
         call(model, client)
+
+        self.assertEqual(client.calls[0]["api_key"], llm_service.NO_CREDENTIAL_PLACEHOLDER)
+
+    def test_ollama_routes_to_its_own_litellm_prefix(self):
+        """Not `openai/`, and the difference is the whole reason this provider type exists.
+
+        Ollama's OpenAI-compatibility layer does not return tool calls in the `tool_calls` field -
+        a model asked for a tool answers with the JSON written into the message content, where
+        nothing may act on it. Its native API does, and litellm reaches that through `ollama/`.
+        On the compatible path an Ollama-backed agent cannot call a tool at all.
+        """
+        provider = fixtures.create_llmprovider(name="Local Ollama", provider_type=LLMProviderTypeChoices.OLLAMA)
+        model = fixtures.create_llmmodel(provider=provider, name="qwen2.5-coder:7b")
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["model_string"], "ollama/qwen2.5-coder:7b")
+
+    def test_ollama_needs_no_placeholder_key(self):
+        """Its litellm path builds no OpenAI client, so there is no constructor to get past."""
+        provider = fixtures.create_llmprovider(name="Keyless Ollama", provider_type=LLMProviderTypeChoices.OLLAMA)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
         self.assertNotIn("api_key", client.calls[0])
+
+    def test_a_self_hosted_provider_with_no_url_is_refused(self):
+        """Both self-hosted types, because litellm's fallback for each goes somewhere wrong.
+
+        `openai/` with no api_base sends this deployment's key and its event payload to
+        api.openai.com; `ollama/` quietly tries a loopback address that means nothing inside a
+        container. `clean()` demands the URL at save time, and an integration is a shared object
+        that can be blanked afterwards without revalidating what points at it.
+        """
+        for provider_type in (LLMProviderTypeChoices.OPENAI_COMPATIBLE, LLMProviderTypeChoices.OLLAMA):
+            with self.subTest(provider_type=provider_type):
+                integration = fixtures.create_external_integration(name=f"Blank {provider_type}", remote_url="")
+                provider = fixtures.create_llmprovider(
+                    name=f"Blanked {provider_type}",
+                    provider_type=provider_type,
+                    external_integration=integration,
+                )
+                model = fixtures.create_llmmodel(provider=provider, name=f"model-{provider_type}")
+
+                with self.assertRaises(LLMConfigurationError) as caught:
+                    call(model, FakeLLMClient())
+
+                self.assertIn("no remote URL", str(caught.exception))
+
+    def test_a_keyless_first_party_provider_sends_no_key(self):
+        """Only OpenAI-compatible gets the placeholder.
+
+        A real OpenAI or Anthropic endpoint with no key configured is a misconfiguration, and it
+        should fail with the provider's own message on the record - not with a placeholder this app
+        invented, which would read as a rejected credential rather than as a missing one.
+        """
+        provider = fixtures.create_llmprovider(name="First Party", provider_type=LLMProviderTypeChoices.ANTHROPIC)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertNotIn("api_key", client.calls[0])
+
+    def test_a_configured_secret_wins_over_the_placeholder(self):
+        """The placeholder is what "nobody configured one" looks like, never an override."""
+        self._set_key("sk-real-key")
+        integration = fixtures.create_external_integration(name="Authenticated Endpoint")
+        integration.secrets_group = self._secrets_group(SecretsGroupSecretTypeChoices.TYPE_TOKEN)
+        integration.save()
+        provider = fixtures.create_llmprovider(name="Authenticated Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(provider=provider)
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["api_key"], "sk-real-key")
 
     def test_a_templated_remote_url_is_rendered(self):
         """Nautobot supports Jinja2 on remote_url; read raw it reaches litellm as a literal brace."""
@@ -220,31 +306,57 @@ class TestCredentials(TestCase):
 
         self.assertEqual(client.calls[0]["extra_headers"], {"X-Tenant": "network-ops"})
 
-    def test_a_ca_file_path_reaches_the_client(self):
-        """The private-CA case: it used to fail TLS with nothing in the UI explaining why."""
+    def test_tls_settings_are_not_passed_as_call_keywords(self):
+        """`ssl_verify` is not a litellm argument, and passing it was worse than useless.
+
+        litellm sweeps an unknown keyword into `extra_body` and sends it to the provider in the
+        request JSON. So the old code disabled no verification, loaded no CA bundle, and added a
+        stray field to every request - while a test that asserted the keyword was passed went on
+        agreeing that it worked. This asserts the outcome instead.
+        """
+        for name, overrides in (
+            ("Private CA Endpoint", {"ca_file_path": "/etc/ssl/private-ca.pem"}),
+            ("No Verify Endpoint", {"verify_ssl": False}),
+        ):
+            with self.subTest(name=name):
+                integration = fixtures.create_external_integration(name=name, **overrides)
+                provider = fixtures.create_llmprovider(name=f"{name} Provider", external_integration=integration)
+                model = fixtures.create_llmmodel(provider=provider, name=f"model-{name}")
+
+                client = FakeLLMClient()
+                with self.assertLogs("nautobot_event_tracker.services.llm", level="WARNING"):
+                    call(model, client)
+
+                self.assertNotIn("ssl_verify", client.calls[0])
+                self.assertNotIn("extra_body", client.calls[0])
+
+    def test_the_warning_names_what_was_not_applied_and_what_to_do(self):
+        """A setting the app cannot honour has to say so, or the UI is lying about it."""
         integration = fixtures.create_external_integration(
-            name="Private CA Endpoint", ca_file_path="/etc/ssl/private-ca.pem"
+            name="Both TLS Fields", verify_ssl=False, ca_file_path="/etc/ssl/private-ca.pem"
         )
-        provider = fixtures.create_llmprovider(name="Private CA Provider", external_integration=integration)
+        provider = fixtures.create_llmprovider(name="Both TLS Provider", external_integration=integration)
         model = fixtures.create_llmmodel(provider=provider)
 
-        client = FakeLLMClient()
-        call(model, client)
+        with self.assertLogs("nautobot_event_tracker.services.llm", level="WARNING") as logs:
+            call(model, FakeLLMClient())
 
-        self.assertEqual(client.calls[0]["ssl_verify"], "/etc/ssl/private-ca.pem")
+        message = " ".join(logs.output)
+        self.assertIn("Verify SSL", message)
+        self.assertIn("/etc/ssl/private-ca.pem", message)
+        self.assertIn("NOT being applied", message)
+        # Names the additive remedy, and does not recommend the destructive one: turning
+        # verification off in the environment turns it off for every provider in the process,
+        # which is wider than the per-provider setting the app declines to apply.
+        self.assertIn("SSL_CERT_FILE", message)
+        self.assertNotIn("SSL_VERIFY=False", message)
 
-    def test_unticking_verify_ssl_wins_over_a_ca_path(self):
-        """Both set means the operator said not to verify; verifying anyway is the old bug."""
-        integration = fixtures.create_external_integration(
-            name="No Verify Endpoint", verify_ssl=False, ca_file_path="/etc/ssl/private-ca.pem"
-        )
-        provider = fixtures.create_llmprovider(name="No Verify Provider", external_integration=integration)
-        model = fixtures.create_llmmodel(provider=provider)
+    def test_an_integration_with_default_tls_says_nothing(self):
+        """The warning fires for a setting that was made, never for one left alone."""
+        model = fixtures.create_llmmodel()
 
-        client = FakeLLMClient()
-        call(model, client)
-
-        self.assertIs(client.calls[0]["ssl_verify"], False)
+        with self.assertNoLogs("nautobot_event_tracker.services.llm", level="WARNING"):
+            call(model, FakeLLMClient())
 
     def test_extra_config_is_not_splatted_into_the_call(self):
         """Untyped operator JSON in the call kwargs would reopen the hole the allowlist closed."""
@@ -585,3 +697,136 @@ class TestRetention(TestCase):
         # And with the day marked, the next call does not try again.
         with mock.patch("django.db.models.query.QuerySet.delete", side_effect=AssertionError("tried again")):
             llm_service._maybe_prune()  # pylint: disable=protected-access
+
+
+class TestToolCalls(TestCase):
+    """Section 8 - the tool-calling extension. One new field, two new arguments, no new rule."""
+
+    def setUp(self):
+        """One registered model to call."""
+        self.model = fixtures.create_llmmodel()
+
+    def complete(self, response, **kwargs):
+        """One call through the service with this canned response."""
+        client = FakeLLMClient(response)
+        result = llm_service.complete(
+            model=self.model,
+            messages=[{"role": "user", "content": "hello"}],
+            purpose=LLMPurposeChoices.AGENT,
+            client=client,
+            **kwargs,
+        )
+        self.client = client  # pylint: disable=attribute-defined-outside-init
+        return result
+
+    def test_a_plain_completion_asks_for_no_tools(self):
+        """A call made without `tools` is exactly the call it was before this phase."""
+        response = self.complete(FakeLLMResponse("hello"))
+
+        self.assertEqual(response.tool_calls, ())
+        self.assertNotIn("tools", self.client.calls[0])
+
+    def test_tool_definitions_reach_the_client(self):
+        """litellm translates them per provider; the app builds them from the registry."""
+        definitions = [{"type": "function", "function": {"name": "look", "parameters": {}}}]
+
+        self.complete(FakeLLMResponse("hello"), tools=definitions, tool_choice="auto")
+
+        self.assertEqual(self.client.calls[0]["tools"], definitions)
+        self.assertEqual(self.client.calls[0]["tool_choice"], "auto")
+
+    def test_the_calls_a_model_asked_for_are_parsed(self):
+        """Arguments arrive as a JSON string and are handed back as a dictionary."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", {"device": "leaf-01"})])
+
+        response = self.complete(raw)
+
+        self.assertEqual(len(response.tool_calls), 1)
+        parsed = response.tool_calls[0]
+        self.assertEqual((parsed.identifier, parsed.name), ("call-1", "look"))
+        self.assertEqual(parsed.arguments, {"device": "leaf-01"})
+
+    def test_a_tool_call_with_no_content_is_a_complete_answer(self):
+        """A model that asked for a tool sends no message text, and that is not an empty answer."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look")])
+
+        response = self.complete(raw)
+
+        self.assertEqual(response.text, "")
+        self.assertTrue(response.record.success)
+
+    def test_an_argument_less_tool_is_ordinary(self):
+        """Providers spell "no arguments" three different ways, and all three mean this."""
+        for arguments in ("", "{}", None):
+            with self.subTest(arguments=arguments):
+                raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", arguments)])
+
+                response = self.complete(raw)
+
+                self.assertEqual(response.tool_calls[0].arguments, {})
+
+    def test_unparsable_arguments_are_a_response_error(self):
+        """A call the app cannot read is not a call it should guess at."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", "{not json")])
+
+        with self.assertRaises(LLMResponseError) as caught:
+            self.complete(raw)
+
+        self.assertIn("not valid JSON", str(caught.exception))
+
+    def test_an_unusable_tool_call_is_still_on_the_record(self):
+        """L1 - the call was made and paid for, whatever came back."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look", "{not json")])
+
+        with self.assertRaises(LLMResponseError) as caught:
+            self.complete(raw)
+
+        record = caught.exception.record
+        self.assertFalse(record.success)
+        self.assertIn("not valid JSON", record.error)
+        self.assertEqual(LLMUsageRecord.objects.count(), 1)
+
+    def test_a_tool_call_with_no_name_is_a_response_error(self):
+        """There is nothing to look up, and guessing is how a call reaches the wrong tool."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("")])
+
+        with self.assertRaises(LLMResponseError):
+            self.complete(raw)
+
+    def test_an_empty_answer_is_still_an_error(self):
+        """Neither text nor tool calls is the case the old message was written for."""
+        with self.assertRaises(LLMResponseError):
+            self.complete(FakeLLMResponse(None))
+
+    def test_a_tool_calling_response_is_priced_like_any_other(self):
+        """L5 is untouched: a call that asked for tools costs what its tokens cost."""
+        raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call("look")])
+
+        response = self.complete(raw)
+
+        self.assertEqual(response.prompt_tokens, 10)
+        self.assertEqual(response.completion_tokens, 5)
+
+
+class TestTheClientIsResolvable(TestCase):
+    """What `require_client()` says when the dependency will not import."""
+
+    def test_the_reason_is_in_the_message(self):
+        """ "Not installed" is one explanation of an ImportError, and not always the right one.
+
+        litellm 1.98.0 imported `typing.NotRequired` while declaring support for Python 3.10, so it
+        installed there and then could not be imported. The message said to install it, which was
+        already done - and because the cause was chained rather than reported, a CI log showed only
+        the wrong advice. This is that hour, spent once.
+        """
+        with mock.patch.dict("sys.modules", {"litellm": None}):
+            with self.assertRaises(ImproperlyConfigured) as caught:
+                llm_service.require_client()
+
+        message = str(caught.exception)
+        self.assertIn("could not be imported", message)
+        # The underlying failure's own type and text, which is the half that was missing.
+        self.assertIn("ModuleNotFoundError", message)
+        self.assertIn("litellm", message)
+        # And still the advice, for the case where it really is not installed.
+        self.assertIn("'llm' extra", message)

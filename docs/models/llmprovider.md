@@ -15,7 +15,7 @@ stores it.
 | --- | --- |
 | Name | A name of your choosing, unique. Configuration refers to the provider by this name. |
 | Description | Free text. |
-| Provider Type | The protocol the endpoint speaks: OpenAI, Anthropic, or OpenAI-compatible for a self-hosted endpoint. An OpenAI-compatible provider requires its integration to carry a remote URL. |
+| Provider Type | The protocol the endpoint speaks: OpenAI, Anthropic, OpenAI-compatible for a self-hosted endpoint, or Ollama. The two self-hosted types require their integration to carry a remote URL, because litellm's fallback for each goes somewhere wrong — `api.openai.com` for one, a loopback address for the other. Ollama has a type of its own because its OpenAI-compatibility layer cannot return tool calls; see [Configuring LLM Providers](../admin/llm.md). |
 | External Integration | Where the endpoint URL and credentials live. |
 | Enabled | Turn this off and every call through this provider is refused before any network traffic — the off switch works everywhere at once. |
 

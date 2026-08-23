@@ -18,6 +18,8 @@ router.register("llm-models", views.LLMModelUIViewSet)
 router.register("llm-usage", views.LLMUsageRecordUIViewSet)
 router.register("mcp-servers", views.MCPServerUIViewSet)
 router.register("mcp-tools", views.MCPToolUIViewSet)
+router.register("agent-runs", views.AgentRunUIViewSet)
+router.register("agent-tool-calls", views.AgentToolCallUIViewSet)
 
 urlpatterns = [
     path(
@@ -39,6 +41,18 @@ urlpatterns = [
         "mcp-servers/<uuid:pk>/discover/",
         views.MCPServerDiscoverView.as_view(),
         name="mcpserver_discover",
+    ),
+    # Two routes rather than one taking a parameter: which decision is being made is the thing
+    # this whole phase exists to control, and it should not be a form field.
+    path(
+        "agent-tool-calls/<uuid:pk>/approve/",
+        views.AgentToolCallApproveView.as_view(),
+        name="agenttoolcall_approve",
+    ),
+    path(
+        "agent-tool-calls/<uuid:pk>/deny/",
+        views.AgentToolCallDenyView.as_view(),
+        name="agenttoolcall_deny",
     ),
     path("docs/", RedirectView.as_view(url=static("nautobot_event_tracker/docs/index.html")), name="docs"),
 ]

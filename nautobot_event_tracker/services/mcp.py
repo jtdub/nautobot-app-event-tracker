@@ -12,30 +12,36 @@ Rules implemented here, referenced by number from the Phase 4B spec:
 * **M3** - the endpoint, its headers, its TLS settings and its timeout come from the server's
   ExternalIntegration at call time, and the credential from that integration's secrets group.
   Nothing key-shaped lives in settings, on a model, or in a log line.
+* **M4** - a tool that is not enabled, on a server that is not enabled, is refused before any
+  network I/O, whatever the prompt, the model or the caller said.
 * **M5** - discovery never grants. New tools arrive disabled and mutating, whatever the server
   claims about them; anything the server advertises differently under an enabled tool disables it
   and reports it.
-* **M8** - every call is bounded by a timeout.
-
-Rules M4, M6 and M7 - the default-deny check, the approval check and the call record - land with
-`call_tool()` in PR B, which is the PR that introduces the `AgentToolCall` row all three are
-written on. Nothing in this module calls a tool.
+* **M6** - a mutating tool runs only from an approved `AgentToolCall`, only against the tool
+  definition that call was approved against, and only once: the row is claimed atomically before
+  the call, so two callers cannot both make it.
+* **M7** - every call is on the record - arguments, result, latency, error - before its caller
+  sees any of it. Rule L1's promise, made about the other kind of call this app makes.
+* **M8** - every call is bounded in both directions: a timeout going out, and a cap on the result
+  coming back.
 """
 
 import asyncio
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from nautobot.apps.choices import SecretsGroupSecretTypeChoices
 
-from nautobot_event_tracker.models import MCPTool
+from nautobot_event_tracker.choices import AgentToolCallStatusChoices
+from nautobot_event_tracker.models import AgentToolCall, MCPTool
 from nautobot_event_tracker.secrets import read_secret
-from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError
+from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError, MCPError
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +62,15 @@ MAX_TOOL_PAGES = 50
 #: what MCP servers over HTTP overwhelmingly expect; an operator who needs something else writes
 #: that header on the integration, and this defers to them.
 AUTHORIZATION_HEADER = "Authorization"
+
+#: How much of a tool's answer is kept, when the caller does not say (M8). The agent passes its own
+#: `max_tool_result_chars`; this is what everything else gets, and what stops a tool that returns
+#: forty megabytes of interface counters becoming a row as well as a prompt.
+DEFAULT_MAX_RESULT_CHARS = 8000
+
+#: Error text longer than this is truncated before it is recorded, exactly as the LLM service caps
+#: its own. The row exists to show that and why a call failed, not to archive a stack trace.
+ERROR_TEXT_CAP = 1000
 
 
 @dataclass(frozen=True)
@@ -201,6 +216,198 @@ def discover(server, *, client=None):
     return report
 
 
+def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
+    """Call one tool for one `AgentToolCall`, refusing everything the allowlist and the gate refuse.
+
+    The row is the argument rather than a tool and a dictionary, because every rule this function
+    enforces is written on the row: M4 reads the tool it points at, M6 reads its status and the
+    definition it was approved against, and M7 writes the outcome back onto it before the caller
+    sees anything at all.
+
+    `client` is the test seam - an object with `call_tool(connection, name, arguments)` - and
+    nothing outside a test supplies one. No test opens a socket.
+
+    Returns the updated `AgentToolCall`, `executed` or `failed`. A server that answers with an
+    error of its own is a `failed` row and not an exception: the server was reached and had
+    something to say, and what it said is the model's to read (section 7.4). Raises
+    `MCPConfigurationError` when the call is refused before any network I/O, and `MCPCallError`
+    when it left the process and did not come back usable.
+    """
+    cap = int(max_result_chars) if max_result_chars else DEFAULT_MAX_RESULT_CHARS
+
+    # Re-read rather than trusting the instance the caller is holding. Between a proposal and its
+    # execution a person disables the tool, an operator switches the server off, or discovery
+    # rewrites the definition - and those three are precisely the events the checks below exist to
+    # notice. A cached row would notice none of them.
+    tool = MCPTool.objects.select_related("server__external_integration__secrets_group").get(pk=tool_call.tool_id)
+    _check_callable(tool_call, tool)
+    _claim(tool_call, tool)
+
+    started = time.monotonic()
+    try:
+        # Inside the recorded region, all of it. Resolving the connection can fail on its own -
+        # an integration blanked of its URL, a Jinja2 field that will not render - and so can
+        # resolving the client, when the `mcp` extra is not installed. Left outside, those two
+        # returned to the caller with nothing written on the row: M7 broken, the row stranded in
+        # whatever state the claim left it, and the agent told "the call returned nothing" when
+        # the truth was "this server is misconfigured".
+        connection = connection_for(tool.server)
+        if timeout:
+            connection = replace(connection, timeout=float(timeout))
+        caller = client if client is not None else _default_client()
+        raw = caller.call_tool(connection, tool.name, dict(tool_call.arguments or {}))
+    except Exception as error:  # pylint: disable=broad-except
+        # M7 - on the record first, then the caller hears about it.
+        _finish(tool_call, latency_ms=_elapsed_ms(started), error=f"The call failed: {error}")
+        # The family the caller expects is preserved: a configuration fault stays one, and a
+        # missing extra stays the deployment fault it is (deliberately outside `MCPError`, so
+        # nothing on the agent's path swallows it as a bad tool call).
+        if isinstance(error, (MCPError, ImproperlyConfigured)):
+            raise
+        raise MCPCallError(f"Calling '{tool}' failed: {error}") from error
+
+    result, truncated = _capped_result(raw, cap)
+    if truncated:
+        logger.info("Truncated the result of %s to %d characters", tool, cap)
+
+    error = None
+    if result.get("is_error"):
+        error = result.get("text") or "The server reported an error and said nothing about it."
+    _finish(tool_call, latency_ms=_elapsed_ms(started), result=result, error=error)
+    return tool_call
+
+
+def _claim(tool_call, tool):
+    """Take this call, atomically, so that exactly one caller can make it.
+
+    `_check_callable` reads; this writes, and the two have to be one step. Checking and then
+    calling leaves a window in which two callers both pass the check and both reach the server -
+    and for a mutating tool that means a change a person approved once being applied twice, which
+    is not the same thing as applying it once. `services/agent.py` serializes launches per ticket
+    as well; this is the check in the layer that owns the rule, and it is the one that holds if
+    anything ever calls `call_tool()` from somewhere else.
+
+    A conditional UPDATE rather than a lock held across the call: the call is network I/O and may
+    take a tool timeout to return, and no row lock should be open that long. The status is the
+    claim, so a row left in `executing` is a process that died mid-call.
+    """
+    claimed = (
+        AgentToolCall.objects.filter(pk=tool_call.pk, status=tool_call.status)
+        .exclude(status=AgentToolCallStatusChoices.EXECUTING)
+        .update(status=AgentToolCallStatusChoices.EXECUTING)
+    )
+    if not claimed:
+        # Somebody else moved the row between the check above and this line. Deliberately not
+        # written to the row: whoever holds the claim owns its outcome, and recording a refusal
+        # here would overwrite the result of the call that is actually running.
+        raise MCPConfigurationError(f"This call on '{tool}' was already taken by another caller and is not run twice.")
+    tool_call.status = AgentToolCallStatusChoices.EXECUTING
+
+
+def _check_callable(tool_call, tool):
+    """M4 and M6, in that order, before any network I/O and whatever anything else said.
+
+    The order matters to the message an operator reads: a disabled tool is the answer even when
+    the call is also unapproved, because enabling it is what they have to do first.
+    """
+    if not tool.enabled:
+        _refuse(tool_call, f"Tool '{tool}' is not enabled.")
+    if not tool.server.enabled:
+        _refuse(tool_call, f"MCP server '{tool.server}' is disabled.")
+
+    # A mutating tool runs from an approved row and from nothing else. A read-only one runs from
+    # its own proposal - it needs no decision (13.4) - and neither runs twice: an executed, failed
+    # or denied row is a decision that has already happened, and re-running it would be a second
+    # call nobody asked for.
+    allowed = (
+        (AgentToolCallStatusChoices.APPROVED,)
+        if tool.mutating
+        else (AgentToolCallStatusChoices.PROPOSED, AgentToolCallStatusChoices.APPROVED)
+    )
+    if tool_call.status not in allowed:
+        _refuse(
+            tool_call,
+            f"Tool '{tool}' is mutating and this call is '{tool_call.status}', not approved."
+            if tool.mutating
+            else f"This call is '{tool_call.status}' and has already been decided.",
+        )
+
+    # M6's second half. M5 disables a tool whose definition changed, which covers most of this and
+    # not all of it: an operator may review the new definition and re-enable the tool while a
+    # proposal written against the old one is still waiting. What was approved was a call on the
+    # tool as it read then.
+    # Compared unconditionally. Guarding on `tool_call.tool_fingerprint` being truthy skipped the
+    # check entirely for a tool created by hand through the form or the API, which carries no
+    # fingerprint - and kept skipping it after discovery later wrote a real one, which is exactly
+    # the drift this check exists to catch.
+    if tool_call.tool_fingerprint != call_binding(tool):
+        _refuse(
+            tool_call,
+            f"'{tool}' has changed since this call was proposed - its definition, its name or the "
+            "endpoint it is reached at. Approving approves the tool as it read then; propose it "
+            "again against what it is now.",
+        )
+
+
+def _refuse(tool_call, message):
+    """Record a refusal on the row and raise it. Nothing has left the process."""
+    _finish(tool_call, latency_ms=0, error=message)
+    raise MCPConfigurationError(message)
+
+
+def _finish(tool_call, *, latency_ms, result=None, error=None):
+    """M7 - write the outcome onto the row. The one place a call's result is recorded.
+
+    No `validated_save()`: every value here is service-constructed or capped on the line above,
+    and the alternative costs two FK queries on a path that has just made a network call.
+    """
+    tool_call.status = AgentToolCallStatusChoices.FAILED if error is not None else AgentToolCallStatusChoices.EXECUTED
+    tool_call.result = result or {}
+    tool_call.error = str(error)[:ERROR_TEXT_CAP] if error is not None else ""
+    tool_call.latency_ms = latency_ms
+    tool_call.called_at = timezone.now()
+    tool_call.save()
+    return tool_call
+
+
+def _capped_result(raw, cap):
+    """M8 - what came back, rendered as plain JSON and bounded. True when something was dropped.
+
+    Rendered rather than stored: the SDK's content blocks are pydantic models, which a JSONField
+    cannot hold and a prompt cannot use. Text blocks become text and everything else becomes a
+    marker naming its type, so a model reading the transcript can tell an image it cannot see from
+    an answer that was empty.
+
+    The text is capped first, because it is what a model and a person both read. Structured content
+    is dropped only when capping the text was not enough, which is the case where a tool answered
+    with a megabyte of JSON and the alternative to dropping it is storing it.
+    """
+    blocks = []
+    for block in getattr(raw, "content", None) or []:
+        text = getattr(block, "text", None)
+        blocks.append(text if isinstance(text, str) else f"<{getattr(block, 'type', None) or 'content'}>")
+    text = "\n".join(blocks)
+
+    result = {"is_error": bool(getattr(raw, "is_error", False)), "text": text}
+    structured = getattr(raw, "structured_content", None)
+    if structured is not None:
+        result["structured_content"] = structured
+
+    if len(json.dumps(result, default=str)) <= cap:
+        return result, False
+
+    result["text"] = text[:cap]
+    result["truncated"] = True
+    if len(json.dumps(result, default=str)) > cap:
+        result.pop("structured_content", None)
+    return result, True
+
+
+def _elapsed_ms(started):
+    """Whole milliseconds since `started`."""
+    return int((time.monotonic() - started) * 1000)
+
+
 def _reconcile(server, advertised):
     """Write what was advertised onto the registry, and say what changed.
 
@@ -297,6 +504,34 @@ def _update(tool, definition, fingerprint, now):
     return withdraw
 
 
+def call_binding(tool):
+    """What an approval is bound to: the definition, the name, and the endpoint.
+
+    `definition_fingerprint` answers "did the server change what this tool is", which is discovery's
+    question. This answers the approver's: "will the call I approved go where I thought it would".
+    Three things decide that, and the digest alone covers one.
+
+    The name is the string put on the wire, and `MCPToolForm` lets anyone with `change_mcptool`
+    edit it - a lower bar than `approve_agenttoolcall`. Rename the row between approval and
+    execution and the approved arguments go to a different command with the digest untouched,
+    because a rename does not re-run discovery. The server's integration decides which host is
+    dialled, and repointing it sends an approved call somewhere else entirely.
+
+    Recomputed from the tool's current state at execution and compared with what was stored at
+    proposal, so any of the three changing is a refusal.
+    """
+    canonical = json.dumps(
+        {
+            "definition": tool.definition_fingerprint,
+            "name": tool.name,
+            "integration": str(tool.server.external_integration_id),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def definition_fingerprint(definition):
     """A stable digest of everything a server said about one tool, so "did this change" is one test.
 
@@ -370,6 +605,18 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
             )
         return tuple(definitions)
 
+    def call_tool(self, connection, name, arguments):
+        """Call one tool and hand back what the server said, unread.
+
+        Nothing is interpreted here: the refusals happened before this was reached, and the
+        rendering happens after it. This is the wire and nothing else.
+        """
+
+        async def _call(session):
+            return await session.call_tool(name, arguments, read_timeout_seconds=connection.timeout)
+
+        return self._run(connection, _call)
+
     async def _pages(self, session):
         """Every page of the tool list, in order.
 
@@ -433,7 +680,12 @@ def _default_client():
         from mcp import ClientSession  # pylint: disable=import-outside-toplevel
         from mcp.client.streamable_http import streamable_http_client  # pylint: disable=import-outside-toplevel
     except ImportError as error:
+        # The cause in the message, for the reason `services.llm` gives: a dependency that is
+        # installed and unimportable is not a missing extra, and telling somebody to install it
+        # again sends them the wrong way.
         raise ImproperlyConfigured(
-            "The MCP client is not installed. Install the app with the 'mcp' extra: nautobot-event-tracker[mcp]."
+            "The MCP client could not be imported, so no tool can be called: "
+            f"{type(error).__name__}: {error}. "
+            "If it is not installed, install the app with the 'mcp' extra: nautobot-event-tracker[mcp]."
         ) from error
     return _StreamableHTTPClient(ClientSession, streamable_http_client, httpx2.AsyncClient, httpx2.Timeout)

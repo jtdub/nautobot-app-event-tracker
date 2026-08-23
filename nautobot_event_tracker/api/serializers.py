@@ -4,6 +4,8 @@ from nautobot.apps.api import BaseModelSerializer, ContentTypeField, NautobotMod
 from rest_framework import serializers
 
 from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
     EventTicket,
     EventType,
     IngestionStats,
@@ -236,3 +238,64 @@ class MCPToolSerializer(NautobotModelSerializer):  # pylint: disable=too-many-an
 
         model = MCPTool
         fields = "__all__"
+
+
+class AgentRunSerializer(BaseModelSerializer):
+    """AgentRun Serializer.
+
+    Read-only in every field. A run is `services/agent.py`'s record of what it did; writes are a
+    405 whatever the permissions say, exactly as they are for `TicketUpdate`.
+    """
+
+    class Meta:
+        """Meta attributes."""
+
+        model = AgentRun
+        fields = [
+            "id",
+            "url",
+            "natural_slug",
+            "ticket",
+            "status",
+            "started_by",
+            "job_result",
+            "parent",
+            "transcript",
+            "iterations",
+            "error",
+            "started_at",
+            "finished_at",
+        ]
+        read_only_fields = fields
+
+
+class AgentToolCallSerializer(BaseModelSerializer):
+    """AgentToolCall Serializer.
+
+    Read-only in every field, including `status`: a decision is made through the approve and deny
+    actions, which check their own permission and write the ticket's trail. A PATCH that set
+    `status` to `approved` would be the gate not existing.
+    """
+
+    class Meta:
+        """Meta attributes."""
+
+        model = AgentToolCall
+        fields = [
+            "id",
+            "url",
+            "natural_slug",
+            "run",
+            "tool",
+            "arguments",
+            "status",
+            "tool_fingerprint",
+            "decided_by",
+            "decided_at",
+            "result",
+            "error",
+            "latency_ms",
+            "proposed_at",
+            "called_at",
+        ]
+        read_only_fields = fields

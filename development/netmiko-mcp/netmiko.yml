@@ -1,0 +1,37 @@
+---
+# The lab's devices, in Netmiko Tools inventory format.
+#
+# The credential is Nokia's published default for the free SR Linux container image, on a private
+# container network, on a lab that `invoke lab-down` destroys. It is in the file for the same reason
+# the startup configurations beside it are: this lab is meant to be reproducible by anybody who
+# clones the repository. It is not a pattern to copy. A real inventory keeps its credentials
+# encrypted - netmiko supports that - or out of the file entirely.
+leaf-01:
+  device_type: "nokia_srl"
+  host: "172.30.30.11"
+  username: "admin"
+  password: "NokiaSrl1!"
+
+leaf-02:
+  device_type: "nokia_srl"
+  host: "172.30.30.12"
+  username: "admin"
+  password: "NokiaSrl1!"
+
+spine-01:
+  device_type: "nokia_srl"
+  host: "172.30.30.13"
+  username: "admin"
+  password: "NokiaSrl1!"
+
+# A group, so `send_show_command_to_group` has something to address. The names match the Nautobot
+# device names on purpose: a ticket carries `dcim.device: leaf-01` as an attached object, and the
+# agent's prompt names it - so the name it reads is the name it can ask about.
+fabric:
+  - "leaf-01"
+  - "leaf-02"
+  - "spine-01"
+
+leaves:
+  - "leaf-01"
+  - "leaf-02"

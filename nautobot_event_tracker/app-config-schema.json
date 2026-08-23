@@ -36,6 +36,71 @@
             },
             "additionalProperties": false
         },
+        "agent": {
+            "type": "object",
+            "description": "The agent (Phase 4B). Providers, models, MCP servers and tools are registry objects managed in the UI, never settings, so this block holds only the shape of a run.",
+            "default": {},
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the agent Job may run at all. Off until a deployment names a provider and a model.",
+                    "default": false
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "LLMProvider name the agent calls. Required when the agent is enabled.",
+                    "default": ""
+                },
+                "model": {
+                    "type": "string",
+                    "description": "LLMModel name on that provider. Required when the agent is enabled.",
+                    "default": ""
+                },
+                "max_iterations": {
+                    "type": "integer",
+                    "description": "Model calls one run may make before it stops with what it has.",
+                    "minimum": 1,
+                    "default": 8
+                },
+                "max_tool_calls": {
+                    "type": "integer",
+                    "description": "Tool calls across a whole chain of runs, including every resumption after an approval.",
+                    "minimum": 1,
+                    "default": 20
+                },
+                "max_tool_result_chars": {
+                    "type": "integer",
+                    "description": "How much of one tool's answer is kept, before it is truncated for the prompt and the record.",
+                    "minimum": 1,
+                    "default": 8000
+                },
+                "max_context_chars": {
+                    "type": "integer",
+                    "description": "How much of the ticket's raw payload goes into the prompt.",
+                    "minimum": 1,
+                    "default": 8000
+                },
+                "max_transcript_chars": {
+                    "type": "integer",
+                    "description": "How large a run's transcript may grow before the run stops and says so.",
+                    "minimum": 1,
+                    "default": 60000
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": "How long one model call may take.",
+                    "exclusiveMinimum": 0,
+                    "default": 60
+                },
+                "tool_timeout_seconds": {
+                    "type": "number",
+                    "description": "How long one tool call may take.",
+                    "exclusiveMinimum": 0,
+                    "default": 30
+                }
+            },
+            "additionalProperties": false
+        },
         "ingestion": {
             "type": "object",
             "description": "Event ingestion. An empty object means the consumer subscribes to nothing, which is the default until a deployment points it at a broker.",

@@ -71,6 +71,13 @@ class UpdateTypeChoices(ChoiceSet):
     OBJECT_ATTACHED = "object_attached"
     OBJECT_DETACHED = "object_detached"
     RECURRENCE = "recurrence"
+    # The approval gate's three moments (Phase 4B, section 7). They are on the ticket's own trail
+    # rather than only on the run, because the trail is where a person looks to answer "what was
+    # done to this ticket, by whom" - and a tool call against the network is the loudest possible
+    # answer to that question.
+    TOOL_PROPOSED = "tool_proposed"
+    TOOL_DECIDED = "tool_decided"
+    TOOL_EXECUTED = "tool_executed"
 
     CHOICES = (
         (CREATED, "Created"),
@@ -81,6 +88,9 @@ class UpdateTypeChoices(ChoiceSet):
         (OBJECT_ATTACHED, "Object Attached"),
         (OBJECT_DETACHED, "Object Detached"),
         (RECURRENCE, "Recurrence"),
+        (TOOL_PROPOSED, "Tool Proposed"),
+        (TOOL_DECIDED, "Tool Decided"),
+        (TOOL_EXECUTED, "Tool Executed"),
     )
 
 
@@ -90,16 +100,27 @@ class LLMProviderTypeChoices(ChoiceSet):
     This selects how the service layer builds the litellm model string and which credentials it
     expects, nothing more. An on-premises endpoint speaking the OpenAI protocol is a first-class
     citizen here (ADR 0006): many network operators cannot send configuration to a third party.
+
+    Ollama has a type of its own rather than being one more OpenAI-compatible endpoint, and it is
+    worth saying why, because "it speaks the OpenAI protocol" is true and not sufficient. Ollama's
+    OpenAI-compatibility layer does not return tool calls in the `tool_calls` field: a model asked
+    for a tool answers with the JSON call written into the message content, where nothing may act
+    on it. Its native API does return them, and litellm reaches that through the `ollama/` prefix.
+    So on the OpenAI-compatible path an Ollama-backed agent cannot call a tool at all - which is
+    most of Phase 4B - and on this one it can. Measured against Ollama 0.x with qwen2.5-coder and
+    llama3.2; if the compatibility layer ever grows the field, this type still costs nothing.
     """
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OPENAI_COMPATIBLE = "openai_compatible"
+    OLLAMA = "ollama"
 
     CHOICES = (
         (OPENAI, "OpenAI"),
         (ANTHROPIC, "Anthropic"),
         (OPENAI_COMPATIBLE, "OpenAI-compatible"),
+        (OLLAMA, "Ollama"),
     )
 
 
@@ -111,7 +132,17 @@ LITELLM_PROVIDER_PREFIXES = {
     LLMProviderTypeChoices.OPENAI: "openai",
     LLMProviderTypeChoices.ANTHROPIC: "anthropic",
     LLMProviderTypeChoices.OPENAI_COMPATIBLE: "openai",
+    # `ollama`, not `ollama_chat`. litellm offers both and the second is the one usually
+    # recommended; it was the first that returned native tool calls when this was measured, and
+    # the second that did not.
+    LLMProviderTypeChoices.OLLAMA: "ollama",
 }
+
+#: Provider types that are an address rather than a service: litellm would otherwise fall back to a
+#: default endpoint, which for `openai` is somebody else's API and for `ollama` is a loopback
+#: address that means nothing inside a container. Both are refused without a URL, at save time and
+#: again at call time.
+PROVIDER_TYPES_REQUIRING_A_URL = frozenset({LLMProviderTypeChoices.OPENAI_COMPATIBLE, LLMProviderTypeChoices.OLLAMA})
 
 
 class LLMPurposeChoices(ChoiceSet):
@@ -122,8 +153,77 @@ class LLMPurposeChoices(ChoiceSet):
     """
 
     TRIAGE = "triage"
+    AGENT = "agent"
 
-    CHOICES = ((TRIAGE, "Triage"),)
+    CHOICES = (
+        (TRIAGE, "Triage"),
+        (AGENT, "Agent"),
+    )
+
+
+class AgentRunStatusChoices(ChoiceSet):
+    """Where one agent run got to.
+
+    Five of the six are ends. `waiting_approval` is the one that is not an end and is still a
+    finished run: the loop stops at a mutating proposal and hands the worker slot back, so a run in
+    this state is not executing anything and is not waiting on a lock (ADR 0009).
+    """
+
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    DENIED = "denied"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+    CHOICES = (
+        (RUNNING, "Running"),
+        (WAITING_APPROVAL, "Waiting for Approval"),
+        (COMPLETED, "Completed"),
+        (DENIED, "Denied"),
+        (FAILED, "Failed"),
+        (SUPERSEDED, "Superseded"),
+    )
+
+
+class AgentToolCallStatusChoices(ChoiceSet):
+    """What became of one tool call an agent asked for.
+
+    A read-only call is written straight to `executed` or `failed` and never has a decider; a
+    mutating one passes through `proposed` and then `approved` or `denied`. That is the entire
+    difference between the two kinds, and it is one column.
+    """
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DENIED = "denied"
+    #: Claimed by a caller and in flight. Exists so that "may this run" and "this is running" are
+    #: one atomic step: without it the check and the call are separate, and two callers can both
+    #: pass the check before either writes. A row left here is a process that died mid-call, which
+    #: is worth being able to see.
+    EXECUTING = "executing"
+    EXECUTED = "executed"
+    FAILED = "failed"
+
+    CHOICES = (
+        (PROPOSED, "Proposed"),
+        (APPROVED, "Approved"),
+        (DENIED, "Denied"),
+        (EXECUTING, "Executing"),
+        (EXECUTED, "Executed"),
+        (FAILED, "Failed"),
+    )
+
+
+#: Run states in which a run is part of the ticket's current chain, so a second launch would be a
+#: second agent on one ticket (rule A9). `waiting_approval` is in here because the chain is not
+#: over: somebody still has a decision to make, or has made one that nothing has acted on yet.
+AGENT_RUN_LIVE_STATUSES = frozenset({AgentRunStatusChoices.RUNNING, AgentRunStatusChoices.WAITING_APPROVAL})
+
+#: The statuses an agent may move a ticket into (rule A5). Resolving and closing are a person's
+#: judgement: a wrongly closed ticket looks exactly like a solved one, which is what makes it the
+#: one mistake nobody sees.
+AGENT_ALLOWED_TRANSITIONS = frozenset({TicketStatusChoices.TRIAGED, TicketStatusChoices.IN_PROGRESS})
 
 
 #: Numeric weights for severity, so that ordering and comparison do not depend on alphabetical

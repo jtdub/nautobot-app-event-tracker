@@ -1,0 +1,48 @@
+---
+# netmiko-mcp's own configuration. Its defaults look in a home directory; these paths are where
+# compose mounts the files instead.
+inventory_type: "netmiko_tools"
+inventory_file: "/config/netmiko.yml"
+command_file: "/config/commands.yml"
+
+# Streamable HTTP, which is the only transport this app will speak (ADR 0007). netmiko-mcp also
+# offers stdio; that is the one Event Tracker refuses, because it means process execution driven by
+# a database row.
+transport: "streamable-http"
+# 0.0.0.0, not the 127.0.0.1 default: in a container the loopback interface is reachable only from
+# the container itself, and Nautobot is not in it.
+http_host: "0.0.0.0"
+http_port: 8000
+http_path: "/mcp"
+
+# On, so the credential path gets exercised end to end: the token lives in a Nautobot Secret, in a
+# SecretsGroup on the MCP server's ExternalIntegration, and `services/mcp.py` presents it as
+# `Authorization: Bearer ...` (rule M3). A lab that skipped this would not be testing the thing
+# most likely to be wrong in a real deployment.
+http_auth_enabled: true
+# One request, one answer, no session to keep. Event Tracker opens a session per operation and
+# closes it, so there is nothing for server-side session state to be useful for.
+http_stateless: true
+http_json_response: true
+
+# Belt and braces beside `commands.yml`: no pipes, so a whitelisted `show` cannot grow a suffix
+# that does something else.
+allow_pipe: false
+
+# `allowed_command_chars` is deliberately left at its default. A review asked whether a command
+# allowlist of prefix globs can be walked past with an embedded separator, and it was worth
+# checking: `show interface brief; tools system reboot`, `&&` and backticks are all refused, and
+# `show interface brief\ntools system reboot` is ACCEPTED by the allowlist.
+#
+# It is not an injection. netmiko-mcp collapses every run of whitespace to a single space before
+# it validates, and the normalised string is the one it forwards - so the device receives
+# `show interface brief tools system reboot` as one line and rejects it as a parse error. The
+# string that was checked and the string that is sent are the same string, which is the property
+# that matters. Verified against netmiko-mcp 0.2.0 (`security.py::validate_command`).
+
+# Return output inline rather than saving it to a file and handing back a filename. The default of
+# 1000 lines is sensible for a human at a prompt and expensive for an agent: every saved output
+# costs a second tool call to read it back, and an agent's turns are bounded (rule A2), so three
+# saved outputs was most of a run. SR Linux `show` output is small; anything genuinely huge is
+# still capped on the way into the transcript by `max_tool_result_chars`.
+save_threshold: 100000

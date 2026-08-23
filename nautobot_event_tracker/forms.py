@@ -16,6 +16,8 @@ from nautobot.apps.forms import (
 from nautobot.extras.models import ExternalIntegration
 
 from nautobot_event_tracker.choices import (
+    AgentRunStatusChoices,
+    AgentToolCallStatusChoices,
     LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
@@ -23,6 +25,8 @@ from nautobot_event_tracker.choices import (
     TicketStatusChoices,
 )
 from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
     EventTicket,
     EventType,
     IngestionStats,
@@ -495,3 +499,34 @@ class MCPToolFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancesto
         label="Server claims read-only",
         widget=StaticSelect2(choices=YES_NO_CHOICES),
     )
+
+
+class AgentRunFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for AgentRun.
+
+    Filter form only: a run is written by `services.agent` and by nothing else, so there is no
+    create or edit form to offer.
+    """
+
+    model = AgentRun
+    field_order = ["q", "status", "ticket"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within ticket title, status and error.")
+    status = forms.MultipleChoiceField(choices=AgentRunStatusChoices, required=False, widget=StaticSelect2Multiple)
+    ticket = DynamicModelChoiceField(queryset=EventTicket.objects.all(), required=False, label="Ticket")
+
+
+class AgentToolCallFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for AgentToolCall.
+
+    Filter form only, for the same reason. The status filter is the useful one: `proposed` is the
+    queue of decisions waiting on a person.
+    """
+
+    model = AgentToolCall
+    field_order = ["q", "status", "tool", "ticket"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within tool name, status and error.")
+    status = forms.MultipleChoiceField(choices=AgentToolCallStatusChoices, required=False, widget=StaticSelect2Multiple)
+    tool = DynamicModelChoiceField(queryset=MCPTool.objects.all(), required=False, label="Tool")
+    ticket = DynamicModelChoiceField(queryset=EventTicket.objects.all(), required=False, label="Ticket")

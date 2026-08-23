@@ -36,7 +36,10 @@ nautobot = ">=3.2.0,<4.0.0"
 confluent-kafka = { version = ">=2.0.0,<3.0.0", optional = true }
 # The one LLM runtime dependency (ADR 0006), optional for the same reason: a deployment that has
 # not enabled triage installs no model client. Imported only by services/llm.py (rule L2).
-litellm = { version = ">=1.74.0,<2.0.0", optional = true }
+# 1.98.0 is excluded rather than the range being capped: it does `from typing import
+# NotRequired` while still declaring `requires_python >=3.10`, so it installs on 3.10 and
+# then cannot be imported. Excluding the one release keeps 1.98.1 and later reachable.
+litellm = { version = ">=1.74.0,<2.0.0,!=1.98.0", optional = true }
 # The MCP client (ADR 0007), optional for the same reason and imported only by services/mcp.py
 # (rule M1). Pinned to 2.x: 2.0 renamed the streamable HTTP transport and moved the tool fields to
 # snake_case, so a 1.x client is not the one this app is written against.
@@ -109,6 +112,13 @@ disable = """,
     nb-no-search-function,
     nb-no-char-filter-q,
 """
+
+[tool.pylint.format]
+# ADR 0008 puts every piece of UI construction - panels, buttons, viewsets - in one module per
+# concern, so `views.py` and its test grow with the number of models rather than with complexity.
+# Splitting either would move the same code behind a re-export and make it harder to find, not
+# easier to read. Raised deliberately, and still a ceiling.
+max-module-lines = 1400
 
 [tool.pylint.similarities]
 # Pylint's default of four flags the two calls to `walk_to_status`, which pass the same five

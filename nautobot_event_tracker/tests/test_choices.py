@@ -109,6 +109,9 @@ class ChoiceSetTest(SimpleTestCase):
                 "object_attached",
                 "object_detached",
                 "recurrence",
+                "tool_proposed",
+                "tool_decided",
+                "tool_executed",
             },
         )
 

@@ -1,0 +1,49 @@
+---
+# What an agent may ask a device, which is the second allowlist in front of it - the first being
+# which tools are enabled at all in Nautobot (rule M4).
+#
+# netmiko-mcp permits nothing by default. A plain string matches that command exactly; a `*` matches
+# the prefix plus anything after it. `denied_commands` wins over `allowed_commands`.
+#
+# These are SR Linux commands, because that is what the lab runs. A model trained mostly on IOS
+# will try `show ip interface brief` and `show bgp summary` here and be refused - which is the
+# whitelist doing its job on a command this platform does not have. The equivalents are
+# `show interface brief` and `show network-instance default protocols bgp summary`.
+allowed_commands:
+  # The whole of SR Linux's `show` tree, as the device itself enumerates it - ask it for
+  # `show zzz` and it lists these. `show` is the read verb on this platform; the imperative one is
+  # `tools`, which the deny list below names.
+  #
+  # Listed root by root rather than as a bare `show*`, so that a future subtree has to be added
+  # deliberately rather than arriving allowed.
+  - "show version"
+  - "show acl*"
+  - "show arpnd*"
+  - "show interface*"
+  - "show lag*"
+  - "show network-instance*"     # includes `... default protocols bgp neighbor|routes|summary`
+  - "show platform*"
+  - "show system*"
+  - "show tunnel*"
+  - "show tunnel-interface*"
+
+denied_commands:
+  # Prefix-anchored, because netmiko-mcp only supports a trailing `*` - a leading one is refused at
+  # startup, which is how this list was written wrong the first time. That suits SR Linux, where the
+  # verb comes first.
+  #
+  # Redundant with the allowlist above, and worth writing down anyway: a reviewer should see the
+  # destructive verbs named and refused rather than have to satisfy themselves that no `show*` glob
+  # could reach one. Being prefix-anchored, these cannot catch a denied word in the middle of a
+  # command - the allowlist is what actually holds that line, and this is the second lock.
+  #
+  # `tools` is SR Linux's imperative command tree - `tools system reboot`, `tools platform` - and is
+  # the single most important entry here.
+  - "tools*"
+  - "configure*"
+  - "commit*"
+  - "delete*"
+  - "reload*"
+  - "reboot*"
+  - "bash*"
+  - "file*"

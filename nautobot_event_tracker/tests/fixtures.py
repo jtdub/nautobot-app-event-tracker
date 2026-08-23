@@ -306,13 +306,39 @@ def create_llmmodel(name="test-model", provider=None, **overrides):
     return model
 
 
+def fake_tool_call(name="get_interface_status", arguments=None, identifier="call-1"):
+    """One tool call in the shape a provider sends it: arguments as a JSON string.
+
+    A string rather than a dictionary on purpose. That is what comes over the wire, and parsing it
+    is the part of `complete()` these tests exist to exercise.
+    """
+    return SimpleNamespace(
+        id=identifier,
+        type="function",
+        function=SimpleNamespace(
+            name=name,
+            arguments=arguments if isinstance(arguments, str) else json.dumps(arguments or {}),
+        ),
+    )
+
+
 class FakeLLMResponse:  # pylint: disable=too-few-public-methods
     """The shape `litellm.completion` returns, as far as the service reads it."""
 
-    def __init__(self, content="ok", *, prompt_tokens=10, completion_tokens=5, request_id="req-1", usage=True):
-        """A successful-looking response carrying this content and usage."""
+    def __init__(  # pylint: disable=too-many-arguments
+        self,
+        content="ok",
+        *,
+        prompt_tokens=10,
+        completion_tokens=5,
+        request_id="req-1",
+        usage=True,
+        tool_calls=None,
+    ):
+        """A successful-looking response carrying this content, these tool calls and this usage."""
         self.id = request_id
-        self.choices = [SimpleNamespace(message=SimpleNamespace(content=content))] if content is not None else []
+        message = SimpleNamespace(content=content, tool_calls=list(tool_calls) if tool_calls else None)
+        self.choices = [SimpleNamespace(message=message)] if content is not None or tool_calls else []
         self.usage = (
             SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens) if usage else None
         )
@@ -455,6 +481,159 @@ def tool_definition(name="get_interface_status", **overrides):
         "input_schema": {"type": "object", "properties": {"device": {"type": "string"}}},
     }
     return ToolDefinition(name=name, **{**defaults, **overrides})
+
+
+#: The agent block a test that wants agents on needs, naming the provider and model the LLM
+#: fixtures register. Small bounds, so a test that means to hit one does not have to loop eight
+#: times to get there.
+AGENT_SETTINGS = {
+    "enabled": True,
+    "provider": "Test Provider",
+    "model": "test-model",
+    "max_iterations": 3,
+    "max_tool_calls": 4,
+}
+
+
+def agent_settings(**overrides):
+    """A PLUGINS_CONFIG override with the agent switched on and these keys changed."""
+    return app_settings(agent={**AGENT_SETTINGS, **overrides})
+
+
+class FakeAgentComplete:  # pylint: disable=too-few-public-methods
+    """The `complete` seam of `services.agent`: a scripted sequence of model turns.
+
+    Each entry is either a string, which becomes a plain answer that ends the run, or a list of
+    fake tool calls, which becomes a turn that asks for them. The last entry repeats, so a test
+    that wants a bound reached does not have to script every iteration.
+
+    Answers through the real `services.llm.complete` with a fake client, which keeps rule L1 honest
+    in these tests: every turn leaves a real usage record behind, exactly as it would in production.
+    """
+
+    def __init__(self, *turns):
+        """Answer the run's turns with these, in order."""
+        self.turns = list(turns) or ["Nothing to report."]
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        """Record the call, then answer through the real service."""
+        self.calls.append(kwargs)
+        turn = self.turns[min(len(self.calls) - 1, len(self.turns) - 1)]
+        if isinstance(turn, str):
+            response = FakeLLMResponse(turn)
+        else:
+            response = FakeLLMResponse(None, tool_calls=turn)
+        return llm_service.complete(**kwargs, client=FakeLLMClient(response))
+
+    @property
+    def offered_tools(self):
+        """The tool names offered on the most recent call, which is what rule M4 is visible as."""
+        tools = self.calls[-1].get("tools") or []
+        return [definition["function"]["name"] for definition in tools]
+
+
+class FakeToolCaller:  # pylint: disable=too-few-public-methods
+    """The `call_tool` seam of `services.agent`: records the calls, writes a plausible outcome.
+
+    Writes the row the way `services.mcp.call_tool` does, because the agent reads it back: a test
+    that faked the call without recording it would be testing a loop that never sees a result.
+    """
+
+    def __init__(self, text="all good", *, error=None):
+        """Answer every call with this text, or refuse every call with this error."""
+        self.text = text
+        self.error = error
+        self.calls = []
+
+    def __call__(self, *, tool_call, timeout=None, max_result_chars=None):
+        """Record the call, write the row, then answer or refuse.
+
+        Written with `update()` rather than by assigning the fields, because the status-assignment
+        guard forbids `<something>.status = ...` outside the service layer - and it is right to:
+        the one place that may write a call's outcome is `services.mcp`, and a fixture is not it.
+        """
+        from nautobot_event_tracker.choices import (  # pylint: disable=import-outside-toplevel
+            AgentToolCallStatusChoices,
+        )
+        from nautobot_event_tracker.models import AgentToolCall  # pylint: disable=import-outside-toplevel
+
+        self.calls.append({"tool_call": tool_call, "timeout": timeout, "max_result_chars": max_result_chars})
+        rows = AgentToolCall.objects.filter(pk=tool_call.pk)
+        if self.error is not None:
+            rows.update(status=AgentToolCallStatusChoices.FAILED, error=str(self.error))
+            tool_call.refresh_from_db()
+            raise self.error
+        rows.update(
+            status=AgentToolCallStatusChoices.EXECUTED,
+            result={"is_error": False, "text": self.text},
+        )
+        tool_call.refresh_from_db()
+        return tool_call
+
+
+class FakeCallToolResult:  # pylint: disable=too-few-public-methods
+    """What the MCP SDK hands back from `call_tool`, as far as `services.mcp` reads it."""
+
+    def __init__(self, text="ok", *, is_error=False, structured_content=None):
+        """One text block, optionally an error and optionally structured content."""
+        self.content = [SimpleNamespace(type="text", text=text)] if text is not None else []
+        self.is_error = is_error
+        self.structured_content = structured_content
+
+
+class FakeMCPCaller:  # pylint: disable=too-few-public-methods
+    """The `client` seam of `services.mcp.call_tool`: records connections, returns canned results."""
+
+    def __init__(self, result=None, *, error=None):
+        """Answer every call with this result, or raise this error."""
+        self.result = result if result is not None else FakeCallToolResult()
+        self.error = error
+        self.calls = []
+
+    def call_tool(self, connection, name, arguments):
+        """Record what would have gone over the wire, then answer or refuse."""
+        self.calls.append({"connection": connection, "name": name, "arguments": arguments})
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def create_agentrun(ticket=None, **overrides):
+    """One agent run, written directly because a test needs a run without a model behind it.
+
+    The guards forbid this everywhere but here and the model tests, for the reason every other
+    record model has the same exemption: a fixture that goes through the service would need a model
+    call to produce a row.
+    """
+    from nautobot_event_tracker.models import AgentRun  # pylint: disable=import-outside-toplevel
+
+    if ticket is None:
+        ticket = create_ticket()
+    run = AgentRun(ticket=ticket, **overrides)
+    run.validated_save()
+    return run
+
+
+def create_agenttoolcall(run=None, tool=None, **overrides):
+    """One tool call on a run, in `proposed` unless a test says otherwise.
+
+    The binding is recorded by default, because `services.agent` records it on every call it
+    writes: a row without one is a row that could not be executed, so a fixture that left it empty
+    would be building a state production never produces. Pass `tool_fingerprint` explicitly to
+    test a mismatch.
+    """
+    from nautobot_event_tracker.models import AgentToolCall  # pylint: disable=import-outside-toplevel
+    from nautobot_event_tracker.services import mcp as mcp_service  # pylint: disable=import-outside-toplevel
+
+    if run is None:
+        run = create_agentrun()
+    if tool is None:
+        tool = create_mcptool()
+    overrides.setdefault("tool_fingerprint", mcp_service.call_binding(tool))
+    call = AgentToolCall(run=run, tool=tool, **overrides)
+    call.validated_save()
+    return call
 
 
 class RefusalAssertions:  # pylint: disable=too-few-public-methods

@@ -11,12 +11,21 @@ from nautobot.apps.testing import APITestCase, APIViewTestCases
 from nautobot.extras.models import CustomField
 
 from nautobot_event_tracker.choices import (
+    AgentRunStatusChoices,
+    AgentToolCallStatusChoices,
     LLMProviderTypeChoices,
     SeverityChoices,
     TicketStatusChoices,
     UpdateTypeChoices,
 )
-from nautobot_event_tracker.models import EventTicket, EventType, LLMModel, LLMProvider, MCPServer, MCPTool
+from nautobot_event_tracker.models import (
+    EventTicket,
+    EventType,
+    LLMModel,
+    LLMProvider,
+    MCPServer,
+    MCPTool,
+)
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -593,3 +602,143 @@ class MCPToolAPITest(APIViewTestCases.APIViewTestCase):
         tool = MCPTool.objects.get(name="sneaky_tool")
         self.assertFalse(tool.enabled)
         self.assertTrue(tool.mutating)
+
+
+class AgentRunAPITest(APITestCase):
+    """The agent-runs endpoint is read-only: a run is what the service did, not a client's to edit."""
+
+    def setUp(self):
+        """One run to read."""
+        super().setUp()
+        self.run = fixtures.create_agentrun()
+        self.list_url = reverse("plugins-api:nautobot_event_tracker-api:agentrun-list")
+        self.detail_url = reverse("plugins-api:nautobot_event_tracker-api:agentrun-detail", args=[self.run.pk])
+
+    def test_list_is_readable(self):
+        """Reading what an agent did works, and is the point of the endpoint."""
+        self.add_permissions("nautobot_event_tracker.view_agentrun")
+
+        response = self.client.get(self.list_url, **self.header)
+
+        self.assertHttpStatus(response, 200)
+        self.assertEqual(response.data["count"], 1)
+
+    def test_the_transcript_is_exposed(self):
+        """A7 - the record is readable by whatever a person is using to read it."""
+        self.add_permissions("nautobot_event_tracker.view_agentrun")
+
+        response = self.client.get(self.detail_url, **self.header)
+
+        self.assertIn("transcript", response.data)
+
+    def test_writes_are_rejected(self):
+        """405 whatever the permissions say, as for TicketUpdate and the usage records."""
+        self.add_permissions(
+            "nautobot_event_tracker.add_agentrun",
+            "nautobot_event_tracker.change_agentrun",
+            "nautobot_event_tracker.delete_agentrun",
+        )
+
+        self.assertHttpStatus(self.client.post(self.list_url, {}, format="json", **self.header), 405)
+        self.assertHttpStatus(
+            self.client.patch(self.detail_url, {"status": "completed"}, format="json", **self.header), 405
+        )
+        self.assertHttpStatus(self.client.delete(self.detail_url, **self.header), 405)
+
+
+class AgentToolCallAPITest(APITestCase):
+    """The two decisions, and everything else about a call being read-only."""
+
+    def setUp(self):
+        """A run waiting on one proposal."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.ticket = fixtures.create_ticket()
+        self.run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, arguments={"device": "leaf-01"})
+        self.list_url = reverse("plugins-api:nautobot_event_tracker-api:agenttoolcall-list")
+        self.detail_url = reverse("plugins-api:nautobot_event_tracker-api:agenttoolcall-detail", args=[self.call.pk])
+
+    @property
+    def approve_url(self):
+        """The approve action's URL for this call."""
+        return f"{self.detail_url}approve/"
+
+    @property
+    def deny_url(self):
+        """The deny action's URL for this call."""
+        return f"{self.detail_url}deny/"
+
+    def test_the_status_cannot_be_patched(self):
+        """A PATCH that set `status` to `approved` would be the gate not existing."""
+        self.add_permissions("nautobot_event_tracker.change_agenttoolcall")
+
+        response = self.client.patch(self.detail_url, {"status": "approved"}, format="json", **self.header)
+
+        self.assertHttpStatus(response, 405)
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.PROPOSED)
+
+    def test_there_is_no_create_route(self):
+        """A call is asked for by a model, and offered to a person. It is not posted."""
+        self.add_permissions("nautobot_event_tracker.add_agenttoolcall")
+
+        response = self.client.post(self.list_url, {}, format="json", **self.header)
+
+        self.assertHttpStatus(response, 405)
+
+    def test_approving_needs_the_approval_permission(self):
+        """`change` does not imply it, and neither does `view` (7.3)."""
+        self.add_permissions("nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.change_agenttoolcall")
+
+        response = self.client.post(self.approve_url, {}, format="json", **self.header)
+
+        self.assertHttpStatus(response, 403)
+
+    def test_approving_records_the_decision(self):
+        """The endpoint the UI's button has a twin of."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.approve_agenttoolcall"
+        )
+
+        response = self.client.post(self.approve_url, {}, format="json", **self.header)
+
+        self.assertHttpStatus(response, 200)
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.APPROVED)
+        self.assertEqual(self.call.decided_by, self.user)
+
+    def test_denying_ends_the_run(self):
+        """13.8, over REST as in the UI."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.approve_agenttoolcall"
+        )
+
+        response = self.client.post(self.deny_url, {}, format="json", **self.header)
+
+        self.assertHttpStatus(response, 200)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.status, AgentRunStatusChoices.DENIED)
+
+    def test_deciding_twice_is_a_conflict(self):
+        """A well-formed request the row's state does not permit: 409, like a bad transition."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.approve_agenttoolcall"
+        )
+        self.client.post(self.approve_url, {}, format="json", **self.header)
+
+        response = self.client.post(self.deny_url, {}, format="json", **self.header)
+
+        self.assertHttpStatus(response, 409)
+
+    def test_the_decision_appears_on_the_ticket_s_trail(self):
+        """The gate is auditable wherever the decision was made."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.approve_agenttoolcall"
+        )
+
+        self.client.post(self.approve_url, {}, format="json", **self.header)
+
+        entry = self.ticket.updates.filter(update_type=UpdateTypeChoices.TOOL_DECIDED).get()
+        self.assertEqual(entry.user, self.user)

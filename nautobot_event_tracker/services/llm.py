@@ -21,9 +21,10 @@ Rules implemented here, referenced by number from the Phase 3 spec:
   record: rule L1 covers calls, and a refused call never left the process.
 """
 
+import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from django.conf import settings as django_settings
@@ -34,7 +35,11 @@ from nautobot.apps.choices import SecretsGroupSecretTypeChoices
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.utils import deepmerge
 
-from nautobot_event_tracker.choices import LITELLM_PROVIDER_PREFIXES, LLMProviderTypeChoices
+from nautobot_event_tracker.choices import (
+    LITELLM_PROVIDER_PREFIXES,
+    PROVIDER_TYPES_REQUIRING_A_URL,
+    LLMProviderTypeChoices,
+)
 from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
 from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
@@ -55,6 +60,11 @@ DEFAULT_TIMEOUT_SECONDS = 30
 #: and why a call failed, not to archive a stack trace.
 ERROR_TEXT_CAP = 1000
 
+#: Sent as the API key to an OpenAI-compatible endpoint whose integration configures no secret.
+#: Deliberately not key-shaped: it is meant to be obvious in a log or a traceback that nobody
+#: configured a credential, rather than to look like one that failed.
+NO_CREDENTIAL_PLACEHOLDER = "not-required"
+
 TOKENS_PER_MILLION = 1_000_000
 
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
@@ -70,8 +80,23 @@ MAX_PRUNE_FAILURES = 3
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """One tool the model asked to call, read out of a provider-shaped response.
+
+    `arguments` is a dictionary because the caller needs one; the provider sends a JSON string,
+    and a string that will not parse is a failed response rather than a call anybody makes
+    (section 8). `identifier` is the provider's own id for the call, which the next request has to
+    echo back on the result, so it is carried rather than regenerated.
+    """
+
+    identifier: str
+    name: str
+    arguments: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class LLMResponse:
-    """What a successful call returns: the text, and the accounting row that priced it.
+    """What a successful call returns: the text, the tool calls, and the row that priced it.
 
     The numbers live on the record alone; the properties are conveniences, not copies, so a new
     accounting field is added in one place.
@@ -79,6 +104,9 @@ class LLMResponse:
 
     text: str
     record: LLMUsageRecord
+    #: The tools the model asked for, in the order it asked. Empty for a plain completion, and
+    #: empty for every call made without `tools`.
+    tool_calls: tuple = ()
 
     @property
     def prompt_tokens(self):
@@ -162,6 +190,8 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     max_tokens=None,
     timeout=None,
     response_format=None,
+    tools=None,
+    tool_choice=None,
     client=None,
 ):
     """One model call: refuse (L8), resolve credentials (L3), call (L6), record (L1), price (L5).
@@ -170,6 +200,11 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     litellm-shaped response object. The default is litellm itself, resolved before anything is
     attempted so that a missing package is a plain `ImproperlyConfigured` - a deployment fault,
     not a failed call, and not on the record (section 5.2 of the spec).
+
+    `tools` is a list of OpenAI-shaped tool definitions, which litellm translates per provider.
+    The app builds them from `MCPTool.input_schema` and never from anything a model said (Phase 4B
+    section 8). A call that asked for tools and one that did not are priced identically: L1 through
+    L8 are untouched by this argument.
 
     Returns an `LLMResponse`. Raises `LLMConfigurationError` before any network traffic,
     `LLMCallError` when the call fails, and `LLMResponseError` when what came back is unusable -
@@ -208,6 +243,10 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         call_kwargs["max_tokens"] = effective_max_tokens
     if response_format is not None:
         call_kwargs["response_format"] = response_format
+    if tools:
+        call_kwargs["tools"] = tools
+        if tool_choice is not None:
+            call_kwargs["tool_choice"] = tool_choice
 
     # Resolved before the try, like the client above: a routing fault is a refusal, and inside
     # the block it would be recorded and re-raised as a failed call it never became.
@@ -232,6 +271,15 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     latency_ms = _elapsed_ms(started)
     prompt_tokens, completion_tokens = _token_usage(raw)
     text = _response_text(raw)
+    tool_calls, tool_call_problem = _response_tool_calls(raw)
+
+    # A model that asked for a tool sends no message content, and that is a complete answer rather
+    # than an empty one. The "nothing came back" error therefore fires only when neither half is
+    # there - and an unparsable set of arguments is its own fault, reported as itself, because
+    # "the model returned no content" would send an operator looking in the wrong place.
+    problem = tool_call_problem
+    if problem is None and text is None and not tool_calls:
+        problem = "The response carried no message content."
 
     record = _record_usage(
         model=model,
@@ -242,12 +290,12 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         completion_tokens=completion_tokens,
         cost=_cost(model, prompt_tokens, completion_tokens),
         request_id=str(getattr(raw, "id", "") or ""),
-        error=None if text is not None else "The response carried no message content.",
+        error=problem,
     )
-    if text is None:
-        raise LLMResponseError(f"LLM call to {model} returned no usable content.", record=record)
+    if problem is not None:
+        raise LLMResponseError(f"LLM call to {model} returned no usable content: {problem}", record=record)
 
-    return LLMResponse(text=text, record=record)
+    return LLMResponse(text=text or "", record=record, tool_calls=tool_calls)
 
 
 def link_usage_records(record_ids, ticket):
@@ -289,16 +337,21 @@ def _model_string(model):
 def _connection_kwargs(provider):
     """L3 - everything the ExternalIntegration says about this connection, read at call time.
 
-    The endpoint and the key, and also the three fields an operator sets expecting them to be
-    obeyed: SSL Verification, CA File Path and Headers. Reading `remote_url` raw was wrong twice
-    over - Jinja2 templating is supported on it, so a templated URL reached litellm as a literal
-    `{{ ... }}`, and an operator pointing triage at an internal endpoint with a private CA got a
-    TLS failure with nothing in the UI explaining it.
+    The endpoint, the key and the Headers. Reading `remote_url` raw was wrong twice over - Jinja2
+    templating is supported on it, so a templated URL reached litellm as a literal `{{ ... }}`,
+    and a templated endpoint went nowhere.
+
+    Not the TLS fields: litellm takes no per-call TLS argument, and `_warn_about_unappliable_tls`
+    explains what happens instead.
 
     A missing key is not an error here: an on-premises endpoint may not want one, and one that
     does will refuse the call itself, which the record then shows. Prefers the token secret type
     and falls back to the plain secret type, so either way an operator has modeled "the key"
-    works.
+    works. An OpenAI-compatible provider with no secret configured gets a placeholder rather than
+    nothing, because litellm's OpenAI client refuses to make the call at all without one - see
+    `NO_CREDENTIAL_PLACEHOLDER`. An Ollama provider needs no such workaround, since its litellm
+    path builds no OpenAI client; a token still reaches it when one is configured, for an Ollama
+    behind an authenticating proxy.
 
     `extra_config` is deliberately not passed. It is untyped operator JSON, and splatting it into
     the call would reopen, one door along, exactly the hole `ALLOWED_PARAMETERS` closed. If a
@@ -310,13 +363,15 @@ def _connection_kwargs(provider):
     remote_url = _rendered(integration, "render_remote_url", provider)
     if remote_url:
         kwargs["api_base"] = remote_url
-    elif provider.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE:
+    elif provider.provider_type in PROVIDER_TYPES_REQUIRING_A_URL:
         # `clean()` demands this URL at save time, but a shared integration can be blanked
         # afterwards without revalidating the providers pointing at it. Refusing here matters
-        # more than tidiness: with no api_base, litellm's `openai/` prefix would send this
-        # deployment's key and its event payload to api.openai.com.
+        # more than tidiness, and differently per type: with no api_base, litellm's `openai/`
+        # prefix would send this deployment's key and its event payload to api.openai.com, and its
+        # `ollama/` prefix would quietly try a loopback address that means nothing in a container.
         raise LLMConfigurationError(
-            f"LLM provider '{provider}' is OpenAI-compatible but its external integration has no remote URL."
+            f"LLM provider '{provider}' is '{provider.get_provider_type_display()}' but its "
+            "external integration has no remote URL."
         )
 
     for secret_type in (SecretsGroupSecretTypeChoices.TYPE_TOKEN, SecretsGroupSecretTypeChoices.TYPE_SECRET):
@@ -324,20 +379,81 @@ def _connection_kwargs(provider):
         if key:
             kwargs["api_key"] = key
             break
+    else:
+        if integration.secrets_group_id is not None:
+            # A group is configured and neither secret type resolved: either it holds no token or
+            # secret at all, which is fine and common for a shared group, or the one it holds is
+            # broken. Not raised, because the first case is legitimate and refusing it would break
+            # working deployments - but said, because the second case otherwise ends as a silent
+            # downgrade to no authentication against an endpoint that does not check.
+            logger.warning(
+                "LLM provider %s has secrets group '%s' but no token or secret resolved from it; "
+                "calling without a credential.",
+                provider,
+                integration.secrets_group,
+            )
+        if provider.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE:
+            # ADR 0006 makes an unauthenticated on-premises endpoint a first-class case, and this
+            # is what it takes to actually be one: litellm builds an OpenAI client for the
+            # `openai/` prefix, and that client raises "Missing credentials" locally, before any
+            # request is made, when it has no key. So "no key" has to be spelled as a value.
+            # Only for this provider type - a real OpenAI or Anthropic endpoint with no key
+            # configured should fail with the provider's own message, on the record, rather than
+            # with a placeholder this app invented.
+            kwargs["api_key"] = NO_CREDENTIAL_PLACEHOLDER
 
     headers = _rendered(integration, "render_headers", provider)
     if headers:
         kwargs["extra_headers"] = headers
 
-    # httpx reads `verify` as a bool or as the path to a CA bundle, and litellm passes `ssl_verify`
-    # through to it. Unticking *Verify SSL* wins over a CA path: an operator who has done both has
-    # said not to verify, and quietly verifying anyway is the failure this fix exists to stop.
-    if not integration.verify_ssl:
-        kwargs["ssl_verify"] = False
-    elif integration.ca_file_path:
-        kwargs["ssl_verify"] = integration.ca_file_path
+    _warn_about_unappliable_tls(provider, integration)
 
     return kwargs
+
+
+def _warn_about_unappliable_tls(provider, integration):
+    """Say so when an integration asks for TLS settings litellm cannot be given per call.
+
+    This used to pass `ssl_verify` as a call keyword, which litellm does not accept: it swept the
+    key into `extra_body` and sent it to the provider in the request JSON. So unticking *Verify
+    SSL* did not disable verification, a *CA File Path* was never loaded, and an unexpected field
+    went out with every request. The setting looked applied and was not.
+
+    litellm resolves TLS from the `SSL_VERIFY` and `SSL_CERT_FILE` environment variables or from
+    its own `litellm.ssl_verify` module global, and from nothing per call. Writing that global
+    around each call is the obvious repair and the wrong one: a Celery worker runs calls for
+    several providers at once in threads, so one provider with verification off would switch it
+    off for another provider's call in flight. Quietly not applying a setting is bad; silently
+    disabling verification on somebody else's connection is worse.
+
+    A review proposed a third way - litellm's `completion(client=...)` - and it is not open to us.
+    That parameter takes a constructed `openai.OpenAI`, which means importing a provider SDK: the
+    thing ADR 0006 exists to prevent and a guard asserts against. It would also cover only the
+    openai-family providers, so it would not be the general answer it looks like. Checked against
+    the installed litellm rather than assumed: `_get_sync_http_client()` builds the client from
+    `get_ssl_configuration()`, which reads the process-wide values and nothing else.
+
+    So the app applies neither and says which ones it skipped. `services/mcp.py` has no such
+    problem and does honour both: it builds the HTTP client itself, per call.
+    """
+    unappliable = []
+    if not integration.verify_ssl:
+        unappliable.append("Verify SSL (unticked)")
+    if integration.ca_file_path:
+        unappliable.append(f"CA File Path ({integration.ca_file_path})")
+    if not unappliable:
+        return
+
+    logger.warning(
+        "External integration '%s' for LLM provider %s sets %s, which litellm cannot be given per "
+        "call - it reads TLS settings process-wide. They are NOT being applied. For a private CA, "
+        "set SSL_CERT_FILE in the environment of every process that calls a model. There is no "
+        "recommended way to disable verification for one provider: doing it in the environment "
+        "disables it for every provider in that process.",
+        integration,
+        provider,
+        " and ".join(unappliable),
+    )
 
 
 def _integration_timeout(provider):
@@ -371,8 +487,14 @@ def _litellm_completion():
     try:
         import litellm  # pylint: disable=import-outside-toplevel
     except ImportError as error:
+        # The cause is in the message, not only chained onto the exception. "litellm is not
+        # installed" is one explanation of an ImportError and not the only one: a release that is
+        # installed and broken - 1.98.0 imported `typing.NotRequired` on Python 3.10 - reads
+        # identically, and this line is what an operator or a CI log actually shows.
         raise ImproperlyConfigured(
-            "litellm is not installed. Install the app with the 'llm' extra: nautobot-event-tracker[llm]."
+            "litellm could not be imported, so no model can be called: "
+            f"{type(error).__name__}: {error}. "
+            "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
     return litellm.completion
 
@@ -402,6 +524,51 @@ def _response_text(raw):
     if content is None:
         return None
     return str(content)
+
+
+def _response_tool_calls(raw):
+    """The tools the model asked for, and the reason the answer is unusable when it is.
+
+    Returns `(tool_calls, problem)` rather than raising: the caller has to write the usage record
+    before anything is raised (L1), and returning the fault lets it do that once for both halves
+    of an unusable answer.
+
+    Defensive throughout, because this is the shape a provider is most likely to differ on: a
+    missing field reads as "no tool calls", which is a plain completion and always safe. The one
+    thing that is not waved through is arguments that will not parse - a tool call the app cannot
+    read is not a tool call it should guess at, and section 8 says it raises.
+    """
+    choices = getattr(raw, "choices", None)
+    if not choices:
+        return (), None
+    message = getattr(choices[0], "message", None)
+    raw_calls = getattr(message, "tool_calls", None) or []
+
+    calls = []
+    for raw_call in raw_calls:
+        function = getattr(raw_call, "function", None)
+        name = str(getattr(function, "name", "") or "")
+        if not name:
+            return (), "A tool call arrived with no tool name."
+
+        raw_arguments = getattr(function, "arguments", None)
+        if raw_arguments is None or raw_arguments == "":
+            # An argument-less tool is ordinary, and providers spell "none" as an empty string, a
+            # missing field or "{}" depending on the day.
+            arguments = {}
+        elif isinstance(raw_arguments, dict):
+            arguments = raw_arguments
+        else:
+            try:
+                arguments = json.loads(raw_arguments)
+            except (TypeError, ValueError):
+                return (), f"The arguments for '{name}' are not valid JSON."
+            if not isinstance(arguments, dict):
+                return (), f"The arguments for '{name}' are not a JSON object."
+
+        calls.append(ToolCall(identifier=str(getattr(raw_call, "id", "") or ""), name=name, arguments=arguments))
+
+    return tuple(calls), None
 
 
 def _record_usage(  # pylint: disable=too-many-arguments

@@ -452,3 +452,70 @@ class MCPGuardTest(SimpleTestCase):
             )
             self.assertIn(package, poetry["extras"].get("mcp", ()), f"the 'mcp' extra must install {package}")
             self.assertIn(package, poetry["extras"].get("all", ()), f"the 'all' extra must include {package}")
+
+
+class AgentGuardTest(SimpleTestCase):
+    """Phase 4B section 10: the agent's rules, asserted rather than trusted.
+
+    The MCP guards are next door and already cover the two ADR 0007 halves - one client library,
+    and no way to start a process. These are the three this phase adds.
+    """
+
+    #: The fixtures build runs and calls directly, because a fixture that went through the service
+    #: would need a model call to produce a row; the model suite constructs them to exercise the
+    #: model itself. The same exemption `TicketUpdate` and `LLMUsageRecord` have, for the same
+    #: reason.
+    ALLOWED = {"tests/fixtures.py", "tests/test_models.py"}
+
+    def _paths(self):
+        """Every app module outside `services/`, minus the two exempt test modules."""
+        return [
+            path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in self.ALLOWED
+        ]
+
+    def test_agent_records_are_written_only_by_the_service_layer(self):
+        """A run and a tool call are records of what a service did, like every other row of the kind."""
+        offenders = list(_manager_call_offenders(self._paths(), {"AgentRun", "AgentToolCall"}))
+        offenders += list(_constructor_call_offenders(self._paths(), {"AgentRun", "AgentToolCall"}))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "AgentRun and AgentToolCall rows must only be written under services/. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_agent_service_writes_no_ticket_update_directly(self):
+        """The sole-writer guard exempts everything under services/, so this names the module.
+
+        The gate's three trail entries belong in `services/tickets.py` with every other one: they
+        are `TicketUpdate` rows, and ADR 0001 is about who writes those, not about which package
+        the caller happens to live in.
+        """
+        agent = SERVICES_DIR / "agent.py"
+        offenders = list(_manager_call_offenders([agent], {"TicketUpdate"}))
+        offenders += list(_constructor_call_offenders([agent], {"TicketUpdate"}))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "services/agent.py must write the ticket trail through services/tickets.py. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_agent_service_imports_no_language_model_or_mcp_client(self):
+        """A5's sibling at the import level: the agent reaches both through their services.
+
+        Covered by the two one-import-site guards already, and asserted here as well because this
+        is the module that would most plausibly reach for either directly - it is the one that
+        wants a model and a tool in the same function.
+        """
+        forbidden = IngestionGuardTest.PROVIDER_SDKS + (IngestionGuardTest.LLM_LIBRARY,) + MCPGuardTest.MCP_LIBRARIES
+        offenders = list(_import_offenders([SERVICES_DIR / "agent.py"], forbidden))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "services/agent.py reaches a model through services/llm.py and a tool through "
+            "services/mcp.py. Offending lines: " + ", ".join(offenders),
+        )

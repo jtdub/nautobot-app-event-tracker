@@ -61,3 +61,24 @@ class MCPConfigurationError(MCPError):
 
 class MCPCallError(MCPError):
     """The call was attempted and did not come back usable."""
+
+
+class AgentError(Exception):
+    """Base class for every error the agent service raises.
+
+    A family of its own for the same reason `MCPError` is one: the Job, the UI and the REST layer
+    all have to tell "this deployment is not set up for agents" apart from "this ticket already has
+    one running", and neither is an LLM fault or a tool fault.
+    """
+
+
+class AgentConfigurationError(AgentError):
+    """Agents are switched off, or configured in a way that cannot work."""
+
+
+class AgentBusyError(AgentError):
+    """This ticket already has a live run, or one waiting on a person (rule A9)."""
+
+
+class AgentDecisionError(AgentError):
+    """The approval decision cannot be made: no user, or the call was decided already (7.3)."""

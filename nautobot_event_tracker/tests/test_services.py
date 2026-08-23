@@ -815,3 +815,114 @@ class JoinTicketTest(TestCase):
         self.assertEqual(again.pk, keyed.pk)
         self.assertEqual(again.event_count, 2)
         self.assertFalse(again.was_created)
+
+
+class ToolTrailTest(TestCase):
+    """The approval gate's three trail entries, which live here for the ADR 0001 reason."""
+
+    def setUp(self):
+        """A ticket, a proposed call on it, and the person who will decide."""
+        self.user = fixtures.create_user()
+        self.ticket = fixtures.create_ticket(user=self.user)
+        self.run = fixtures.create_agentrun(ticket=self.ticket)
+        self.tool = fixtures.create_mcptool(name="push_config", mutating=True)
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, arguments={"device": "leaf-01", "config": "shutdown"}
+        )
+
+    def test_a_proposal_names_the_server_the_tool_and_the_arguments(self):
+        """7.1 - an approver reads what will be sent, not a summary of it."""
+        update = ticket_service.record_tool_proposal(ticket=self.ticket, tool_call=self.call)
+
+        self.assertEqual(update.update_type, UpdateTypeChoices.TOOL_PROPOSED)
+        self.assertIn("push_config", update.message)
+        self.assertIn(self.tool.server.name, update.message)
+        self.assertIn("leaf-01", update.message)
+        self.assertIn("shutdown", update.message)
+
+    def test_a_proposal_is_an_ai_action_with_no_user(self):
+        """A4 - S4 is not relaxed for agents."""
+        update = ticket_service.record_tool_proposal(ticket=self.ticket, tool_call=self.call)
+
+        self.assertEqual(update.source, TicketSourceChoices.AI)
+        self.assertIsNone(update.user)
+
+    def test_a_proposal_on_a_resolved_ticket_is_refused(self):
+        """S3 - an AI actor may not touch a finished ticket, whatever it wanted to do."""
+        ticket = fixtures.create_ticket_in_status(TicketStatusChoices.RESOLVED, user=self.user)
+        call = fixtures.create_agenttoolcall(run=fixtures.create_agentrun(ticket=ticket), tool=self.tool)
+
+        with self.assertRaises(TicketImmutableError):
+            ticket_service.record_tool_proposal(ticket=ticket, tool_call=call)
+
+    def test_a_decision_records_the_person_who_made_it(self):
+        """7.2 - who allowed this is the question the trail exists to answer."""
+        update = ticket_service.record_tool_decision(
+            ticket=self.ticket, tool_call=self.call, approved=True, user=self.user
+        )
+
+        self.assertEqual(update.update_type, UpdateTypeChoices.TOOL_DECIDED)
+        self.assertEqual(update.source, TicketSourceChoices.HUMAN)
+        self.assertEqual(update.user, self.user)
+        self.assertIn("approved", update.message)
+
+    def test_a_denial_says_so(self):
+        """The same entry, the other verb. Both are worth reading later."""
+        update = ticket_service.record_tool_decision(
+            ticket=self.ticket, tool_call=self.call, approved=False, user=self.user
+        )
+
+        self.assertIn("denied", update.message)
+
+    def test_a_decision_without_a_user_is_refused(self):
+        """S4 is the mechanism: an AI cannot approve its own proposal."""
+        with self.assertRaises(InvalidActorError):
+            ticket_service.record_tool_decision(ticket=self.ticket, tool_call=self.call, approved=True, user=None)
+
+    def test_a_result_says_what_the_call_did(self):
+        """7.4 - a failed call against the network is as much of an answer as a successful one."""
+        self.call.result = {"text": "config applied"}
+        self.call.validated_save()
+
+        update = ticket_service.record_tool_result(ticket=self.ticket, tool_call=self.call)
+
+        self.assertEqual(update.update_type, UpdateTypeChoices.TOOL_EXECUTED)
+        self.assertIn("push_config", update.message)
+        self.assertIn("config applied", update.message)
+
+    def test_a_failed_result_says_why(self):
+        """The error wins over the result text, because it is what went wrong."""
+        self.call.error = "the device refused"
+        self.call.validated_save()
+
+        update = ticket_service.record_tool_result(ticket=self.ticket, tool_call=self.call)
+
+        self.assertIn("the device refused", update.message)
+
+    def test_an_enormous_result_is_capped_on_the_trail(self):
+        """The full answer is on the call row; the trail entry says that it happened."""
+        self.call.result = {"text": "x" * 5000}
+        self.call.validated_save()
+
+        update = ticket_service.record_tool_result(ticket=self.ticket, tool_call=self.call)
+
+        self.assertIn("…(truncated)", update.message)
+        self.assertLess(len(update.message), 1000)
+
+    def test_enormous_arguments_are_capped_on_the_trail(self):
+        """Arguments arrive from a model, and a trail entry is not a place for an essay."""
+        call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, arguments={"blob": "y" * 5000})
+
+        update = ticket_service.record_tool_proposal(ticket=self.ticket, tool_call=call)
+
+        self.assertIn("…(truncated)", update.message)
+
+    def test_each_entry_is_exactly_one_row(self):
+        """S1 - one mutation, one TicketUpdate, for these three as for every other."""
+        before = self.ticket.updates.count()
+
+        ticket_service.record_tool_proposal(ticket=self.ticket, tool_call=self.call)
+        ticket_service.record_tool_decision(ticket=self.ticket, tool_call=self.call, approved=True, user=self.user)
+        ticket_service.record_tool_result(ticket=self.ticket, tool_call=self.call)
+
+        self.assertEqual(self.ticket.updates.count(), before + 3)

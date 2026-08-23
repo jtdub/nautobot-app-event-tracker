@@ -23,6 +23,8 @@ from nautobot_event_tracker import filters
 from nautobot_event_tracker.api import serializers
 from nautobot_event_tracker.choices import TicketSourceChoices
 from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
     EventTicket,
     EventType,
     IngestionStats,
@@ -33,8 +35,12 @@ from nautobot_event_tracker.models import (
     MCPTool,
     TicketUpdate,
 )
+from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import (
+    AgentBusyError,
+    AgentDecisionError,
+    AgentError,
     InvalidActorError,
     InvalidTransitionError,
     TicketImmutableError,
@@ -56,9 +62,9 @@ def _reporting_service_errors():
     """
     try:
         yield
-    except (InvalidTransitionError, TicketImmutableError) as error:
+    except (InvalidTransitionError, TicketImmutableError, AgentBusyError, AgentDecisionError) as error:
         raise Conflict(str(error)) from error
-    except (InvalidActorError, DjangoValidationError) as error:
+    except (InvalidActorError, AgentError, DjangoValidationError) as error:
         raise ValidationError(getattr(error, "messages", [str(error)])) from error
 
 
@@ -385,3 +391,81 @@ class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ance
             serializers.TicketUpdateSerializer(update, context=self.get_serializer_context()).data,
             status=http_status.HTTP_201_CREATED,
         )
+
+
+class AgentRunViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
+    """AgentRun viewset. The rows are the agent service's record of what one run did."""
+
+    queryset = AgentRun.objects.select_related("ticket", "started_by", "job_result")
+    serializer_class = serializers.AgentRunSerializer
+    filterset_class = filters.AgentRunFilterSet
+
+
+class AgentToolCallPermissions(TokenPermissions):
+    """Permissions for the approve and deny actions.
+
+    `approve_agenttoolcall`, which `change_agenttoolcall` does not imply (7.3). The stock map wants
+    `add_` for any POST, because a POST normally creates something; these actions post to an
+    existing proposal to decide it.
+    """
+
+    perms_map = {
+        **TokenPermissions.perms_map,
+        "POST": ["%(app_label)s.approve_%(model_name)s"],
+    }
+
+
+class AgentToolCallViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
+    """AgentToolCall viewset: read-only, plus the two decisions.
+
+    POST is allowed only for the approve and deny routes. There is no create route on a read-only
+    viewset, so a POST to the list URL is still a 405, and no route anywhere writes `status`
+    directly - which is what makes the gate a gate rather than a field.
+    """
+
+    queryset = AgentToolCall.objects.select_related("run__ticket", "tool__server", "decided_by")
+    serializer_class = serializers.AgentToolCallSerializer
+    filterset_class = filters.AgentToolCallFilterSet
+    http_method_names = ["get", "head", "options", "post"]
+
+    def restrict_queryset(self, request, *args, **kwargs):
+        """Restrict by `view` for the decision actions rather than by the POST-derived `add`.
+
+        The stock implementation derives the object permission from the HTTP method, so a POST
+        would restrict the queryset to calls this user may *add* - which matches nothing, and the
+        action 404s on a proposal that plainly exists. The model-level check that matters is
+        `AgentToolCallPermissions` above, and DRF has already made it.
+        """
+        if self.action in ("approve", "deny") and request.user.is_authenticated:
+            self.queryset = self.queryset.restrict(request.user, "view")
+        else:
+            super().restrict_queryset(request, *args, **kwargs)
+
+    def get_permissions(self):
+        """The decision actions need the decision permission."""
+        if self.action in ("approve", "deny"):
+            return [AgentToolCallPermissions()]
+        return super().get_permissions()
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):  # pylint: disable=unused-argument
+        """Approve this proposal, exactly as it stands (7.3).
+
+        The resumption is not enqueued here. A REST client that approves a call is not necessarily
+        sitting in front of a page waiting for it, and running the agent is a Job with its own
+        endpoint and its own permission - so approving records the decision, and running the agent
+        runs the agent.
+        """
+        return self._decide(request, agent_service.approve_tool_call)
+
+    @action(detail=True, methods=["post"], url_path="deny")
+    def deny(self, request, pk=None):  # pylint: disable=unused-argument
+        """Deny this proposal, which ends the run (13.8)."""
+        return self._decide(request, agent_service.deny_tool_call)
+
+    def _decide(self, request, service_function):
+        """One decision, through the service, mapped onto its HTTP meaning."""
+        tool_call = self.get_object()
+        with _reporting_service_errors():
+            tool_call = service_function(tool_call=tool_call, user=request.user)
+        return Response(self.get_serializer(tool_call).data)
