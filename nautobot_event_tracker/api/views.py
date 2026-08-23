@@ -33,6 +33,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
     TicketUpdate,
 )
 from nautobot_event_tracker.services import agent as agent_service
@@ -469,3 +470,11 @@ class AgentToolCallViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
         with _reporting_service_errors():
             tool_call = service_function(tool_call=tool_call, user=request.user)
         return Response(self.get_serializer(tool_call).data)
+
+
+class TicketEmbeddingViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
+    """TicketEmbedding viewset. The rows are the retrieval corpus, written by services/rag.py."""
+
+    queryset = TicketEmbedding.objects.select_related("ticket", "model__provider")
+    serializer_class = serializers.TicketEmbeddingSerializer
+    filterset_class = filters.TicketEmbeddingFilterSet

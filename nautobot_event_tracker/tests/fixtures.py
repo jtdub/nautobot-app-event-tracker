@@ -25,6 +25,7 @@ from nautobot_event_tracker.choices import (
     LLMPurposeChoices,
     SeverityChoices,
     TicketSourceChoices,
+    TicketStatusChoices,
 )
 from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
 from nautobot_event_tracker.models import EventType, IngestionStats, LLMModel, LLMProvider
@@ -634,6 +635,97 @@ def create_agenttoolcall(run=None, tool=None, **overrides):
     call = AgentToolCall(run=run, tool=tool, **overrides)
     call.validated_save()
     return call
+
+
+#: The rag block a test that wants retrieval on needs, naming the embedding model below.
+RAG_SETTINGS = {"enabled": True, "provider": "Test Provider", "model": "test-embedding"}
+
+
+def rag_settings(**overrides):
+    """A PLUGINS_CONFIG override with retrieval switched on and these keys changed."""
+    return app_settings(rag={**RAG_SETTINGS, **overrides})
+
+
+def create_embedding_model(name="test-embedding", provider=None, **overrides):
+    """An LLMModel registered for embeddings rather than chat."""
+    from nautobot_event_tracker.choices import LLMModelKindChoices  # pylint: disable=C0415
+
+    overrides.setdefault("kind", LLMModelKindChoices.EMBEDDING)
+    return create_llmmodel(name=name, provider=provider, **overrides)
+
+
+class FakeEmbeddingResponse:  # pylint: disable=too-few-public-methods
+    """The shape `litellm.embedding` returns, as far as the service reads it."""
+
+    def __init__(self, vector=None, *, prompt_tokens=7, request_id="emb-1", usage=True):
+        """One embedding, in the `data[0]["embedding"]` shape litellm hands back."""
+        self.id = request_id
+        self.data = [{"embedding": list(vector)}] if vector is not None else []
+        self.usage = SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=0) if usage else None
+
+
+class FakeEmbeddingClient:  # pylint: disable=too-few-public-methods
+    """The `client` seam of `services.llm.embed()`: records calls, returns canned vectors."""
+
+    def __init__(self, vector=None, *, error=None):
+        """Answer every call with this vector, or raise this error."""
+        self.vector = [0.1, 0.2, 0.3] if vector is None else list(vector)
+        self.error = error
+        self.calls = []
+
+    def __call__(self, model_string, text, **kwargs):
+        """Record the call, then answer or refuse."""
+        self.calls.append({"model_string": model_string, "text": text, **kwargs})
+        if self.error is not None:
+            raise self.error
+        return FakeEmbeddingResponse(self.vector)
+
+
+class FakeEmbed:  # pylint: disable=too-few-public-methods
+    """The `embed` seam of `services.rag`: a canned vector, through the real service.
+
+    Routing through `services.llm.embed` keeps rule R8 honest in these tests: every indexing pass
+    leaves a real usage record behind, exactly as it would in production.
+    """
+
+    def __init__(self, vector=None, *, error=None):
+        """Answer every call with this vector, or fail every call with this error."""
+        self.vector = [1.0, 0.0, 0.0] if vector is None else list(vector)
+        self.error = error
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        """Record the call, then answer through the real service."""
+        self.calls.append(kwargs)
+        client = FakeEmbeddingClient(self.vector, error=self.error)
+        return llm_service.embed(**kwargs, client=client)
+
+
+def create_ticketembedding(ticket=None, model=None, vector=None, **overrides):
+    """One corpus row, written directly because a test needs one without a model behind it.
+
+    The guards forbid this everywhere but here and the model tests, for the reason every other
+    record model has the same exemption.
+    """
+    from nautobot_event_tracker.models import TicketEmbedding  # pylint: disable=C0415
+    from nautobot_event_tracker.services import rag as rag_service  # pylint: disable=C0415
+
+    if ticket is None:
+        ticket = create_ticket_in_status(TicketStatusChoices.CLOSED)
+    if model is None:
+        model = create_embedding_model()
+    values = list(vector) if vector is not None else [1.0, 0.0, 0.0]
+    document = overrides.pop("document", f"Title: {ticket.title}")
+    defaults = {
+        "embedding": values,
+        "document": document,
+        "model": model,
+        "dimensions": len(values),
+        "document_fingerprint": rag_service.document_fingerprint(document),
+    }
+    row = TicketEmbedding(ticket=ticket, **{**defaults, **overrides})
+    row.validated_save()
+    return row
 
 
 class RefusalAssertions:  # pylint: disable=too-few-public-methods

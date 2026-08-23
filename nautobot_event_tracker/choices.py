@@ -145,6 +145,25 @@ LITELLM_PROVIDER_PREFIXES = {
 PROVIDER_TYPES_REQUIRING_A_URL = frozenset({LLMProviderTypeChoices.OPENAI_COMPATIBLE, LLMProviderTypeChoices.OLLAMA})
 
 
+class LLMModelKindChoices(ChoiceSet):
+    """What a registered model is for.
+
+    An embedding model and a chat model are not interchangeable, and the mistake is not usually
+    calling the wrong endpoint - it is *configuring* triage with an embedding model and getting a
+    baffling error at three in the morning. The kind is the operator saying which it is, and
+    `services.llm` refuses a mismatch in both directions before any network traffic (rule L8's
+    posture, on a new axis).
+    """
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+
+    CHOICES = (
+        (CHAT, "Chat"),
+        (EMBEDDING, "Embedding"),
+    )
+
+
 class LLMPurposeChoices(ChoiceSet):
     """What an LLM call was for. Every LLMUsageRecord carries one.
 
@@ -154,10 +173,12 @@ class LLMPurposeChoices(ChoiceSet):
 
     TRIAGE = "triage"
     AGENT = "agent"
+    EMBEDDING = "embedding"
 
     CHOICES = (
         (TRIAGE, "Triage"),
         (AGENT, "Agent"),
+        (EMBEDDING, "Embedding"),
     )
 
 

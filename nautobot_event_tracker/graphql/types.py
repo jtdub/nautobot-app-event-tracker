@@ -15,9 +15,17 @@ from nautobot_event_tracker.filters import (
     AgentToolCallFilterSet,
     IngestionStatsFilterSet,
     LLMUsageRecordFilterSet,
+    TicketEmbeddingFilterSet,
     TicketUpdateFilterSet,
 )
-from nautobot_event_tracker.models import AgentRun, AgentToolCall, IngestionStats, LLMUsageRecord, TicketUpdate
+from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
+    IngestionStats,
+    LLMUsageRecord,
+    TicketEmbedding,
+    TicketUpdate,
+)
 
 
 class TicketUpdateType(OptimizedNautobotObjectType):
@@ -93,10 +101,29 @@ class AgentToolCallType(OptimizedNautobotObjectType):
         filterset_class = AgentToolCallFilterSet
 
 
+class TicketEmbeddingType(OptimizedNautobotObjectType):
+    """GraphQL type for TicketEmbedding.
+
+    Query-only. The vector field is not exposed by the serializer and is not useful over GraphQL
+    either; what is queryable is which ticket was indexed, under which model, and when.
+    """
+
+    class Meta:  # pylint: disable=too-few-public-methods
+        """Meta attributes."""
+
+        model = TicketEmbedding
+        filterset_class = TicketEmbeddingFilterSet
+        # graphene-django has no conversion for `VectorField`, and would refuse to build a schema
+        # at all with it present. Excluding it is also the right answer on its own terms: thousands
+        # of floats, useless without the model that produced them, and nothing a query wants.
+        exclude = ["embedding"]
+
+
 graphql_types = [
     TicketUpdateType,
     IngestionStatsType,
     LLMUsageRecordType,
     AgentRunType,
     AgentToolCallType,
+    TicketEmbeddingType,
 ]

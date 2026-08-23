@@ -83,6 +83,11 @@ items = (
         name="Agent Tool Calls",
         permissions=["nautobot_event_tracker.view_agenttoolcall"],
     ),
+    NavMenuItem(
+        link="plugins:nautobot_event_tracker:ticketembedding_list",
+        name="Ticket Embeddings",
+        permissions=["nautobot_event_tracker.view_ticketembedding"],
+    ),
 )
 
 menu_items = (

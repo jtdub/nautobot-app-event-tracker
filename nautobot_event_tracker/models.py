@@ -11,6 +11,7 @@ from django.db import models
 from django.utils import timezone
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.models import BaseModel, ChangeLoggedModel, OrganizationalModel, PrimaryModel, extras_features
+from pgvector.django import VectorField
 
 from nautobot_event_tracker.choices import (
     AGENT_RUN_LIVE_STATUSES,
@@ -19,6 +20,7 @@ from nautobot_event_tracker.choices import (
     TERMINAL_STATUSES,
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
+    LLMModelKindChoices,
     LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
@@ -466,6 +468,17 @@ class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
     enabled = models.BooleanField(
         default=True,
         help_text="A disabled model refuses every call before any network traffic (rule L8).",
+    )
+    kind = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        choices=LLMModelKindChoices,
+        default=LLMModelKindChoices.CHAT,
+        db_index=True,
+        help_text=(
+            "What this model is for. An embedding model and a chat model are not interchangeable, "
+            "and the service layer refuses a mismatch in both directions before any network "
+            "traffic. Defaults to chat, which is what every model registered before Phase 5A is."
+        ),
     )
     input_cost_per_million = models.DecimalField(
         max_digits=10,
@@ -964,3 +977,70 @@ class AgentToolCall(BaseModel):
     def is_decided(self):
         """Whether a decision has already been made. A call is decided once, and only once (7.3)."""
         return self.decided_at is not None or self.status != AgentToolCallStatusChoices.PROPOSED
+
+
+class TicketEmbedding(BaseModel):
+    """One closed ticket, as a vector (Phase 5A).
+
+    Deliberately neither a PrimaryModel nor change-logged, for the IngestionStats and AgentRun
+    reason: it is derived data. Re-indexing a ticket would otherwise file an ObjectChange recording
+    that a number changed.
+
+    Written only by `services.rag` (rule R1's neighbour in section 10's guards). No UI or API route
+    offers a write method.
+
+    A OneToOne rather than a foreign key, because rule R4 is "one embedding per ticket" and the
+    database should hold that rather than the service remembering to.
+    """
+
+    ticket = models.OneToOneField(
+        to=EventTicket,
+        on_delete=models.CASCADE,
+        related_name="embedding",
+    )
+    embedding = VectorField(
+        # No fixed width. A `vector(768)` column would bake one embedding model's dimension into
+        # the schema, so changing model would mean a migration and a rewrite of every row - and
+        # rule R2 already guarantees comparisons happen within one model, hence within one
+        # dimension. What was actually stored is recorded in `dimensions` below.
+        dimensions=None,
+        help_text="The vector itself. Only ever compared with vectors from the same model (rule R2).",
+    )
+    document = models.TextField(
+        help_text=(
+            "Exactly what was embedded. Stored so a person can see why two tickets matched - a "
+            "similarity score with no visible input is not something anybody can check."
+        ),
+    )
+    model = models.ForeignKey(
+        to=LLMModel,
+        on_delete=models.PROTECT,
+        related_name="embeddings",
+        help_text="Which model produced it. A vector is comparable only with its own model's (R2).",
+    )
+    dimensions = models.PositiveIntegerField(
+        help_text="Denormalised from the model, so a mismatch is detectable without a join.",
+    )
+    document_fingerprint = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        help_text=(
+            "Digest of the document. Re-closing a ticket whose document did not change costs no "
+            "model call and no write."
+        ),
+    )
+    indexed_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    # Derived data is identified by nothing but itself.
+    natural_key_field_names = ["pk"]
+
+    class Meta:
+        """Meta class."""
+
+        ordering = ["-indexed_at"]
+        get_latest_by = "indexed_at"
+        verbose_name = "Ticket Embedding"
+        verbose_name_plural = "Ticket Embeddings"
+
+    def __str__(self):
+        """Stringify instance."""
+        return f"Embedding of {self.ticket_id}"

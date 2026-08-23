@@ -44,6 +44,12 @@ litellm = { version = ">=1.74.0,<2.0.0,!=1.98.0", optional = true }
 # (rule M1). Pinned to 2.x: 2.0 renamed the streamable HTTP transport and moved the tool fields to
 # snake_case, so a 1.x client is not the one this app is written against.
 mcp = { version = ">=2.0.0,<3.0.0", optional = true }
+# `pgvector.django.VectorField` and the distance lookups. Required, not optional, and it is the one
+# dependency here that cannot be an extra: `TicketEmbedding` uses the field type, so Django needs it
+# at import time on every start. litellm and the MCP client are lazy because they are only ever
+# called; a model field is not. ADR 0003 already makes PostgreSQL-with-pgvector the only supported
+# database, so this asks for nothing the app did not already require.
+pgvector = ">=0.3.0,<1.0.0"
 # Imported directly by services/mcp.py to build the session's HTTP client, so it is declared here
 # rather than relied on as one of mcp's own dependencies - which is where it comes from today, and
 # which would surface as an ImproperlyConfigured naming the wrong extra the day it stops.

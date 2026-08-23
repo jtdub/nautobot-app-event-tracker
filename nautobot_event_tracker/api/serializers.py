@@ -14,6 +14,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
     TicketUpdate,
 )
 
@@ -297,5 +298,33 @@ class AgentToolCallSerializer(BaseModelSerializer):
             "latency_ms",
             "proposed_at",
             "called_at",
+        ]
+        read_only_fields = fields
+
+
+class TicketEmbeddingSerializer(BaseModelSerializer):
+    """TicketEmbedding Serializer.
+
+    Read-only in every field. The corpus is `services/rag.py`'s record of what it indexed.
+
+    The vector is deliberately not exposed. It is thousands of floats per row, it is useless
+    without the model that produced it, and a list endpoint returning it would be a denial of
+    service on the client. `dimensions` says how wide it is, and `document` says what it means.
+    """
+
+    class Meta:
+        """Meta attributes."""
+
+        model = TicketEmbedding
+        fields = [
+            "id",
+            "url",
+            "natural_slug",
+            "ticket",
+            "model",
+            "dimensions",
+            "document",
+            "document_fingerprint",
+            "indexed_at",
         ]
         read_only_fields = fields

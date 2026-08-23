@@ -38,7 +38,9 @@ from nautobot.apps.utils import deepmerge
 from nautobot_event_tracker.choices import (
     LITELLM_PROVIDER_PREFIXES,
     PROVIDER_TYPES_REQUIRING_A_URL,
+    LLMModelKindChoices,
     LLMProviderTypeChoices,
+    LLMPurposeChoices,
 )
 from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
 from nautobot_event_tracker.secrets import read_secret
@@ -92,6 +94,28 @@ class ToolCall:
     identifier: str
     name: str
     arguments: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LLMEmbedding:
+    """What a successful embedding call returns: the vector, and the row that priced it.
+
+    The same shape as `LLMResponse` and for the same reason - the numbers live on the record, and
+    the properties are conveniences rather than copies.
+    """
+
+    vector: list
+    record: LLMUsageRecord
+
+    @property
+    def dimensions(self):
+        """How wide this vector is. Recorded rather than assumed: it is the model's choice."""
+        return len(self.vector)
+
+    @property
+    def cost(self):
+        """The call's computed price, as recorded."""
+        return self.record.cost
 
 
 @dataclass(frozen=True)
@@ -157,8 +181,11 @@ def get_settings():
     return settings
 
 
-def get_model(provider_name, model_name):
-    """Resolve an enabled model on an enabled provider, or say exactly what is wrong (L8)."""
+def get_model(provider_name, model_name, *, kind=LLMModelKindChoices.CHAT):
+    """Resolve an enabled model of this kind on an enabled provider, or say what is wrong (L8).
+
+    `kind` defaults to chat, so every caller written before Phase 5A means what it always meant.
+    """
     try:
         model = LLMModel.objects.select_related("provider__external_integration__secrets_group").get(
             provider__name=provider_name, name=model_name
@@ -166,6 +193,7 @@ def get_model(provider_name, model_name):
     except ObjectDoesNotExist as error:
         raise LLMConfigurationError(f"No LLM model '{model_name}' exists on a provider '{provider_name}'.") from error
     _check_enabled(model)
+    _check_kind(model, kind)
     return model
 
 
@@ -211,6 +239,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     the latter two carrying the usage record already written for the attempt (L4).
     """
     _check_enabled(model)
+    _check_kind(model, LLMModelKindChoices.CHAT)
     call = client if client is not None else _litellm_completion()
 
     # Filtered, not trusted. `LLMModel.clean()` already refuses everything outside the allowlist,
@@ -298,6 +327,98 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     return LLMResponse(text=text or "", record=record, tool_calls=tool_calls)
 
 
+def embed(*, model, text, purpose=LLMPurposeChoices.EMBEDDING, ticket=None, timeout=None, client=None):
+    """One embedding call: the twin of `complete()`, and every rule it obeys applies here too.
+
+    Refuse a disabled or wrong-kind model before any network traffic (L8), resolve credentials from
+    the ExternalIntegration at call time (L3), pass a timeout (L6), write exactly one usage record
+    whether it worked or not (L1), price it from the registry (L5), and let no provider exception
+    escape the `LLMError` family (L4). Nothing new is invented here; this is the same call with a
+    different verb.
+
+    `client` is the test seam: a callable `(model_string, input, **kwargs)` returning a
+    litellm-shaped embedding response. No test reaches a provider.
+
+    Returns an `LLMEmbedding`. The vector is a list of floats, and its length is whatever the model
+    produces - the caller records it rather than assuming (rule R2's other half).
+    """
+    _check_enabled(model)
+    _check_kind(model, LLMModelKindChoices.EMBEDDING)
+    call = client if client is not None else _litellm_embedding()
+
+    call_kwargs = {
+        # An embedding model takes none of the generation parameters, so `default_parameters` is
+        # deliberately not read here - it is `ALLOWED_PARAMETERS`, which is a chat vocabulary.
+        "timeout": timeout or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
+    }
+    model_string = _model_string(model)
+    connection = _connection_kwargs(model.provider)
+
+    started = time.monotonic()
+    try:
+        raw = call(model_string, [text], **call_kwargs, **connection)
+    except Exception as error:  # pylint: disable=broad-except
+        record = _record_usage(
+            model=model, ticket=ticket, purpose=purpose, latency_ms=_elapsed_ms(started), error=error
+        )
+        raise LLMCallError(f"Embedding call to {model} failed: {error}", record=record) from error
+
+    latency_ms = _elapsed_ms(started)
+    prompt_tokens, _ = _token_usage(raw)
+    vector = _response_vector(raw)
+
+    record = _record_usage(
+        model=model,
+        ticket=ticket,
+        purpose=purpose,
+        latency_ms=latency_ms,
+        prompt_tokens=prompt_tokens,
+        # An embedding has no completion. Pricing it on input alone is not an approximation: there
+        # is no output side to price.
+        cost=_cost(model, prompt_tokens, 0),
+        request_id=str(getattr(raw, "id", "") or ""),
+        error=None if vector else "The response carried no embedding.",
+    )
+    if not vector:
+        raise LLMResponseError(f"Embedding call to {model} returned no vector.", record=record)
+
+    return LLMEmbedding(vector=vector, record=record)
+
+
+def _response_vector(raw):
+    """The vector out of a litellm-shaped embedding response, or None when there is none.
+
+    Defensive in the same way `_response_text` is: a provider that answers in a shape this does not
+    recognise produces a recorded failure with a sentence, not an AttributeError halfway up the
+    stack.
+    """
+    data = getattr(raw, "data", None)
+    if not data:
+        return None
+    first = data[0]
+    # litellm returns dicts here for some providers and objects for others.
+    vector = first.get("embedding") if isinstance(first, dict) else getattr(first, "embedding", None)
+    if not vector:
+        return None
+    try:
+        return [float(value) for value in vector]
+    except (TypeError, ValueError):
+        return None
+
+
+def _litellm_embedding():
+    """The one place litellm's embedding entry point is reached (L2)."""
+    try:
+        import litellm  # pylint: disable=import-outside-toplevel
+    except ImportError as error:
+        raise ImproperlyConfigured(
+            "litellm could not be imported, so no model can be called: "
+            f"{type(error).__name__}: {error}. "
+            "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
+        ) from error
+    return litellm.embedding
+
+
 def link_usage_records(record_ids, ticket):
     """Point usage records at the ticket they turned out to be about.
 
@@ -316,6 +437,21 @@ def _check_enabled(model):
         raise LLMConfigurationError(f"LLM provider '{model.provider}' is disabled.")
     if not model.enabled:
         raise LLMConfigurationError(f"LLM model '{model}' is disabled.")
+
+
+def _check_kind(model, expected):
+    """Refuse a model registered for the other job, before any network traffic.
+
+    Both directions. The mistake this catches is rarely a caller reaching for the wrong function -
+    it is an operator configuring triage with an embedding model, or the indexer with a chat one,
+    and then reading a provider's error about token limits at three in the morning. The registry
+    knows which is which because a person said so; this is that answer being used.
+    """
+    if model.kind != expected:
+        raise LLMConfigurationError(
+            f"LLM model '{model}' is registered for '{model.kind}' and cannot serve a '{expected}' "
+            "call. Point this setting at a model of the right kind, or correct the model's Kind."
+        )
 
 
 def _model_string(model):

@@ -16,6 +16,7 @@ router.register("mcp-servers", views.MCPServerViewSet)
 router.register("mcp-tools", views.MCPToolViewSet)
 router.register("agent-runs", views.AgentRunViewSet)
 router.register("agent-tool-calls", views.AgentToolCallViewSet)
+router.register("ticket-embeddings", views.TicketEmbeddingViewSet)
 
 app_name = "nautobot_event_tracker-api"
 urlpatterns = router.urls

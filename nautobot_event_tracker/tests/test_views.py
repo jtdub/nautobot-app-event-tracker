@@ -34,6 +34,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
 )
 from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import mcp as mcp_service
@@ -1008,3 +1009,83 @@ class TicketAgentPanelTest(TestCase):
             content = self.client.get(ticket.get_absolute_url()).content.decode()
 
         self.assertNotIn("Investigate with Agent", content)
+
+
+class TicketEmbeddingViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+):
+    """List and detail only: the corpus is written by services/rag.py."""
+
+    model = TicketEmbedding
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three embeddings on three closed tickets."""
+        embedding_model = fixtures.create_embedding_model()
+        for index in range(3):
+            ticket = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, title=f"Corpus {index}")
+            fixtures.create_ticketembedding(ticket=ticket, model=embedding_model)
+
+    def test_there_is_no_add_route(self):
+        """Nothing outside the service writes a corpus row."""
+        with self.assertRaises(NoReverseMatch):
+            reverse("plugins:nautobot_event_tracker:ticketembedding_add")
+
+
+class SimilarTicketsPanelTest(TestCase):
+    """The panel: the only consumer of retrieval, and the one a person reads."""
+
+    user_permissions = ["nautobot_event_tracker.view_eventticket"]
+
+    def setUp(self):
+        """A corpus with one close neighbour, and an open ticket to view."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.embedding_model = fixtures.create_embedding_model()
+        self.neighbour = fixtures.create_ticket_in_status(
+            TicketStatusChoices.CLOSED, user=self.user, title="leaf-01 optic replaced"
+        )
+        fixtures.create_ticketembedding(ticket=self.neighbour, model=self.embedding_model, vector=[1.0, 0.0, 0.0])
+        self.ticket = fixtures.create_ticket(user=self.user, title="leaf-01 down again")
+
+    def page(self, **overrides):
+        """The ticket page, rendered with retrieval on and a vector pointing at the neighbour.
+
+        The panel takes no seam - it is the production path - so the model call is patched at the
+        service. The real function is captured before the patch: inside the side effect
+        `llm_service.embed` is the mock, and calling it would recurse.
+        """
+        from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=C0415
+
+        real_embed = llm_service.embed
+
+        def _embed(**kwargs):
+            return real_embed(**kwargs, client=fixtures.FakeEmbeddingClient([1.0, 0.0, 0.0]))
+
+        with fixtures.rag_settings(**overrides):
+            with mock.patch("nautobot_event_tracker.services.rag.llm_service.embed", side_effect=_embed):
+                return self.client.get(self.ticket.get_absolute_url()).content.decode()
+
+    def test_the_panel_shows_a_neighbour_and_its_resolution(self):
+        """ "We have seen this before", which is the entire point of the phase."""
+        content = self.page()
+
+        self.assertIn("SIMILAR TICKETS", content)
+        self.assertIn("leaf-01 optic replaced", content)
+
+    def test_the_panel_is_absent_when_retrieval_is_off(self):
+        """A stock install renders exactly as it did before this phase."""
+        with fixtures.app_settings():
+            content = self.client.get(self.ticket.get_absolute_url()).content.decode()
+
+        self.assertNotIn("SIMILAR TICKETS", content)
+
+    def test_the_panel_is_absent_on_a_closed_ticket(self):
+        """12.2 - a closed ticket's neighbours are of historical interest at best."""
+        closed = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, user=self.user, title="already done")
+
+        with fixtures.rag_settings():
+            content = self.client.get(closed.get_absolute_url()).content.decode()
+
+        self.assertNotIn("SIMILAR TICKETS", content)

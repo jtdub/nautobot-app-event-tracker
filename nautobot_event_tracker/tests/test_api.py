@@ -458,6 +458,9 @@ class LLMModelAPITest(APIViewTestCases.APIViewTestCase):
 
     model = LLMModel
     bulk_update_data = {"description": "Bulk updated"}
+    # Nautobot's generic OPTIONS test wants every choice field named, so that a field gaining
+    # choices without the API advertising them is a failure rather than a quiet omission.
+    choices_fields = ["kind"]
 
     @classmethod
     def setUpTestData(cls):
@@ -742,3 +745,47 @@ class AgentToolCallAPITest(APITestCase):
 
         entry = self.ticket.updates.filter(update_type=UpdateTypeChoices.TOOL_DECIDED).get()
         self.assertEqual(entry.user, self.user)
+
+
+class TicketEmbeddingAPITest(APITestCase):
+    """The corpus endpoint is read-only, and deliberately does not carry the vector."""
+
+    def setUp(self):
+        """One embedding to read."""
+        super().setUp()
+        self.embedding = fixtures.create_ticketembedding()
+        self.list_url = reverse("plugins-api:nautobot_event_tracker-api:ticketembedding-list")
+        self.detail_url = reverse(
+            "plugins-api:nautobot_event_tracker-api:ticketembedding-detail", args=[self.embedding.pk]
+        )
+
+    def test_list_is_readable(self):
+        """Reading what is in the corpus works."""
+        self.add_permissions("nautobot_event_tracker.view_ticketembedding")
+
+        response = self.client.get(self.list_url, **self.header)
+
+        self.assertHttpStatus(response, 200)
+        self.assertEqual(response.data["count"], 1)
+
+    def test_the_vector_is_not_exposed(self):
+        """Thousands of floats, useless without their model, and unkind to a list client."""
+        self.add_permissions("nautobot_event_tracker.view_ticketembedding")
+
+        response = self.client.get(self.detail_url, **self.header)
+
+        self.assertNotIn("embedding", response.data)
+        self.assertIn("dimensions", response.data)
+        self.assertIn("document", response.data)
+
+    def test_writes_are_rejected(self):
+        """405 whatever the permissions say: services/rag.py is the only writer."""
+        self.add_permissions(
+            "nautobot_event_tracker.add_ticketembedding",
+            "nautobot_event_tracker.change_ticketembedding",
+            "nautobot_event_tracker.delete_ticketembedding",
+        )
+
+        self.assertHttpStatus(self.client.post(self.list_url, {}, format="json", **self.header), 405)
+        self.assertHttpStatus(self.client.patch(self.detail_url, {"dimensions": 1}, format="json", **self.header), 405)
+        self.assertHttpStatus(self.client.delete(self.detail_url, **self.header), 405)

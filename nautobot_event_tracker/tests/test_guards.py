@@ -519,3 +519,77 @@ class AgentGuardTest(SimpleTestCase):
             "services/agent.py reaches a model through services/llm.py and a tool through "
             "services/mcp.py. Offending lines: " + ", ".join(offenders),
         )
+
+
+class RagGuardTest(SimpleTestCase):
+    """Phase 5A section 10: the three rules that are otherwise only conventions."""
+
+    #: The fixtures build embeddings directly, and the model suite constructs them to exercise the
+    #: model itself. The same exemption every other record model has.
+    ALLOWED = {"tests/fixtures.py", "tests/test_models.py"}
+
+    def _paths(self):
+        """Every app module outside `services/`, minus the two exempt test modules."""
+        return [
+            path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in self.ALLOWED
+        ]
+
+    def test_nothing_retrieved_can_reach_a_prompt(self):
+        """R9, and the only half of it that survives somebody deciding it would be nice to try.
+
+        The corpus is built from payloads written by whoever can put a line on a consumed topic.
+        One ticket being read by a model was already true; indexing changes the reach, because a
+        document that steers one investigation becomes one that can be retrieved for every future
+        ticket resembling it. So the two modules that build prompts may not import the module that
+        does retrieval - not "should not", cannot.
+
+        If this test ever fails, the right response is almost certainly to revert the import rather
+        than to add an exemption. Section 9 of the Phase 5A spec is the argument.
+        """
+        prompt_builders = [
+            APP_ROOT / "ingestion" / "triage.py",
+            SERVICES_DIR / "agent.py",
+        ]
+        offenders = list(_app_import_offenders(prompt_builders, "nautobot_event_tracker.services.rag"))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Retrieved text must never reach a prompt: the modules that build prompts may not "
+            "import services/rag.py. Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_pgvector_query_surface_is_only_in_the_rag_service(self):
+        """R1 - searching lives in one module.
+
+        `models.py` is exempt and has to be: `TicketEmbedding` uses `VectorField`, and a Django
+        model cannot import a field type lazily. Migrations are exempt for the same reason and are
+        generated besides. That is the field *definition*; what this guards is everything else -
+        the distance functions and the query construction.
+        """
+        allowed = {"services/rag.py", "models.py"}
+        paths = [
+            path
+            for path in sorted(APP_ROOT.rglob("*.py"))
+            # Migrations are generated, and one that adds a vector column has to name its type.
+            if MIGRATIONS_DIR not in path.parents and str(path.relative_to(APP_ROOT)) not in allowed
+        ]
+        offenders = list(_import_offenders(paths, ("pgvector",)))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "pgvector belongs in services/rag.py, apart from the field type in models.py. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_embeddings_are_written_only_by_the_service_layer(self):
+        """A corpus row is derived data, like every other record model in this app."""
+        offenders = list(_manager_call_offenders(self._paths(), {"TicketEmbedding"}))
+        offenders += list(_constructor_call_offenders(self._paths(), {"TicketEmbedding"}))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "TicketEmbedding rows must only be written under services/. Offending lines: " + ", ".join(offenders),
+        )

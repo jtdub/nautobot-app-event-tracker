@@ -1,0 +1,1 @@
+`LLMModel` gains a **Kind** (chat or embedding, defaulting to chat), and `services/llm.py` refuses a mismatch in both directions before any network traffic. The mistake this catches is rarely calling the wrong endpoint - it is configuring triage with an embedding model and reading a provider's error about token limits at three in the morning.

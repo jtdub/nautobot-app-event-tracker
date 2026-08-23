@@ -14,6 +14,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
     TicketUpdate,
 )
 
@@ -384,4 +385,25 @@ class AgentToolCallTable(BaseTable):
 
         model = AgentToolCall
         fields = AGENT_TOOL_CALL_FIELDS
+        default_columns = fields
+
+
+class TicketEmbeddingTable(BaseTable):
+    # pylint: disable=R0903
+    """Table for the Ticket Embedding list view.
+
+    No ToggleColumn and no ButtonsColumn: nothing outside `services/rag.py` writes these rows, and
+    there is no per-row action worth offering. The vector itself is deliberately not a column -
+    768 floats is not something anybody reads.
+    """
+
+    indexed_at = tables.DateTimeColumn(linkify=True, verbose_name="Indexed")
+    ticket = tables.Column(linkify=True)
+    model = tables.Column(linkify=True)
+
+    class Meta(BaseTable.Meta):
+        """Meta attributes."""
+
+        model = TicketEmbedding
+        fields = ("indexed_at", "ticket", "model", "dimensions")
         default_columns = fields

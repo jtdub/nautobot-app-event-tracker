@@ -4193,6 +4193,18 @@ files = [
 ptyprocess = ">=0.5"
 
 [[package]]
+name = "pgvector"
+version = "0.5.0"
+description = "pgvector support for Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "pgvector-0.5.0-py3-none-any.whl", hash = "sha256:fedc9800894e6da2be51358d7b7c574bf34f247ca741a5a09513622135f5964f"},
+    {file = "pgvector-0.5.0.tar.gz", hash = "sha256:07a9dcf735696879406983afc6eba9a787cef7c0cf6c367ca1a5779f036dee74"},
+]
+
+[[package]]
 name = "pillow"
 version = "12.3.0"
 description = "Python Imaging Library (fork)"
@@ -7059,4 +7071,4 @@ mcp = ["httpx2", "mcp"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "b415527c47d991fb7aa438f93977881a2fa29b19633e0d7e49ebe2d12402a9de"
+content-hash = "d45974e33c5635b613a42f4a31231b9a315d2f11179233e731829c8dfd1e7af1"

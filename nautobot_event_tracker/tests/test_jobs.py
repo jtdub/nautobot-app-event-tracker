@@ -157,3 +157,78 @@ def _real_run_agent():
     from nautobot_event_tracker.services import agent as agent_service  # pylint: disable=C0415
 
     return agent_service.run_agent
+
+
+class TestTheIndexingJobHook(TestCase):
+    """The receiver that puts a closed ticket into the corpus.
+
+    Tested by calling `receive_job_hook` directly rather than through Nautobot's Job Hook
+    machinery: what is worth asserting is the decision it makes about which changes are its
+    business, and that a failure never escapes.
+    """
+
+    def setUp(self):
+        """A closed ticket and an embedding model."""
+        super().setUp()
+        fixtures.create_event_types()
+        fixtures.create_embedding_model()
+        self.closed = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, user=self.user)
+
+    @staticmethod
+    def receiver():
+        """The receiver, constructed the way a Job is."""
+        from nautobot_event_tracker.jobs import IndexClosedTicket  # pylint: disable=C0415
+
+        return IndexClosedTicket()
+
+    def test_a_closed_ticket_is_indexed(self):
+        """The path that matters: a person closes a ticket and it joins the corpus."""
+        from nautobot_event_tracker.models import TicketEmbedding  # pylint: disable=C0415
+
+        with fixtures.rag_settings():
+            with mock.patch(
+                "nautobot_event_tracker.services.rag.llm_service.embed",
+                side_effect=_real_embed_with([1.0, 0.0, 0.0]),
+            ):
+                self.receiver().receive_job_hook(change=None, action="update", changed_object=self.closed)
+
+        self.assertTrue(TicketEmbedding.objects.filter(ticket=self.closed).exists())
+
+    def test_an_open_ticket_is_not_its_business(self):
+        """It fires on every change to every ticket, so deciding that first is most of the job."""
+        from nautobot_event_tracker.models import TicketEmbedding  # pylint: disable=C0415
+
+        open_ticket = fixtures.create_ticket(user=self.user, title="still open")
+
+        with fixtures.rag_settings():
+            self.receiver().receive_job_hook(change=None, action="update", changed_object=open_ticket)
+
+        self.assertFalse(TicketEmbedding.objects.exists())
+
+    def test_a_failure_never_escapes(self):
+        """R5 - a close is a person finishing work, and must not fail because a model is down."""
+        from nautobot_event_tracker.services.exceptions import LLMCallError  # pylint: disable=C0415
+
+        def _fail(**_kwargs):
+            raise LLMCallError("the provider refused")
+
+        with fixtures.rag_settings():
+            with mock.patch("nautobot_event_tracker.services.rag.llm_service.embed", side_effect=_fail):
+                # No assertion needed beyond this not raising: that is the whole rule.
+                self.receiver().receive_job_hook(change=None, action="update", changed_object=self.closed)
+
+
+def _real_embed_with(vector):
+    """A side effect that calls the real `embed` with a fake client.
+
+    The real function is captured before the patch is applied: inside the side effect
+    `llm_service.embed` is the mock, and calling it would recurse.
+    """
+    from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=C0415
+
+    real_embed = llm_service.embed
+
+    def _embed(**kwargs):
+        return real_embed(**kwargs, client=fixtures.FakeEmbeddingClient(vector))
+
+    return _embed

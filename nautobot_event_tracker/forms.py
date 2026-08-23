@@ -35,6 +35,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
 )
 from nautobot_event_tracker.services import tickets as ticket_service
 
@@ -529,4 +530,18 @@ class AgentToolCallFilterForm(NautobotFilterForm):  # pylint: disable=too-many-a
     q = forms.CharField(required=False, label="Search", help_text="Search within tool name, status and error.")
     status = forms.MultipleChoiceField(choices=AgentToolCallStatusChoices, required=False, widget=StaticSelect2Multiple)
     tool = DynamicModelChoiceField(queryset=MCPTool.objects.all(), required=False, label="Tool")
+    ticket = DynamicModelChoiceField(queryset=EventTicket.objects.all(), required=False, label="Ticket")
+
+
+class TicketEmbeddingFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for TicketEmbedding.
+
+    Filter form only: the corpus is written by `services.rag` and by nothing else, so there is no
+    create or edit form to offer.
+    """
+
+    model = TicketEmbedding
+    field_order = ["q", "ticket"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within ticket title and document.")
     ticket = DynamicModelChoiceField(queryset=EventTicket.objects.all(), required=False, label="Ticket")
