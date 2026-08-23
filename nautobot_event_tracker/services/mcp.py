@@ -340,11 +340,12 @@ def _check_callable(tool_call, tool):
     # check entirely for a tool created by hand through the form or the API, which carries no
     # fingerprint - and kept skipping it after discovery later wrote a real one, which is exactly
     # the drift this check exists to catch.
-    if tool_call.tool_fingerprint != tool.definition_fingerprint:
+    if tool_call.tool_fingerprint != call_binding(tool):
         _refuse(
             tool_call,
-            f"'{tool}' has been re-advertised since this call was proposed. "
-            "Approving approves the tool as it read then; propose it again against the new definition.",
+            f"'{tool}' has changed since this call was proposed - its definition, its name or the "
+            "endpoint it is reached at. Approving approves the tool as it read then; propose it "
+            "again against what it is now.",
         )
 
 
@@ -501,6 +502,34 @@ def _update(tool, definition, fingerprint, now):
     tool.last_seen_at = now
     tool.validated_save()
     return withdraw
+
+
+def call_binding(tool):
+    """What an approval is bound to: the definition, the name, and the endpoint.
+
+    `definition_fingerprint` answers "did the server change what this tool is", which is discovery's
+    question. This answers the approver's: "will the call I approved go where I thought it would".
+    Three things decide that, and the digest alone covers one.
+
+    The name is the string put on the wire, and `MCPToolForm` lets anyone with `change_mcptool`
+    edit it - a lower bar than `approve_agenttoolcall`. Rename the row between approval and
+    execution and the approved arguments go to a different command with the digest untouched,
+    because a rename does not re-run discovery. The server's integration decides which host is
+    dialled, and repointing it sends an approved call somewhere else entirely.
+
+    Recomputed from the tool's current state at execution and compared with what was stored at
+    proposal, so any of the three changing is a refusal.
+    """
+    canonical = json.dumps(
+        {
+            "definition": tool.definition_fingerprint,
+            "name": tool.name,
+            "integration": str(tool.server.external_integration_id),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def definition_fingerprint(definition):

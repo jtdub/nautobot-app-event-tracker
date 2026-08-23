@@ -616,13 +616,21 @@ def create_agentrun(ticket=None, **overrides):
 
 
 def create_agenttoolcall(run=None, tool=None, **overrides):
-    """One tool call on a run, in `proposed` unless a test says otherwise."""
+    """One tool call on a run, in `proposed` unless a test says otherwise.
+
+    The binding is recorded by default, because `services.agent` records it on every call it
+    writes: a row without one is a row that could not be executed, so a fixture that left it empty
+    would be building a state production never produces. Pass `tool_fingerprint` explicitly to
+    test a mismatch.
+    """
     from nautobot_event_tracker.models import AgentToolCall  # pylint: disable=import-outside-toplevel
+    from nautobot_event_tracker.services import mcp as mcp_service  # pylint: disable=import-outside-toplevel
 
     if run is None:
         run = create_agentrun()
     if tool is None:
         tool = create_mcptool()
+    overrides.setdefault("tool_fingerprint", mcp_service.call_binding(tool))
     call = AgentToolCall(run=run, tool=tool, **overrides)
     call.validated_save()
     return call

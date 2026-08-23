@@ -38,7 +38,9 @@ class EventTicketAgentJob(Job):
         # Above the soft limit, or Nautobot kills the Job without the Job ever finding out - which
         # is exactly the silent half-finished run rule A6 exists to prevent.
         soft_time_limit = 600
-        time_limit = 660
+        # From the service, so the number the Job is killed at and the number the service uses to
+        # decide a run's process must be dead cannot drift apart.
+        time_limit = agent_service.JOB_TIME_LIMIT_SECONDS
 
     ticket = ObjectVar(
         model=EventTicket,

@@ -68,10 +68,17 @@ the hole that limiting a model's parameters closed.
     every other provider's calls in the same process. A worker runs several at once, so applying
     one provider's setting would silently disable verification on another's connection.
 
-    To reach an LLM endpoint with a private CA or a self-signed certificate, set `SSL_CERT_FILE`
-    (or `SSL_VERIFY=False`) in the environment of every process that calls a model — Nautobot, the
-    worker and the event consumer. The app logs a warning naming the fields it skipped whenever
-    either is set, so this is visible rather than silent.
+    To reach an LLM endpoint with a **private CA**, set `SSL_CERT_FILE` in the environment of
+    every process that calls a model — Nautobot, the worker and the event consumer. That is
+    additive and safe: it adds a trust anchor without weakening anything.
+
+    There is **no recommended way to disable verification for one provider**. `SSL_VERIFY=False`
+    would work, and it turns verification off for every provider in that process — a wider blast
+    radius than the per-provider setting this app declines to apply. If an endpoint's certificate
+    cannot be verified, fix the certificate or add its CA.
+
+    The app logs a warning naming the fields it skipped whenever either is set, so this is visible
+    rather than silent.
 
     MCP servers are not affected: `services/mcp.py` builds its own HTTP client per call and does
     honour both fields.

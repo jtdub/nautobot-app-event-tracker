@@ -426,6 +426,13 @@ def _warn_about_unappliable_tls(provider, integration):
     off for another provider's call in flight. Quietly not applying a setting is bad; silently
     disabling verification on somebody else's connection is worse.
 
+    A review proposed a third way - litellm's `completion(client=...)` - and it is not open to us.
+    That parameter takes a constructed `openai.OpenAI`, which means importing a provider SDK: the
+    thing ADR 0006 exists to prevent and a guard asserts against. It would also cover only the
+    openai-family providers, so it would not be the general answer it looks like. Checked against
+    the installed litellm rather than assumed: `_get_sync_http_client()` builds the client from
+    `get_ssl_configuration()`, which reads the process-wide values and nothing else.
+
     So the app applies neither and says which ones it skipped. `services/mcp.py` has no such
     problem and does honour both: it builds the HTTP client itself, per call.
     """
@@ -439,8 +446,10 @@ def _warn_about_unappliable_tls(provider, integration):
 
     logger.warning(
         "External integration '%s' for LLM provider %s sets %s, which litellm cannot be given per "
-        "call - it reads TLS settings process-wide. They are NOT being applied. Set SSL_VERIFY or "
-        "SSL_CERT_FILE in the environment of every process that calls a model instead.",
+        "call - it reads TLS settings process-wide. They are NOT being applied. For a private CA, "
+        "set SSL_CERT_FILE in the environment of every process that calls a model. There is no "
+        "recommended way to disable verification for one provider: doing it in the environment "
+        "disables it for every provider in that process.",
         integration,
         provider,
         " and ".join(unappliable),

@@ -36,6 +36,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 
 from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured
@@ -144,6 +145,21 @@ WIRE_NAME_MAX = 64
 #: Error text longer than this is truncated before it is stored on the run, exactly as the LLM
 #: service caps its own.
 ERROR_TEXT_CAP = 1000
+
+#: The Job's hard time limit, in seconds. Defined here rather than in `jobs.py` because two things
+#: need it and they must not drift: the Job sets Celery's `time_limit` from it, and the sweep below
+#: uses it to decide when a `running` row can only be a process that died.
+JOB_TIME_LIMIT_SECONDS = 660
+
+#: How many dead runs one launch will clear before giving up and saying so. A ticket needs more
+#: than one only if several workers died on it in a row; refusing beyond that is better than a
+#: loop nobody bounded.
+MAX_STALE_RUNS_BURIED = 10
+
+#: How long past the hard limit a `running` run is given before it is treated as dead. Generous:
+#: the cost of being wrong is declaring a live run dead and letting a second one start beside it,
+#: which is worse than waiting another few minutes.
+STALE_RUN_GRACE_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -359,14 +375,27 @@ def _resumable_run(ticket):
     run whose proposal nobody has decided, and a run whose proposal has been approved and is
     waiting for somebody to press the button again.
     """
-    existing = live_run(ticket)
-    if existing is None:
-        return None
-
-    if existing.status == AgentRunStatusChoices.RUNNING:
-        raise AgentBusyError(
-            f"An agent run started at {existing.started_at:%Y-%m-%d %H:%M:%S} is still running on this ticket."
-        )
+    # Bury any run whose process cannot still be alive, then look again: burying one may leave
+    # nothing live at all (a fresh run), or reveal a genuine waiting run behind it. Bounded, so a
+    # pathological state cannot spin here.
+    for _ in range(MAX_STALE_RUNS_BURIED):
+        existing = live_run(ticket)
+        if existing is None:
+            return None
+        if existing.status != AgentRunStatusChoices.RUNNING:
+            break
+        if not _is_dead(existing):
+            raise AgentBusyError(
+                f"An agent run started at {existing.started_at:%Y-%m-%d %H:%M:%S} is still running on this ticket."
+            )
+        # Celery's hard kill, an OOM or a container restart takes the worker without
+        # `_Loop.execute()` ever seeing an exception, so nothing marks the row. Left alone it is
+        # permanent: `live_run()` keeps returning it, every future launch on this ticket is
+        # refused, and there is no edit or delete route to clear it - recovery was a database
+        # shell.
+        _bury(existing)
+    else:
+        raise AgentBusyError("This ticket has more stale agent runs than this launch will clear.")
 
     proposal = pending_call(existing)
     if proposal is not None:
@@ -405,6 +434,34 @@ def _claim_run(*, ticket, user, job_result):
     with transaction.atomic():
         EventTicket.objects.select_for_update().get(pk=ticket.pk)
         return _open_run(ticket=ticket, user=user, job_result=job_result, parent=_resumable_run(ticket))
+
+
+def _is_dead(run):
+    """Whether this `running` run has outlived any process that could still be working on it.
+
+    The Job's hard limit plus a grace period. Celery kills the worker at `time_limit` whatever the
+    Job is doing, so a row older than that is not slow - the process that owned it is gone.
+    """
+    limit = timedelta(seconds=JOB_TIME_LIMIT_SECONDS + STALE_RUN_GRACE_SECONDS)
+    return timezone.now() - run.started_at > limit
+
+
+def _bury(run):
+    """Mark a run whose process died, so the ticket is workable again.
+
+    Failed rather than completed: nothing about it finished, and A6 says a run that did not finish
+    must not look like one that did. The error says what happened, because "failed" with no reason
+    is the thing somebody would otherwise open a shell to investigate.
+    """
+    logger.warning("Agent run %s outlived its Job's time limit and is being marked failed", run.pk)
+    run.status = AgentRunStatusChoices.FAILED
+    run.error = (
+        "The process running this agent stopped without recording an outcome - a time limit, a "
+        "restart or an out-of-memory kill. Marked failed so the ticket can be worked again."
+    )
+    run.finished_at = timezone.now()
+    run.save()
+    return run
 
 
 def _open_run(*, ticket, user, job_result, parent):
@@ -715,7 +772,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             tool=tool,
             arguments=call.arguments,
             status=AgentToolCallStatusChoices.PROPOSED,
-            tool_fingerprint=tool.definition_fingerprint,
+            tool_fingerprint=mcp_service.call_binding(tool),
         )
         proposal.validated_save()
         ticket_service.record_tool_proposal(ticket=self.ticket, tool_call=proposal)
@@ -729,7 +786,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             tool=tool,
             arguments=call.arguments,
             status=AgentToolCallStatusChoices.PROPOSED,
-            tool_fingerprint=tool.definition_fingerprint,
+            tool_fingerprint=mcp_service.call_binding(tool),
         )
         record.validated_save()
         self._execute(record)

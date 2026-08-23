@@ -520,18 +520,20 @@ class TestCallRefusals(CallToolTestCase):
     def test_a_tool_re_advertised_since_the_proposal_is_refused(self):
         """M6's second half: what was approved was a call on the tool as it read then."""
         self.call = fixtures.create_agenttoolcall(
-            run=self.run, tool=self.tool, tool_fingerprint="the digest when this was proposed"
+            run=self.run, tool=self.tool, tool_fingerprint="the binding when this was proposed"
         )
         self.tool.definition_fingerprint = "a different digest"
         self.tool.validated_save()
 
-        self.assert_refused("re-advertised")
+        self.assert_refused("has changed since this call was proposed")
 
     def test_a_matching_fingerprint_passes(self):
         """The check is a comparison, not a bar on every call that carries a digest."""
         self.tool.definition_fingerprint = "same"
         self.tool.validated_save()
-        self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, tool_fingerprint="same")
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, tool_fingerprint=mcp_service.call_binding(self.tool)
+        )
 
         self.assertEqual(self.call_tool().status, AgentToolCallStatusChoices.EXECUTED)
 
@@ -577,6 +579,33 @@ class TestCallRefusals(CallToolTestCase):
         self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
         self.assertIn("no remote URL", self.call.error)
 
+    def test_renaming_a_tool_after_approval_is_refused(self):
+        """The name is the string put on the wire, and `change_mcptool` is enough to edit it.
+
+        A lower bar than `approve_agenttoolcall`: rename the row between approval and execution and
+        the approved arguments would go to a different command, with the definition digest
+        untouched because a rename does not re-run discovery.
+        """
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, tool_fingerprint=mcp_service.call_binding(self.tool)
+        )
+        self.tool.name = "something_else"
+        self.tool.validated_save()
+
+        self.assert_refused("has changed since this call was proposed")
+
+    def test_repointing_the_server_after_approval_is_refused(self):
+        """The endpoint an approved call is dialled at is part of what was approved."""
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, tool_fingerprint=mcp_service.call_binding(self.tool)
+        )
+        self.server.external_integration = fixtures.create_external_integration(
+            name="Somewhere Else", remote_url="https://elsewhere.example.test/mcp"
+        )
+        self.server.validated_save()
+
+        self.assert_refused("has changed since this call was proposed")
+
     def test_a_tool_that_gains_a_fingerprint_after_the_proposal_is_refused(self):
         """The empty-digest case, which used to skip the check entirely.
 
@@ -585,14 +614,15 @@ class TestCallRefusals(CallToolTestCase):
         then skipped the comparison forever, including after discovery wrote a real digest and an
         operator re-enabled the tool. That is exactly the sequence M6 exists to catch.
         """
-        self.assertEqual(self.call.tool_fingerprint, "")
+        # A row written before bindings were recorded, or by anything that skipped it.
+        self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, tool_fingerprint="")
         self.tool.definition_fingerprint = "a digest discovery wrote afterwards"
         self.tool.validated_save()
 
         with self.assertRaises(MCPConfigurationError) as caught:
             mcp_service.call_tool(tool_call=self.call, client=fixtures.FakeMCPCaller())
 
-        self.assertIn("re-advertised", str(caught.exception))
+        self.assertIn("has changed since this call was proposed", str(caught.exception))
 
     def test_the_tool_is_re_read_rather_than_trusted_as_handed_over(self):
         """The stale instance a caller holds would notice none of the events above."""

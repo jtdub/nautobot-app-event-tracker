@@ -345,7 +345,11 @@ class TestCredentials(TestCase):
         self.assertIn("Verify SSL", message)
         self.assertIn("/etc/ssl/private-ca.pem", message)
         self.assertIn("NOT being applied", message)
-        self.assertIn("SSL_VERIFY", message)
+        # Names the additive remedy, and does not recommend the destructive one: turning
+        # verification off in the environment turns it off for every provider in the process,
+        # which is wider than the per-provider setting the app declines to apply.
+        self.assertIn("SSL_CERT_FILE", message)
+        self.assertNotIn("SSL_VERIFY=False", message)
 
     def test_an_integration_with_default_tls_says_nothing(self):
         """The warning fires for a setting that was made, never for one left alone."""

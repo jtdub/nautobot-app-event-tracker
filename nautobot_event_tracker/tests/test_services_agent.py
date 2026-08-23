@@ -157,6 +157,49 @@ class TestStartingARun(AgentTestCase):
 
         self.assertIn("still running", str(caught.exception))
 
+    def test_a_run_whose_process_died_does_not_wedge_the_ticket(self):
+        """Celery's hard kill takes the worker without the loop seeing anything.
+
+        Nothing marks the row, so it stays `running` forever: every future launch on that ticket
+        was refused, and with no edit or delete route the only recovery was a database shell.
+        """
+        from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+        from django.utils import timezone  # pylint: disable=import-outside-toplevel
+
+        dead = fixtures.create_agentrun(
+            ticket=self.ticket,
+            status=AgentRunStatusChoices.RUNNING,
+            started_at=timezone.now()
+            - timedelta(seconds=agent_service.JOB_TIME_LIMIT_SECONDS + agent_service.STALE_RUN_GRACE_SECONDS + 60),
+        )
+
+        run, _ = self.run_agent("Looked again.")
+
+        dead.refresh_from_db()
+        self.assertEqual(dead.status, AgentRunStatusChoices.FAILED)
+        self.assertIn("stopped without recording an outcome", dead.error)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_a_run_still_within_its_time_limit_is_left_alone(self):
+        """The sweep must not declare a live run dead: two agents on one ticket is worse."""
+        from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+        from django.utils import timezone  # pylint: disable=import-outside-toplevel
+
+        alive = fixtures.create_agentrun(
+            ticket=self.ticket,
+            status=AgentRunStatusChoices.RUNNING,
+            started_at=timezone.now() - timedelta(seconds=30),
+        )
+
+        with fixtures.agent_settings():
+            with self.assertRaises(AgentBusyError):
+                agent_service.run_agent(ticket=self.ticket, user=self.user, complete=fixtures.FakeAgentComplete())
+
+        alive.refresh_from_db()
+        self.assertEqual(alive.status, AgentRunStatusChoices.RUNNING)
+
     def test_a_run_waiting_on_a_decision_is_refused(self):
         """The gate is a person's turn; launching again does not take it from them."""
         run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
@@ -467,12 +510,16 @@ class TestReadOnlyCalls(AgentTestCase):
 
     def test_the_fingerprint_is_recorded_with_the_call(self):
         """M6's second half needs the digest the call was made against."""
+        from nautobot_event_tracker.services import mcp as mcp_service  # pylint: disable=C0415
+
         self.tool.definition_fingerprint = "abc123"
         self.tool.validated_save()
 
         self.run_agent([fixtures.fake_tool_call("get_interface_status")], "Done.")
 
-        self.assertEqual(AgentToolCall.objects.get().tool_fingerprint, "abc123")
+        # The binding, not the bare digest: what the call is bound to is the definition, the name
+        # and the endpoint together.
+        self.assertEqual(AgentToolCall.objects.get().tool_fingerprint, mcp_service.call_binding(self.tool))
 
     def test_a_tool_the_model_invented_is_answered_rather_than_called(self):
         """M4 from the other side: there is nothing to look up, so nothing is called."""
