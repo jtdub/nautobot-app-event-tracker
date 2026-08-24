@@ -345,3 +345,46 @@ refusal on the first embedding rather than at startup.
   test has to name `kind`, which is the generic suite insisting that a field with choices be
   advertised by the API rather than quietly omitted. Worth recording because it is the kind of
   thing that looks like a test being awkward and is in fact the test being right.
+- **R6 needed enforcing on four surfaces, and was written on one.** Section 8 said the panel must
+  not show a ticket the reader may not view, and the panel duly filtered. But `document` is a
+  verbatim copy of its ticket, so *every* route to a `TicketEmbedding` is a route to ticket text —
+  and holding `view_ticketembedding` alone reached all of them. The REST viewset, the UI viewset
+  and the filterset now each narrow the corpus to `EventTicket.objects.restrict(user, "view")`, and
+  the rule is restated as being about the model rather than about the panel. Two consequences worth
+  naming:
+    - **There is no GraphQL type for `TicketEmbedding`, deliberately.** Nautobot restricts a
+      GraphQL type on that type's own model permission and offers no hook for a parent-object
+      restriction. Excluding `document` from the type would not have been enough either: a filter
+      predicate over an unrestricted queryset answers by narrowing, reporting which tickets match a
+      string without ever returning the field that matched. Everything safe to read is on the REST
+      API, where the restriction applies.
+    - **`document` is not a `q` predicate**, for that same narrowing reason, and a test asserts it
+      stays that way.
+- **The corpus does not honour `EXEMPT_VIEW_PERMISSIONS` on its own model**, and two generic view
+  tests are skipped saying so. Exempting `ticketembedding` would publish closed-ticket text to
+  anonymous readers through a model whose name gives no hint of containing any. Visibility follows
+  the ticket, which has its own exemption setting if an operator genuinely wants that.
+- **No index on the vector column, and none is wanted yet.** An IVFFlat or HNSW index needs a fixed
+  dimensionality, which the bullet above gave up on purpose, and it needs training data — IVFFlat
+  built on an empty table produces a worse plan than none at all. A sequential scan over a corpus
+  of closed tickets is fast at the sizes this will see for a long time. This is 12.1's stated cost,
+  accepted rather than overlooked: retrieval runs at render time and there is no index behind it, so
+  a deployment that grows a very large corpus will feel it on the ticket page first. Revisit with a
+  measurement, not a hunch; `docs/admin/rag.md` says what to measure, and notes that an HNSW index
+  is both approximate and dependent on settling the embedding model first.
+- **`CreateVectorExtension` lives in the migration file rather than in the app.** Two known costs:
+  `sqlmigrate` cannot print it, because it is `reduces_to_sql = False` and does its own
+  introspection, so a DBA reviewing the SQL of an upgrade sees the table and not the extension;
+  and `squashmigrations` will not squash across it. Both are acceptable against the alternative,
+  which is an operator on a managed PostgreSQL meeting a bare "permission denied to create
+  extension" in the middle of an upgrade.
+- **R2's dimension filter leans on the planner, and is belt-and-braces rather than a guarantee.**
+  `similar_tickets` filters on `model=` and `dimensions=` together, and the first of those already
+  implies the second, since one model emits one width. The `dimensions=` predicate exists in case a
+  row of another width is ever reachable - but `CosineDistance` is an annotation over the same
+  query, so whether it is evaluated before or after that predicate is the planner's choice, not
+  something the ORM lets this code state. Today nothing can construct that situation: `model=`
+  narrows first in every plan observed, and a mixed-width corpus only arises mid-re-index. If a
+  future change makes cross-model retrieval possible, this needs to become a structural guarantee -
+  separate queries per model, or a width recorded on `LLMModel` and checked before the query - not
+  a second predicate hoping to be evaluated first.

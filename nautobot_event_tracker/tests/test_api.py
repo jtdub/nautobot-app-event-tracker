@@ -642,6 +642,7 @@ class AgentRunAPITest(APITestCase):
             "nautobot_event_tracker.delete_agentrun",
         )
 
+        self.add_permissions("nautobot_event_tracker.view_eventticket")
         self.assertHttpStatus(self.client.post(self.list_url, {}, format="json", **self.header), 405)
         self.assertHttpStatus(
             self.client.patch(self.detail_url, {"status": "completed"}, format="json", **self.header), 405
@@ -760,8 +761,8 @@ class TicketEmbeddingAPITest(APITestCase):
         )
 
     def test_list_is_readable(self):
-        """Reading what is in the corpus works."""
-        self.add_permissions("nautobot_event_tracker.view_ticketembedding")
+        """Reading what is in the corpus works, for somebody who may read the tickets in it."""
+        self.add_permissions("nautobot_event_tracker.view_ticketembedding", "nautobot_event_tracker.view_eventticket")
 
         response = self.client.get(self.list_url, **self.header)
 
@@ -770,13 +771,37 @@ class TicketEmbeddingAPITest(APITestCase):
 
     def test_the_vector_is_not_exposed(self):
         """Thousands of floats, useless without their model, and unkind to a list client."""
-        self.add_permissions("nautobot_event_tracker.view_ticketembedding")
+        self.add_permissions("nautobot_event_tracker.view_ticketembedding", "nautobot_event_tracker.view_eventticket")
 
         response = self.client.get(self.detail_url, **self.header)
 
         self.assertNotIn("embedding", response.data)
         self.assertIn("dimensions", response.data)
-        self.assertIn("document", response.data)
+
+    def test_the_corpus_is_not_a_way_around_ticket_permissions(self):
+        """R6 on this surface, which is where the first version of it was missing.
+
+        `document` is a verbatim copy of its ticket - title, description, resolution, every human
+        comment. Gated on `view_ticketembedding` alone, holding that permission read every closed
+        ticket in the deployment regardless of any ObjectPermission constraint on `EventTicket`,
+        because nothing carried the constraint across the relation. The earlier version of this
+        test asserted `document` was present and so certified the leak.
+        """
+        self.add_permissions("nautobot_event_tracker.view_ticketembedding")
+
+        listing = self.client.get(self.list_url, **self.header)
+        detail = self.client.get(self.detail_url, **self.header)
+
+        self.assertEqual(listing.data["count"], 0)
+        self.assertHttpStatus(detail, 404)
+
+    def test_a_user_who_may_read_the_ticket_may_read_its_embedding(self):
+        """The restriction is on the parent, not a blanket refusal."""
+        self.add_permissions("nautobot_event_tracker.view_ticketembedding", "nautobot_event_tracker.view_eventticket")
+
+        response = self.client.get(self.list_url, **self.header)
+
+        self.assertEqual(response.data["count"], 1)
 
     def test_writes_are_rejected(self):
         """405 whatever the permissions say: services/rag.py is the only writer."""
@@ -784,6 +809,9 @@ class TicketEmbeddingAPITest(APITestCase):
             "nautobot_event_tracker.add_ticketembedding",
             "nautobot_event_tracker.change_ticketembedding",
             "nautobot_event_tracker.delete_ticketembedding",
+            # The corpus is restricted to tickets this user may read, so without this the rows are
+            # invisible and a 404 would be mistaken for the 405 this asserts.
+            "nautobot_event_tracker.view_eventticket",
         )
 
         self.assertHttpStatus(self.client.post(self.list_url, {}, format="json", **self.header), 405)

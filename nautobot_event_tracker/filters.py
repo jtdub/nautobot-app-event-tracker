@@ -218,7 +218,7 @@ class LLMModelFilterSet(NautobotFilterSet):
         """Meta attributes for filter."""
 
         model = LLMModel
-        fields = ["provider", "name", "description", "enabled", "tags"]  # pylint: disable=nb-use-fields-all
+        fields = ["provider", "name", "description", "enabled", "kind", "tags"]  # pylint: disable=nb-use-fields-all
 
 
 class LLMUsageRecordFilterSet(NautobotFilterSet):
@@ -349,7 +349,11 @@ class TicketEmbeddingFilterSet(NautobotFilterSet):
     has gone quiet.
     """
 
-    q = SearchFilter(filter_predicates={"ticket__title": "icontains", "document": "icontains"})
+    # `document` is deliberately not a `q` predicate. It is a verbatim copy of its ticket, so a
+    # free-text search across it is a free-text search across every closed ticket's text - and a
+    # filter answers by *narrowing*, which reports a match without ever returning the field that
+    # matched. Search tickets to search ticket text; this page answers "what is indexed".
+    q = SearchFilter(filter_predicates={"ticket__title": "icontains"})
     ticket = django_filters.ModelMultipleChoiceFilter(queryset=EventTicket.objects.all(), label="Ticket")
     model = django_filters.ModelMultipleChoiceFilter(queryset=LLMModel.objects.all(), label="Model")
 

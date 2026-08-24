@@ -18,6 +18,7 @@ from nautobot_event_tracker.api.serializers import SERVICE_OWNED_FIELDS
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
+    LLMModelKindChoices,
     LLMProviderTypeChoices,
     SeverityChoices,
     TicketSourceChoices,
@@ -608,6 +609,10 @@ class LLMModelViewTest(ViewTestCases.PrimaryObjectViewTestCase):
             "name": "view-test-model",
             "description": "created through the form",
             "enabled": True,
+            # Required since Kind joined the form. It has a model default, but a ModelForm field
+            # without `blank=True` is required regardless, so the generic create/edit cases have to
+            # send it.
+            "kind": LLMModelKindChoices.CHAT,
             # Decimal, not string: the generic edit test compares this dict against the saved
             # instance, which holds Decimals.
             "input_cost_per_million": Decimal("1.0000"),
@@ -1015,9 +1020,31 @@ class TicketEmbeddingViewTest(
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.ListObjectsViewTestCase,
 ):
-    """List and detail only: the corpus is written by services/rag.py."""
+    """List and detail only: the corpus is written by services/rag.py.
+
+    `view_eventticket` is granted alongside the model's own permission because the viewset narrows
+    the corpus to embeddings of tickets the user may read (rule R6) - a `document` is a verbatim
+    copy of its ticket, so reading one has to be gated on the ticket. Without it the generic
+    mixins see an empty queryset and every case here fails, which is the restriction working.
+    """
 
     model = TicketEmbedding
+    user_permissions = ["nautobot_event_tracker.view_eventticket"]
+
+    def test_get_object_anonymous(self):
+        """Skipped: this model deliberately does not honour its own view exemption.
+
+        `EXEMPT_VIEW_PERMISSIONS` on `ticketembedding` would make the corpus anonymously readable,
+        and a corpus document is a verbatim copy of its ticket - so the exemption would publish
+        ticket text to unauthenticated users through a model whose name gives no hint of that.
+        Visibility follows the *ticket*, which has its own exemption setting if an operator really
+        wants this public.
+        """
+        self.skipTest("Corpus visibility follows the ticket's permissions, not this model's exemption.")
+
+    def test_list_objects_anonymous_with_exempt_permission_for_one_view_only(self):
+        """Skipped for the reason above."""
+        self.skipTest("Corpus visibility follows the ticket's permissions, not this model's exemption.")
 
     @classmethod
     def setUpTestData(cls):

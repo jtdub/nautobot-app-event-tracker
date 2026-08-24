@@ -216,6 +216,7 @@ class LLMModelTable(BaseTable):
             "provider",
             "description",
             "enabled",
+            "kind",
             "input_cost_per_million",
             "output_cost_per_million",
             "max_output_tokens",

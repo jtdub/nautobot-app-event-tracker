@@ -260,7 +260,13 @@ class SimilarTicketsPanel(KeyValueTablePanel):
             return cached
 
         matches = rag_service.similar_tickets(ticket, user=request.user)
-        data = {f"{match.ticket.title} ({match.closeness})": self._render(match) for match in matches}
+        # Keyed with the distance as well as the title, because a dict silently collapses
+        # duplicates and keeps the *last* one written - the farthest. Three closed tickets called
+        # "leaf-01 ethernet-1/1 down" in one closeness band is not a corner case, it is precisely
+        # the recurring fault this panel exists to surface, and it would have shown one of them.
+        data = {
+            f"{match.ticket.title} ({match.closeness}, {match.distance:.2f})": self._render(match) for match in matches
+        }
         ticket._similar_tickets_panel_cache = data  # pylint: disable=protected-access
         return data
 
@@ -1270,6 +1276,15 @@ class TicketEmbeddingUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-anc
     filterset_class = filters.TicketEmbeddingFilterSet
     filterset_form_class = forms.TicketEmbeddingFilterForm
     serializer_class = serializers.TicketEmbeddingSerializer
+
+    def get_queryset(self):
+        """Only embeddings of tickets this user may read - rule R6, on this surface too.
+
+        `document` is a verbatim copy of its ticket, so without this the corpus is a way around
+        ticket permissions: an ObjectPermission constraint on `EventTicket` simply stops applying,
+        because nothing carries it across the relation.
+        """
+        return rag_service.visible_embeddings(super().get_queryset(), self.request.user)
 
     object_detail_content = ObjectDetailContent(
         panels=(

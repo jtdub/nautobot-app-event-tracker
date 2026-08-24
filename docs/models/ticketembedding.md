@@ -47,7 +47,18 @@ The practical consequence is that **changing embedding model makes the panel go 
 go wrong. Every existing row belongs to the old model and is never compared with anything again.
 `nautobot-server indexclosedtickets --reindex` is how the corpus comes back.
 
+## Who can read one
+
+An embedding is readable by whoever may read **its ticket**, not merely by whoever holds
+`view_ticketembedding`. The document is a verbatim copy of the ticket, so gating it on its own
+permission would let an ObjectPermission constraint on Event Ticket quietly stop applying.
+
 ## Elsewhere
 
-`/api/plugins/event-tracker/ticket-embeddings/` and GraphQL, both read-only, both without the
-vector.
+`/api/plugins/event-tracker/ticket-embeddings/`, read-only and without the vector.
+
+**Not on GraphQL, deliberately.** Nautobot restricts a GraphQL type on that type's own model
+permission, with no hook for a parent-object restriction — and excluding the document would not be
+enough on its own, since a filter predicate over an unrestricted queryset leaks by filtering
+without returning the field. Everything safe to read is on the REST API, where the restriction
+works.

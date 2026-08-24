@@ -43,7 +43,7 @@ from nautobot_event_tracker.choices import (
     TicketStatusChoices,
     UpdateTypeChoices,
 )
-from nautobot_event_tracker.models import TicketEmbedding
+from nautobot_event_tracker.models import EventTicket, TicketEmbedding
 from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services.exceptions import LLMError
 
@@ -269,6 +269,26 @@ def index_ticket_quietly(ticket, *, embed=None):
     return None
 
 
+def visible_embeddings(queryset, user):
+    """Narrow a TicketEmbedding queryset to embeddings of tickets `user` may view - rule R6.
+
+    A `document` is a verbatim copy of its ticket, so every route to a corpus row is a route to
+    ticket text. Gated on `view_ticketembedding` alone, holding that permission reads every closed
+    ticket in the deployment however tightly `EventTicket` is constrained, because nothing carries
+    the constraint across the relation.
+
+    Used by the REST and UI viewsets, which read the corpus as a list of rows. `similar_tickets`
+    below does not go through it and should not: it restricts `EventTicket` directly, because it
+    needs the closed ones as the set to search within, where these two need whichever corpus rows
+    happen to hang off readable tickets. Same rule, two shapes. It lives here rather than beside
+    either viewset so that both, and anything that reads the corpus later, answer "which tickets
+    may this person see" the way the query in this module already answers it.
+    """
+    if not user.is_authenticated:
+        return queryset.none()
+    return queryset.filter(ticket__in=EventTicket.objects.restrict(user, "view").values("pk"))
+
+
 def similar_tickets(ticket, *, user, limit=None, embed=None):
     """R6, R7 - the closed tickets nearest this one, that this user may see.
 
@@ -283,8 +303,6 @@ def similar_tickets(ticket, *, user, limit=None, embed=None):
     Returns an empty list rather than raising, for every reason it might: rag off, no model, the
     ticket not indexable, nothing in the corpus. A panel is not a place to surface an exception.
     """
-    from nautobot_event_tracker.models import EventTicket  # pylint: disable=import-outside-toplevel
-
     try:
         settings = get_settings()
     except ImproperlyConfigured as error:
@@ -334,7 +352,7 @@ def _query_vector(ticket, settings, *, embed=None):
     """
     try:
         model = llm_service.get_model(settings.provider, settings.model, kind=LLMModelKindChoices.EMBEDDING)
-    except LLMError as error:
+    except (LLMError, ImproperlyConfigured) as error:
         logger.warning("Cannot search for similar tickets: %s", error)
         return None
 
@@ -352,7 +370,12 @@ def _query_vector(ticket, settings, *, embed=None):
             ticket=ticket,
             timeout=settings.timeout_seconds,
         )
-    except LLMError as error:
+    except (LLMError, ImproperlyConfigured) as error:
+        # `ImproperlyConfigured` as well as the LLM family, because a missing `llm` extra raises
+        # outside that family deliberately - and this became reachable when `pgvector` was made a
+        # required dependency while litellm stayed optional. Without it, an install without the
+        # extra plus `rag.enabled` returns HTTP 500 on every open ticket's page. A panel is not a
+        # place to surface an exception.
         logger.warning("Could not embed ticket %s to search with: %s", ticket.pk, error)
         return None
     return _QueryVector(values=result.vector, model=model)

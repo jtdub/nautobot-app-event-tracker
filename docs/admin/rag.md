@@ -146,6 +146,27 @@ When it shows nothing, that is an answer: nothing in the corpus is within `max_d
   they cost.
 - The Job Hook's own results, under **Jobs → Job Results**.
 
+## When the corpus gets large
+
+There is no index on the vector column. Every similarity query is a sequential scan, which is the
+right choice while the corpus is small and stops being one at some size this app has not yet met.
+
+Measure before you change that. The panel's query is one `ORDER BY embedding <=> %s LIMIT n` per
+render, so time it against your own corpus:
+
+```sql
+EXPLAIN ANALYZE
+SELECT id FROM nautobot_event_tracker_ticketembedding
+ORDER BY embedding <=> (SELECT embedding FROM nautobot_event_tracker_ticketembedding LIMIT 1)
+LIMIT 5;
+```
+
+If that is comfortably under the time you are willing to add to a ticket page, do nothing. If it is
+not, an HNSW index is the next step — and note two things before adding one. It needs a fixed
+dimensionality, so it can only be built once you have settled on an embedding model and re-indexed
+everything under it. And it is approximate: it will sometimes miss a genuine neighbour, which for a
+panel that suggests rather than decides is a fair trade, but is a trade.
+
 ## Further reading
 
 - [Ticket Embedding](../models/ticketembedding.md) — the record
