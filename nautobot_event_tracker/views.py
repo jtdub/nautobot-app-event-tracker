@@ -42,6 +42,7 @@ from nautobot_event_tracker.choices import AgentToolCallStatusChoices, TicketSou
 from nautobot_event_tracker.jobs import EventTicketAgentJob
 from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import mcp as mcp_service
+from nautobot_event_tracker.services import rag as rag_service
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import AgentError, MCPError, TicketServiceError
 
@@ -233,6 +234,67 @@ def pending_proposal(ticket):
         cached = (agent_service.pending_call(agent_service.live_run(ticket)),)
         ticket._pending_proposal_cache = cached  # pylint: disable=protected-access
     return cached[0]
+
+
+class SimilarTicketsPanel(KeyValueTablePanel):
+    """Closed tickets that resemble this one, with what was done about them (Phase 5A).
+
+    The only consumer of retrieval, and deliberately so: what is shown here is read by a person and
+    goes nowhere near a prompt (rule R9). The corpus is built from payloads written by whoever
+    emits the events, and a person in the loop is what keeps one poisoned closed ticket from
+    steering every future investigation that resembles it.
+
+    Cached on the ticket for the life of the instance, like `RelatedObjectsPanel`: the framework
+    calls `get_data()` twice per render and this one can make a model call.
+    """
+
+    def get_data(self, context):
+        """`{ticket title: rendered link and resolution}` for the framework to render."""
+        ticket = context.get("object")
+        request = context.get("request")
+        if ticket is None or request is None:
+            return {}
+
+        cached = getattr(ticket, "_similar_tickets_panel_cache", None)
+        if cached is not None:
+            return cached
+
+        matches = rag_service.similar_tickets(ticket, user=request.user)
+        # Keyed with the distance as well as the title, because a dict silently collapses
+        # duplicates and keeps the *last* one written - the farthest. Three closed tickets called
+        # "leaf-01 ethernet-1/1 down" in one closeness band is not a corner case, it is precisely
+        # the recurring fault this panel exists to surface, and it would have shown one of them.
+        data = {
+            f"{match.ticket.title} ({match.closeness}, {match.distance:.2f})": self._render(match) for match in matches
+        }
+        ticket._similar_tickets_panel_cache = data  # pylint: disable=protected-access
+        return data
+
+    def should_render(self, context):
+        """Only for an open ticket, and only when there is something to show.
+
+        A closed ticket's neighbours are of historical interest at best (12.2), and an empty panel
+        headed "Similar Tickets" reads as a broken feature rather than as an honest "no".
+        """
+        ticket = context.get("object")
+        if ticket is None or not ticket.is_open:
+            return False
+        return bool(self.get_data(context))
+
+    def render_key(self, key, value, context):
+        """A ticket's own title, not a title-cased guess at a field name."""
+        return key
+
+    @staticmethod
+    def _render(match):
+        """The neighbour as a link, followed by what was done about it."""
+        link = hyperlinked_object(match.ticket)
+        resolution = (match.ticket.resolution or "").strip()
+        if not resolution:
+            return link
+        if len(resolution) > 300:
+            resolution = resolution[:300] + "…"
+        return format_html('{} <div class="text-secondary small">{}</div>', link, resolution)
 
 
 class AgentProposalPanel(KeyValueTablePanel):
@@ -474,6 +536,12 @@ class EventTicketUIViewSet(NautobotUIViewSet):
                 add_button_route=None,
                 enable_related_link=False,
                 include_columns=["created", "update_type", "source", "user", "message", "related_object"],
+            ),
+            SimilarTicketsPanel(
+                weight=430,
+                section=SectionChoices.RIGHT_HALF,
+                label="Similar Tickets",
+                body_id="similar-tickets",
             ),
             AgentProposalPanel(
                 weight=450,
@@ -1193,3 +1261,43 @@ class AgentToolCallDenyView(AgentToolCallDecisionView):
     """Deny one proposed tool call, which ends the run (13.8)."""
 
     approve = False
+
+
+class TicketEmbeddingUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
+    """Read-only views for the retrieval corpus: `services/rag.py` is the only writer.
+
+    Worth a page at all because "what is in the corpus" is a real operational question - most
+    sharply after changing embedding model, when the Similar Tickets panel goes quiet and the
+    answer is that every row here belongs to the old one.
+    """
+
+    queryset = models.TicketEmbedding.objects.select_related("ticket", "model__provider")
+    table_class = tables.TicketEmbeddingTable
+    filterset_class = filters.TicketEmbeddingFilterSet
+    filterset_form_class = forms.TicketEmbeddingFilterForm
+    serializer_class = serializers.TicketEmbeddingSerializer
+
+    def get_queryset(self):
+        """Only embeddings of tickets this user may read - rule R6, on this surface too.
+
+        `document` is a verbatim copy of its ticket, so without this the corpus is a way around
+        ticket permissions: an ObjectPermission constraint on `EventTicket` simply stops applying,
+        because nothing carries it across the relation.
+        """
+        return rag_service.visible_embeddings(super().get_queryset(), self.request.user)
+
+    object_detail_content = ObjectDetailContent(
+        panels=(
+            ObjectFieldsPanel(
+                weight=100,
+                section=SectionChoices.LEFT_HALF,
+                fields=("ticket", "model", "dimensions", "indexed_at", "document_fingerprint"),
+            ),
+            ObjectTextPanel(
+                weight=200,
+                section=SectionChoices.RIGHT_HALF,
+                label="Document",
+                object_field="document",
+            ),
+        ),
+    )

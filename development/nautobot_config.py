@@ -183,6 +183,18 @@ elif LAB_INGESTION is not None:
         "topics": LAB_INGESTION["topics"],
     }
 
+# Retrieval over closed tickets (Phase 5A). On here for the same reason the agent is: a stack that
+# cannot run the thing being developed is not much of a development stack. `nomic-embed-text` is
+# 768-dimensional and runs on a laptop; the provider is the same Ollama the agent uses, because an
+# embedding model and a chat model can share one.
+PLUGINS_CONFIG["nautobot_event_tracker"]["rag"] = {
+    "enabled": is_truthy(os.getenv("EVENT_TRACKER_RAG", "true")),
+    "provider": os.getenv("EVENT_TRACKER_RAG_PROVIDER", "ollama"),
+    "model": os.getenv("EVENT_TRACKER_RAG_MODEL", "nomic-embed-text:latest"),
+    # A local embedding model on CPU is not fast the first time it is loaded.
+    "timeout_seconds": 120,
+}
+
 # The agent (Phase 4B). Off in a stock install, and on here: a development stack that cannot run
 # the thing being developed is not much of a development stack. Every value is overridable, because
 # which model you have pulled is a property of your laptop rather than of this repository.

@@ -10,11 +10,12 @@ time limit, and a place a person can read what happened - while the approval gat
 row that no runtime can wave through.
 """
 
-from nautobot.apps.jobs import Job, ObjectVar, register_jobs
+from nautobot.apps.jobs import Job, JobHookReceiver, ObjectVar, register_jobs
 
-from nautobot_event_tracker.choices import AgentRunStatusChoices
+from nautobot_event_tracker.choices import AgentRunStatusChoices, TicketStatusChoices
 from nautobot_event_tracker.models import EventTicket
 from nautobot_event_tracker.services import agent as agent_service
+from nautobot_event_tracker.services import rag as rag_service
 
 name = "Event Tracker"  # pylint: disable=invalid-name
 
@@ -79,9 +80,60 @@ class EventTicketAgentJob(Job):
         return f"Agent run {run.pk}: {run.status}"
 
 
+class IndexClosedTicket(JobHookReceiver):
+    """Index a ticket into the retrieval corpus when it closes (Phase 5A, rule R4).
+
+    A Job Hook rather than a call from `services/tickets.py`, for three reasons in order of
+    weight. It catches a close made by *any* path - the UI, the REST transition action,
+    `walk_to_status` from a management command, an agent that is one day allowed to close. It keeps
+    the ticket service free of any knowledge that retrieval exists, which is the dependency
+    direction every other phase has kept. And it runs outside the closing transaction, which a
+    network call has to.
+
+    To use it, create a Job Hook in Nautobot on Event Ticket, for updates, pointing at this
+    receiver. `docs/admin/rag.md` says so with the clicks.
+    """
+
+    class Meta:  # pylint: disable=too-few-public-methods
+        """Meta attributes."""
+
+        name = "Index a Closed Event Ticket"
+        description = (
+            "Embeds a ticket when it reaches closed, so later tickets can be matched against it. "
+            "Does nothing for a ticket in any other state, and never prevents a close."
+        )
+        has_sensitive_variables = False
+
+    def receive_job_hook(self, change, action, changed_object):
+        """Index the ticket, if this change is the one that closed it.
+
+        Fires on every change to every ticket, so the first thing it does is decide this is not its
+        business. `index_ticket_quietly` is R5: whatever happens next, the close has already
+        happened and nothing here may undo it.
+        """
+        if not isinstance(changed_object, EventTicket):
+            return
+        if changed_object.status != TicketStatusChoices.CLOSED:
+            return
+
+        embedding = rag_service.index_ticket_quietly(changed_object)
+        if embedding is None:
+            self.logger.info(
+                "Nothing indexed for this ticket - retrieval is off, or the attempt failed and was "
+                "logged. The close is unaffected.",
+                extra={"object": changed_object},
+            )
+            return
+        self.logger.info(
+            "Indexed into the retrieval corpus (%d dimensions).",
+            embedding.dimensions,
+            extra={"object": changed_object},
+        )
+
+
 #: Nautobot imports `<app>.jobs.jobs` at startup and expects to find the Job classes here, which is
 #: also what makes `register_jobs()` below run at all: without this name the module is never
 #: imported and the Job never appears in the Jobs list.
-jobs = [EventTicketAgentJob]
+jobs = [EventTicketAgentJob, IndexClosedTicket]
 
 register_jobs(*jobs)

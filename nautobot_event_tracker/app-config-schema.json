@@ -101,6 +101,54 @@
             },
             "additionalProperties": false
         },
+        "rag": {
+            "type": "object",
+            "description": "Retrieval over closed tickets (Phase 5A). The corpus is built as tickets close and is read by the Similar Tickets panel alone - no retrieved text ever reaches a prompt (rule R9).",
+            "default": {},
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether closing a ticket indexes it and whether the panel queries. Off until a deployment names an embedding provider and model.",
+                    "default": false
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "LLMProvider name the embedding calls go to. Required when RAG is enabled.",
+                    "default": ""
+                },
+                "model": {
+                    "type": "string",
+                    "description": "LLMModel name on that provider, registered with kind `embedding`. A chat model is refused rather than used - rule L8's posture, on a new axis. Required when RAG is enabled.",
+                    "default": ""
+                },
+                "max_document_chars": {
+                    "type": "integer",
+                    "description": "How much of a ticket's rendered document is embedded, before it is truncated.",
+                    "minimum": 1,
+                    "default": 8000
+                },
+                "similar_count": {
+                    "type": "integer",
+                    "description": "How many neighbours the panel shows at most.",
+                    "minimum": 1,
+                    "default": 5
+                },
+                "max_distance": {
+                    "type": "number",
+                    "description": "Cosine distance past which a neighbour is not shown at all: 0 is identical, 2 is opposite. Measured, not guessed - against nomic-embed-text a genuinely related problem scores 0.09-0.10 and unrelated text scores 0.22-0.24. Tune it against your own corpus and model, and err low: a quiet panel is ignored far less than one that cries wolf. See docs/admin/rag.md.",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2,
+                    "default": 0.15
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": "How long one embedding call may take. Exceeding it fails the indexing, never the close (rule R5).",
+                    "exclusiveMinimum": 0,
+                    "default": 30
+                }
+            },
+            "additionalProperties": false
+        },
         "ingestion": {
             "type": "object",
             "description": "Event ingestion. An empty object means the consumer subscribes to nothing, which is the default until a deployment points it at a broker.",

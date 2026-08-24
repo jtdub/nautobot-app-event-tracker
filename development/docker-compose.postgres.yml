@@ -4,7 +4,11 @@ services:
     environment:
       - "NAUTOBOT_DB_ENGINE=django.db.backends.postgresql"
   db:
-    image: "postgres:17-alpine"
+    # pgvector's image rather than the stock one, because ADR 0003 requires the extension from
+    # Phase 5 onward and `postgres:17-alpine` does not carry it - `pg_available_extensions` has no
+    # vector entry at all. Same PostgreSQL major version, so an existing data volume is reused
+    # rather than rebuilt.
+    image: "pgvector/pgvector:pg17"
     command:
       - "-c"
       - "max_connections=200"

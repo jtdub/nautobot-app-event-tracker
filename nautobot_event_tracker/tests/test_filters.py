@@ -20,6 +20,7 @@ from nautobot_event_tracker.filters import (
     LLMUsageRecordFilterSet,
     MCPServerFilterSet,
     MCPToolFilterSet,
+    TicketEmbeddingFilterSet,
     TicketUpdateFilterSet,
 )
 from nautobot_event_tracker.models import (
@@ -32,6 +33,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
     TicketUpdate,
 )
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -520,3 +522,56 @@ class AgentToolCallFilterTest(FilterTestCases.FilterTestCase):  # pylint: disabl
     def test_q_matches_the_tool_name(self):
         """A call has no name of its own either."""
         self.assertEqual(self.filterset({"q": "push_config"}, self.queryset).qs.count(), 1)
+
+
+class TicketEmbeddingFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
+    """Filters for TicketEmbedding.
+
+    The page answers "what is indexed, and under which model" - the question an operator asks after
+    changing embedding model and finding the similarity panel has gone quiet.
+    """
+
+    queryset = TicketEmbedding.objects.all()
+    filterset = TicketEmbeddingFilterSet
+
+    @classmethod
+    def setUpTestData(cls):
+        """Two rows under one model, one under another, at two dimensionalities."""
+        cls.model = fixtures.create_embedding_model()
+        cls.other_model = fixtures.create_embedding_model(name="other-embedding")
+        cls.ticket = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, title="BGP session down")
+        fixtures.create_ticketembedding(ticket=cls.ticket, model=cls.model)
+        fixtures.create_ticketembedding(model=cls.model)
+        fixtures.create_ticketembedding(model=cls.other_model, vector=[1.0, 0.0])
+
+    def test_by_model(self):
+        """Which rows a given model produced: the re-index question."""
+        self.assertEqual(self.filterset({"model": [self.model.pk]}, self.queryset).qs.count(), 2)
+
+    def test_by_ticket(self):
+        """A ticket has at most one embedding, so this is the "is it indexed" answer."""
+        self.assertEqual(self.filterset({"ticket": [self.ticket.pk]}, self.queryset).qs.count(), 1)
+
+    def test_by_dimensions(self):
+        """Mixed dimensionality means an earlier model's rows are still in the corpus."""
+        self.assertEqual(self.filterset({"dimensions": [2]}, self.queryset).qs.count(), 1)
+
+    def test_q_matches_the_ticket_title(self):
+        """A corpus row has no name of its own; its ticket's title is what an operator knows."""
+        self.assertEqual(self.filterset({"q": "BGP session"}, self.queryset).qs.count(), 1)
+
+    def test_q_does_not_search_the_document(self):
+        """Rule R6 has a filter-shaped hole if it does.
+
+        A filter answers by narrowing, so a `q` that matched `document` would report which closed
+        tickets contain a given string - without ever returning the field that matched, and so
+        without the serializer or the panel ever getting a chance to withhold it.
+        """
+        indexed = TicketEmbedding.objects.get(ticket=self.ticket)
+        self.assertIn("BGP session down", indexed.document)
+
+        # The same string, reached through the document of a row whose title does not contain it.
+        other = fixtures.create_ticketembedding(model=self.model, document="Resolution: bounced the transceiver")
+
+        self.assertEqual(self.filterset({"q": "transceiver"}, self.queryset).qs.count(), 0)
+        self.assertNotIn(other, self.filterset({"q": "transceiver"}, self.queryset).qs)

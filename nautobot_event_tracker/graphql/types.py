@@ -6,6 +6,20 @@ in their `extras_features`, which generates a type for them. `TicketUpdate`, `In
 `LLMUsageRecord`, `AgentRun` and `AgentToolCall` take the second - the explicit types below - and
 so deliberately carry no `graphql` feature, which would register a second, competing type for the
 same model. They need the explicit form because each wires a `filterset_class` of its own.
+
+`TicketEmbedding` is on neither list, and that is deliberate rather than an omission. Its
+`document` is a verbatim copy of its ticket, so reading it has to be gated on the *ticket's*
+permissions - which the REST and UI viewsets do by intersecting with
+`EventTicket.objects.restrict(user, "view")`. GraphQL has no equivalent hook: Nautobot restricts a
+type's root queryset on that type's own model permission, and `OptimizedNautobotObjectType`
+documents that overriding `get_queryset` is not the answer either, because in graphene-django
+3.1.15+ it defeats the query optimizer and reintroduces FK N+1.
+
+Excluding the field alone would not close it: a filterset with a `q` predicate over an
+unrestricted-by-ticket queryset is a content oracle - it leaks by filtering without ever returning
+the field. So the model is simply not queryable here. Everything about it that is safe to read -
+which model indexed it, when, how wide the vector is - is on the REST API, properly restricted.
+Rule R6 is enforced on every surface, or it is enforced on none.
 """
 
 from nautobot.apps.graphql import OptimizedNautobotObjectType
@@ -17,7 +31,13 @@ from nautobot_event_tracker.filters import (
     LLMUsageRecordFilterSet,
     TicketUpdateFilterSet,
 )
-from nautobot_event_tracker.models import AgentRun, AgentToolCall, IngestionStats, LLMUsageRecord, TicketUpdate
+from nautobot_event_tracker.models import (
+    AgentRun,
+    AgentToolCall,
+    IngestionStats,
+    LLMUsageRecord,
+    TicketUpdate,
+)
 
 
 class TicketUpdateType(OptimizedNautobotObjectType):

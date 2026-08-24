@@ -26,6 +26,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
     TicketUpdate,
 )
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -217,7 +218,7 @@ class LLMModelFilterSet(NautobotFilterSet):
         """Meta attributes for filter."""
 
         model = LLMModel
-        fields = ["provider", "name", "description", "enabled", "tags"]  # pylint: disable=nb-use-fields-all
+        fields = ["provider", "name", "description", "enabled", "kind", "tags"]  # pylint: disable=nb-use-fields-all
 
 
 class LLMUsageRecordFilterSet(NautobotFilterSet):
@@ -338,3 +339,26 @@ class AgentToolCallFilterSet(NautobotFilterSet):
 
         model = AgentToolCall
         fields = ["run", "tool", "status", "decided_by"]  # pylint: disable=nb-use-fields-all
+
+
+class TicketEmbeddingFilterSet(NautobotFilterSet):
+    """Filter for TicketEmbedding.
+
+    The question the page exists to answer is "what is in the corpus, and under which model" -
+    which is the question an operator asks after changing embedding model and finding the panel
+    has gone quiet.
+    """
+
+    # `document` is deliberately not a `q` predicate. It is a verbatim copy of its ticket, so a
+    # free-text search across it is a free-text search across every closed ticket's text - and a
+    # filter answers by *narrowing*, which reports a match without ever returning the field that
+    # matched. Search tickets to search ticket text; this page answers "what is indexed".
+    q = SearchFilter(filter_predicates={"ticket__title": "icontains"})
+    ticket = django_filters.ModelMultipleChoiceFilter(queryset=EventTicket.objects.all(), label="Ticket")
+    model = django_filters.ModelMultipleChoiceFilter(queryset=LLMModel.objects.all(), label="Model")
+
+    class Meta:
+        """Meta attributes for filter."""
+
+        model = TicketEmbedding
+        fields = ["ticket", "model", "dimensions"]  # pylint: disable=nb-use-fields-all

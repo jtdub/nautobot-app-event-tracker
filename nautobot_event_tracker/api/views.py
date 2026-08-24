@@ -33,9 +33,11 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
     TicketUpdate,
 )
 from nautobot_event_tracker.services import agent as agent_service
+from nautobot_event_tracker.services import rag as rag_service
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import (
     AgentBusyError,
@@ -469,3 +471,22 @@ class AgentToolCallViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
         with _reporting_service_errors():
             tool_call = service_function(tool_call=tool_call, user=request.user)
         return Response(self.get_serializer(tool_call).data)
+
+
+class TicketEmbeddingViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
+    """TicketEmbedding viewset. The rows are the retrieval corpus, written by services/rag.py."""
+
+    queryset = TicketEmbedding.objects.select_related("ticket", "model__provider")
+    serializer_class = serializers.TicketEmbeddingSerializer
+    filterset_class = filters.TicketEmbeddingFilterSet
+
+    def get_queryset(self):
+        """Only embeddings of tickets this user may read.
+
+        `document` is a verbatim copy of its ticket - title, description, resolution and every
+        human comment - so without this the corpus is a way around ticket permissions: hold
+        `view_ticketembedding` and an ObjectPermission constraint on `EventTicket` stops applying,
+        because nothing carries it across the relation. Rule R6 is enforced in the panel and has to
+        be enforced here too, or it is not enforced.
+        """
+        return rag_service.visible_embeddings(super().get_queryset(), self.request.user)

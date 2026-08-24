@@ -20,6 +20,7 @@ router.register("mcp-servers", views.MCPServerUIViewSet)
 router.register("mcp-tools", views.MCPToolUIViewSet)
 router.register("agent-runs", views.AgentRunUIViewSet)
 router.register("agent-tool-calls", views.AgentToolCallUIViewSet)
+router.register("ticket-embeddings", views.TicketEmbeddingUIViewSet)
 
 urlpatterns = [
     path(

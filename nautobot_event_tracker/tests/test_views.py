@@ -18,6 +18,7 @@ from nautobot_event_tracker.api.serializers import SERVICE_OWNED_FIELDS
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
+    LLMModelKindChoices,
     LLMProviderTypeChoices,
     SeverityChoices,
     TicketSourceChoices,
@@ -34,6 +35,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
 )
 from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import mcp as mcp_service
@@ -607,6 +609,10 @@ class LLMModelViewTest(ViewTestCases.PrimaryObjectViewTestCase):
             "name": "view-test-model",
             "description": "created through the form",
             "enabled": True,
+            # Required since Kind joined the form. It has a model default, but a ModelForm field
+            # without `blank=True` is required regardless, so the generic create/edit cases have to
+            # send it.
+            "kind": LLMModelKindChoices.CHAT,
             # Decimal, not string: the generic edit test compares this dict against the saved
             # instance, which holds Decimals.
             "input_cost_per_million": Decimal("1.0000"),
@@ -1008,3 +1014,105 @@ class TicketAgentPanelTest(TestCase):
             content = self.client.get(ticket.get_absolute_url()).content.decode()
 
         self.assertNotIn("Investigate with Agent", content)
+
+
+class TicketEmbeddingViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+):
+    """List and detail only: the corpus is written by services/rag.py.
+
+    `view_eventticket` is granted alongside the model's own permission because the viewset narrows
+    the corpus to embeddings of tickets the user may read (rule R6) - a `document` is a verbatim
+    copy of its ticket, so reading one has to be gated on the ticket. Without it the generic
+    mixins see an empty queryset and every case here fails, which is the restriction working.
+    """
+
+    model = TicketEmbedding
+    user_permissions = ["nautobot_event_tracker.view_eventticket"]
+
+    def test_get_object_anonymous(self):
+        """Skipped: this model deliberately does not honour its own view exemption.
+
+        `EXEMPT_VIEW_PERMISSIONS` on `ticketembedding` would make the corpus anonymously readable,
+        and a corpus document is a verbatim copy of its ticket - so the exemption would publish
+        ticket text to unauthenticated users through a model whose name gives no hint of that.
+        Visibility follows the *ticket*, which has its own exemption setting if an operator really
+        wants this public.
+        """
+        self.skipTest("Corpus visibility follows the ticket's permissions, not this model's exemption.")
+
+    def test_list_objects_anonymous_with_exempt_permission_for_one_view_only(self):
+        """Skipped for the reason above."""
+        self.skipTest("Corpus visibility follows the ticket's permissions, not this model's exemption.")
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three embeddings on three closed tickets."""
+        embedding_model = fixtures.create_embedding_model()
+        for index in range(3):
+            ticket = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, title=f"Corpus {index}")
+            fixtures.create_ticketembedding(ticket=ticket, model=embedding_model)
+
+    def test_there_is_no_add_route(self):
+        """Nothing outside the service writes a corpus row."""
+        with self.assertRaises(NoReverseMatch):
+            reverse("plugins:nautobot_event_tracker:ticketembedding_add")
+
+
+class SimilarTicketsPanelTest(TestCase):
+    """The panel: the only consumer of retrieval, and the one a person reads."""
+
+    user_permissions = ["nautobot_event_tracker.view_eventticket"]
+
+    def setUp(self):
+        """A corpus with one close neighbour, and an open ticket to view."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.embedding_model = fixtures.create_embedding_model()
+        self.neighbour = fixtures.create_ticket_in_status(
+            TicketStatusChoices.CLOSED, user=self.user, title="leaf-01 optic replaced"
+        )
+        fixtures.create_ticketembedding(ticket=self.neighbour, model=self.embedding_model, vector=[1.0, 0.0, 0.0])
+        self.ticket = fixtures.create_ticket(user=self.user, title="leaf-01 down again")
+
+    def page(self, **overrides):
+        """The ticket page, rendered with retrieval on and a vector pointing at the neighbour.
+
+        The panel takes no seam - it is the production path - so the model call is patched at the
+        service. The real function is captured before the patch: inside the side effect
+        `llm_service.embed` is the mock, and calling it would recurse.
+        """
+        from nautobot_event_tracker.services import llm as llm_service  # pylint: disable=C0415
+
+        real_embed = llm_service.embed
+
+        def _embed(**kwargs):
+            return real_embed(**kwargs, client=fixtures.FakeEmbeddingClient([1.0, 0.0, 0.0]))
+
+        with fixtures.rag_settings(**overrides):
+            with mock.patch("nautobot_event_tracker.services.rag.llm_service.embed", side_effect=_embed):
+                return self.client.get(self.ticket.get_absolute_url()).content.decode()
+
+    def test_the_panel_shows_a_neighbour_and_its_resolution(self):
+        """ "We have seen this before", which is the entire point of the phase."""
+        content = self.page()
+
+        self.assertIn("SIMILAR TICKETS", content)
+        self.assertIn("leaf-01 optic replaced", content)
+
+    def test_the_panel_is_absent_when_retrieval_is_off(self):
+        """A stock install renders exactly as it did before this phase."""
+        with fixtures.app_settings():
+            content = self.client.get(self.ticket.get_absolute_url()).content.decode()
+
+        self.assertNotIn("SIMILAR TICKETS", content)
+
+    def test_the_panel_is_absent_on_a_closed_ticket(self):
+        """12.2 - a closed ticket's neighbours are of historical interest at best."""
+        closed = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, user=self.user, title="already done")
+
+        with fixtures.rag_settings():
+            content = self.client.get(closed.get_absolute_url()).content.decode()
+
+        self.assertNotIn("SIMILAR TICKETS", content)

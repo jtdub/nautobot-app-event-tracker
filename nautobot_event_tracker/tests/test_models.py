@@ -893,3 +893,63 @@ class TestAgentToolCall(ModelTestCases.BaseModelTestCase):
     def test_calls_are_not_change_logged(self):
         """A record of what happened, like every other row of this kind."""
         self.assertFalse(hasattr(fixtures.create_agenttoolcall(), "to_objectchange"))
+
+
+class TestTicketEmbedding(ModelTestCases.BaseModelTestCase):
+    """The retrieval corpus row. Constructed directly only here and in the fixtures."""
+
+    model = models.TicketEmbedding
+
+    @classmethod
+    def setUpTestData(cls):
+        """Three embeddings on three closed tickets - one row per ticket, so three tickets."""
+        super().setUpTestData()
+        embedding_model = fixtures.create_embedding_model()
+        for index in range(3):
+            ticket = fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, title=f"Closed {index}")
+            fixtures.create_ticketembedding(ticket=ticket, model=embedding_model)
+
+    def test_one_embedding_per_ticket(self):
+        """R4 held by the database rather than by the service remembering to."""
+        row = fixtures.create_ticketembedding()
+
+        with self.assertRaises(IntegrityError):
+            models.TicketEmbedding.objects.create(
+                ticket=row.ticket,
+                embedding=[1.0, 0.0, 0.0],
+                document="a second one",
+                model=row.model,
+                dimensions=3,
+                document_fingerprint="x",
+            )
+
+    def test_a_deleted_ticket_takes_its_embedding_with_it(self):
+        """A vector of a ticket that no longer exists is not worth keeping."""
+        row = fixtures.create_ticketembedding()
+        ticket = row.ticket
+
+        ticket.delete()
+
+        self.assertFalse(models.TicketEmbedding.objects.filter(pk=row.pk).exists())
+
+    def test_the_model_is_protected_while_embeddings_exist(self):
+        """Tidying the registry must not silently orphan the corpus."""
+        row = fixtures.create_ticketembedding(model=fixtures.create_embedding_model(name="protected-embed"))
+
+        with self.assertRaises(ProtectedError):
+            row.model.delete()
+
+    def test_the_vector_round_trips(self):
+        """pgvector is doing real work here, not storing a string."""
+        row = fixtures.create_ticketembedding(vector=[0.5, -0.25, 0.125])
+        row.refresh_from_db()
+
+        # pylint cannot see through `VectorField` to know its value is an array, so it reads this
+        # as iterating something non-iterable. It is a numpy array at runtime.
+        stored = [round(float(value), 3) for value in row.embedding]  # pylint: disable=not-an-iterable
+
+        self.assertEqual(stored, [0.5, -0.25, 0.125])
+
+    def test_embeddings_are_not_change_logged(self):
+        """Re-indexing would otherwise file an ObjectChange recording that a number changed."""
+        self.assertFalse(hasattr(fixtures.create_ticketembedding(), "to_objectchange"))

@@ -124,12 +124,14 @@ nav:
           - MCP Tool: "models/mcptool.md"
           - Agent Run: "models/agentrun.md"
           - Agent Tool Call: "models/agenttoolcall.md"
+          - Ticket Embedding: "models/ticketembedding.md"
   - Administrator Guide:
       - Install and Configure: "admin/install.md"
       - Running the Event Consumer: "admin/ingestion.md"
       - Configuring LLM Providers: "admin/llm.md"
       - Registering MCP Servers: "admin/mcp.md"
       - Running the Agent: "admin/agents.md"
+      - Retrieval over Closed Tickets: "admin/rag.md"
       - Upgrade: "admin/upgrade.md"
       - Uninstall: "admin/uninstall.md"
       - Compatibility Matrix: "admin/compatibility_matrix.md"
@@ -163,6 +165,7 @@ nav:
               - "Phase 3 — LLM Service Layer and Triage": "specs/phase-3-llm-triage.md"
               - "Phase 4A — Enrichment Resolver": "specs/phase-4a-enrichment.md"
               - "Phase 4B — Agents and MCP Tooling": "specs/phase-4b-agents.md"
+              - "Phase 5A — RAG over Closed Tickets": "specs/phase-5a-rag.md"
       - Code Reference:
           - "dev/code_reference/index.md"
           - Package: "dev/code_reference/package.md"

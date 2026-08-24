@@ -18,6 +18,7 @@ from nautobot.extras.models import ExternalIntegration
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
+    LLMModelKindChoices,
     LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
@@ -35,6 +36,7 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
     MCPServer,
     MCPTool,
+    TicketEmbedding,
 )
 from nautobot_event_tracker.services import tickets as ticket_service
 
@@ -46,6 +48,11 @@ LLM_MODEL_FIELDS = (
     "name",
     "description",
     "enabled",
+    # Beside `enabled`, because they are the two things an operator decides about a model rather
+    # than reads off a price list. Omitting it here made Kind unsettable and invisible in the UI -
+    # this tuple backs both the form and the detail panel - while the admin guide told operators
+    # to set it there.
+    "kind",
     "input_cost_per_million",
     "output_cost_per_million",
     "max_output_tokens",
@@ -353,12 +360,13 @@ class LLMModelFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancest
     """Filter form for LLMModel."""
 
     model = LLMModel
-    field_order = ["q", "provider", "name", "enabled"]
+    field_order = ["q", "provider", "name", "kind", "enabled"]
 
     q = forms.CharField(required=False, label="Search", help_text="Search within name, description and provider.")
     provider = DynamicModelChoiceField(queryset=LLMProvider.objects.all(), required=False, to_field_name="name")
     name = forms.CharField(required=False, label="Name")
     enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
+    kind = forms.MultipleChoiceField(choices=LLMModelKindChoices, required=False, widget=StaticSelect2Multiple)
 
 
 class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
@@ -529,4 +537,18 @@ class AgentToolCallFilterForm(NautobotFilterForm):  # pylint: disable=too-many-a
     q = forms.CharField(required=False, label="Search", help_text="Search within tool name, status and error.")
     status = forms.MultipleChoiceField(choices=AgentToolCallStatusChoices, required=False, widget=StaticSelect2Multiple)
     tool = DynamicModelChoiceField(queryset=MCPTool.objects.all(), required=False, label="Tool")
+    ticket = DynamicModelChoiceField(queryset=EventTicket.objects.all(), required=False, label="Ticket")
+
+
+class TicketEmbeddingFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
+    """Filter form for TicketEmbedding.
+
+    Filter form only: the corpus is written by `services.rag` and by nothing else, so there is no
+    create or edit form to offer.
+    """
+
+    model = TicketEmbedding
+    field_order = ["q", "ticket"]
+
+    q = forms.CharField(required=False, label="Search", help_text="Search within ticket title and document.")
     ticket = DynamicModelChoiceField(queryset=EventTicket.objects.all(), required=False, label="Ticket")
