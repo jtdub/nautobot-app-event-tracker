@@ -66,7 +66,13 @@ class Migration(migrations.Migration):
     operations = [
         # First, because the vector column below cannot be created without it.
         CreateVectorExtension(),
-        migrations.AddField(
+        # A default on AddField is flagged because it historically rewrote the whole table, which
+        # on something the size of IPAddress is an outage. Two things make it safe here.
+        # PostgreSQL 11 and later add a column with a constant default in O(1), storing the value
+        # in the catalogue rather than touching a row - and ADR 0003 makes PostgreSQL the only
+        # supported backend, so there is no other case to worry about. And `LLMModel` is a registry
+        # an operator fills in by hand: tens of rows, not millions.
+        migrations.AddField(  # pylint: disable=new-db-field-with-default
             model_name="llmmodel",
             name="kind",
             field=models.CharField(db_index=True, default="chat", max_length=255),

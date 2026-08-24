@@ -944,7 +944,11 @@ class TestTicketEmbedding(ModelTestCases.BaseModelTestCase):
         row = fixtures.create_ticketembedding(vector=[0.5, -0.25, 0.125])
         row.refresh_from_db()
 
-        self.assertEqual([round(float(value), 3) for value in row.embedding], [0.5, -0.25, 0.125])
+        # pylint cannot see through `VectorField` to know its value is an array, so it reads this
+        # as iterating something non-iterable. It is a numpy array at runtime.
+        stored = [round(float(value), 3) for value in row.embedding]  # pylint: disable=not-an-iterable
+
+        self.assertEqual(stored, [0.5, -0.25, 0.125])
 
     def test_embeddings_are_not_change_logged(self):
         """Re-indexing would otherwise file an ObjectChange recording that a number changed."""

@@ -327,7 +327,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     return LLMResponse(text=text or "", record=record, tool_calls=tool_calls)
 
 
-def embed(*, model, text, purpose=LLMPurposeChoices.EMBEDDING, ticket=None, timeout=None, client=None):
+def embed(  # pylint: disable=too-many-arguments,too-many-locals
+    *, model, text, purpose=LLMPurposeChoices.EMBEDDING, ticket=None, timeout=None, client=None
+):
     """One embedding call: the twin of `complete()`, and every rule it obeys applies here too.
 
     Refuse a disabled or wrong-kind model before any network traffic (L8), resolve credentials from
