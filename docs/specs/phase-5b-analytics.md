@@ -320,9 +320,12 @@ persistently slow panel becomes invisible furniture rather than an error somebod
   there is no clean SQL aggregate for it. Safe because the window is bounded and the table is
   already bucketed; noted because it is the one aggregation on the page the database does not do.
 
-- **Panels cache on the request.** Ten panels are drawn from four results, and the framework
-  renders each panel independently. Existing custom panels cache on `context["object"]`; this page
-  has no object, which is the one thing 11.1's choice actually costs at runtime.
+- **The results are a context object, not a cache on the request.** Nine panels are drawn from
+  four results, and the framework renders each panel independently — `KeyValueTablePanel` asks for
+  its data twice on its own, once to decide whether to render and once to render. Existing custom
+  panels cache on `context["object"]` because they render inside a core view whose context they
+  cannot add to. This view owns its context, so an `AnalyticsResults` holder goes in it. That is
+  the one thing 11.1's choice actually costs at runtime, and it costs less than it first looked.
 
 - **The chart subtitle is computed at render time.** `EChartsBase.header` is fixed when the panel is
   constructed and the window is not, so `DashboardChart` overrides `get_config()` to write the
@@ -332,3 +335,48 @@ persistently slow panel becomes invisible furniture rather than an error somebod
 - **The corpus-coverage figure from section 3's table is not a panel.** Section 6 does not make it
   one and section 1's four questions do not ask for it. `TicketEmbedding` against closed
   `EventTicket` remains a GraphQL query for anybody who wants it.
+
+- **Nine panels, not ten.** Seven charts and two key/value tables. The first draft of this section
+  and of the changelog both said ten.
+
+The following came out of the cleanup pass run against the finished branch, and each is a change
+the first implementation should have made:
+
+- **The template includes core's grid rather than copying it.** The first draft's body was a
+  verbatim fork of `components/layout/two_over_one.html`. It passed the guard, extended `base.html`
+  alone, and was still exactly the drift ADR 0008 exists to prevent: core changes its layout, every
+  other page in the deployment moves, and the fork does not. The guard now also asserts the allowed
+  template emits no grid or table markup of its own, because "extends the base" turned out not to
+  be the same claim as "draws no layout".
+
+- **`Tab.panels_for_section()` does the panel ordering.** The first draft reimplemented it, with a
+  docstring admitting as much. Section 11.1's argument is that `Tab` cannot *render* without an
+  object; its sorting needs no object, and copying it stated the ordering twice.
+
+- **`model_cost` makes one aggregate pass instead of three.** Grouping by day, purpose and model at
+  once and pivoting in Python, rather than three scans of the fastest-growing table the page reads
+  — each of which carried the whole permission subquery with it.
+
+- **`urls.py` and `navigation.py` call `is_enabled()`, not `get_settings()`.** Both run at import.
+  `get_settings()` is strict, so a typo in `query_timeout_seconds` would have raised inside the
+  URLConf and taken every route in the installation down over one broken dashboard key — the exact
+  opposite of the posture `_retention_days` takes about a *neighbouring* block two hundred lines
+  away. `get_settings()` still runs in the view and the form, where the page can report it.
+
+- **One more index than section 8.2 anticipated.** The severity split asks which tickets are open
+  right now, so it is the one query on the page with no time bound and nothing to bound it by.
+  Without `(status, severity)` it scans the whole table on every render, growing without limit
+  while the two bounded queries stay flat. It was the query that would have missed the budget
+  first.
+
+- **`ChoiceSet.as_dict()` and `.values()` already existed.** The first draft hand-rolled both.
+  Nautobot's versions unpack grouped choices, so they also survive a choice set that later grows an
+  optgroup, where `dict(CHOICES)` would have produced silent nonsense.
+
+- **The schema-agreement suite is shared with Phase 5A's.** It was copied wholesale, which also
+  falsified that suite's docstring claim that the `rag` block was the only one covered. Both are
+  now subclasses of one base in `tests/fixtures.py`.
+
+- **The `statement_timeout` reset is guarded on `in_atomic_block`.** Outside an enclosing
+  transaction the commit has already discarded the setting, so the reset did nothing but spend a
+  round trip and draw a PostgreSQL warning, four times per render.

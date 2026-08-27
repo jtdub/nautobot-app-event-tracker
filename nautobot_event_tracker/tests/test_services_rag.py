@@ -4,10 +4,6 @@ No test reaches a provider: `embed` is a seam, and the fake routes through the r
 `services.llm.embed` so every indexing pass leaves a real usage record behind.
 """
 
-import json
-from pathlib import Path
-
-import jsonschema
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
@@ -70,80 +66,18 @@ class TestTheSettings(TestCase):
                 self.assertIn("'max_distance'", str(caught.exception))
 
 
-class TestTheSchemaAgreesWithTheValidator(TestCase):
-    """`app-config-schema.json` and `get_settings()` must accept and refuse the same values.
+class TestTheSchemaAgreesWithTheValidator(fixtures.SchemaAgreementAssertions, TestCase):
+    """The `rag` block's half of the contract. The argument is in the shared base."""
 
-    Two descriptions of one contract, written in different languages and edited at different times.
-    When they disagree the operator gets the worst possible outcome: `nautobot-server
-    validate_app_config` passes, and the app then refuses to start on the config it just approved.
-    A green check followed by a dead app is worse than no check.
-
-    This caught `max_distance` declared as `"minimum": 0` - inclusive - against a validator
-    requiring `0 < distance`. The field below it had the same bound and got it right, which is how
-    these diverge: nobody is comparing them.
-
-    Only the `rag` block is covered, and that is deliberate rather than a gap. The other three
-    blocks hold 17 bounded numeric keys between them and every one currently agrees with the
-    schema, because they validate through shared helpers - `ingestion/config.py`'s
-    `_positive_int_problem` and `_positive_number_problem`, and `agent.py`'s
-    `POSITIVE_INTEGER_KEYS` - so one bound expression serves many keys and drifting means editing
-    the helper, which is hard to do by accident. `rag` is the one block that writes each bound out
-    longhand per key, which is why it is the block that diverged. If it ever grows shared helpers
-    of its own, this test becomes much less interesting; until then it guards the place the risk
-    actually lives.
-    """
-
-    #: Values that must be accepted, and values that must be refused, by *both*. Only keys with a
-    #: numeric bound: the string and boolean keys have nothing to disagree about.
+    BLOCK = "rag"
+    SETTINGS_MODULE = rag_service
+    BASE_BLOCK = {"enabled": False}
     PROBES = {
         "max_distance": {"valid": (0.15, 0.5, 2), "invalid": (0, -1, 2.5)},
         "timeout_seconds": {"valid": (30, 0.5), "invalid": (0, -1)},
         "max_document_chars": {"valid": (1, 8000), "invalid": (0, -1)},
         "similar_count": {"valid": (1, 5), "invalid": (0, -1)},
     }
-
-    @classmethod
-    def setUpClass(cls):
-        """Read the shipped schema once."""
-        super().setUpClass()
-        schema_path = Path(rag_service.__file__).resolve().parent.parent / "app-config-schema.json"
-        cls.properties = json.loads(schema_path.read_text())["properties"]["rag"]["properties"]
-
-    def _schema_accepts(self, key, value):
-        """Whether the shipped schema accepts this one value for this one key."""
-        try:
-            jsonschema.validate({key: value}, {"type": "object", "properties": self.properties})
-        except jsonschema.ValidationError:
-            return False
-        return True
-
-    def _validator_accepts(self, key, value):
-        """Whether `get_settings()` accepts this one value for this one key."""
-        with fixtures.app_settings(rag={"enabled": False, key: value}):
-            try:
-                rag_service.get_settings()
-            except ImproperlyConfigured:
-                return False
-        return True
-
-    def test_the_two_agree(self):
-        """Every probe value gets the same answer from the schema and from the validator."""
-        for key, probes in self.PROBES.items():
-            for value in probes["valid"]:
-                with self.subTest(key=key, value=value, expected="accepted"):
-                    self.assertTrue(self._schema_accepts(key, value), "schema refuses it")
-                    self.assertTrue(self._validator_accepts(key, value), "get_settings refuses it")
-            for value in probes["invalid"]:
-                with self.subTest(key=key, value=value, expected="refused"):
-                    self.assertFalse(self._schema_accepts(key, value), "schema accepts it")
-                    self.assertFalse(self._validator_accepts(key, value), "get_settings accepts it")
-
-    def test_every_default_is_declared_and_matches(self):
-        """The schema documents each key once, with the value the code actually falls back to."""
-        self.assertEqual(set(self.properties), set(rag_service.DEFAULTS))
-
-        declared = {key: spec.get("default") for key, spec in self.properties.items()}
-        self.assertEqual(declared, dict(rag_service.DEFAULTS))
 
 
 class TestTheDocument(RagTestCase):

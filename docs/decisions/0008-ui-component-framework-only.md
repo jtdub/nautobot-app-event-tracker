@@ -31,11 +31,11 @@ The framework renders panels *inside an object detail page*. `Tab.should_render_
 
 The [analytics dashboard](../specs/phase-5b-analytics.md) is a page about no object. It could have been avoided by hanging the charts off an existing detail page or off Nautobot's home page, and both would have been contrivances: the page has a window control and a route, and pretending otherwise to satisfy a rule is how a rule stops meaning anything.
 
-So the app ships exactly one template, `templates/nautobot_event_tracker/dashboard.html`. It extends `base.html` and nothing else, and its body is three calls to the framework's own `render_components` tag plus the window form. It draws no panel, no table and no button of its own.
+So the app ships exactly one template, `templates/nautobot_event_tracker/dashboard.html`. It extends `base.html` and nothing else, and its body is the window form plus `{% include "components/layout/two_over_one.html" %}` — core's own panel grid, included rather than copied. It draws no panel, no table, no grid and no button of its own.
 
 What this decision is actually about is preserved: the hazard is coupling to core's page internals and drifting into hand-written UI, not the existence of a file. Extending `generic/object_retrieve.html` inherits every change core makes to it; extending `base.html` and delegating to the framework inherits the framework.
 
-`tests/test_guards.py::TemplateGuardTest` changes from "no `.html` anywhere" to an explicit one-file allowlist, and asserts that the allowed file extends `base.html` alone. Adding a second entry to that list is a decision about this ADR rather than a test fix.
+`tests/test_guards.py::TemplateGuardTest` changes from "no `.html` anywhere" to an explicit one-file allowlist over everything under `templates/`, and asserts two things about the allowed file: that it extends `base.html` alone, and that it emits no grid or table markup of its own. The second check is the one that matters, and it was added because the first draft passed the first check while carrying a private copy of core's layout template — which is precisely the drift, inside the exception. Adding a second entry to the allowlist is a decision about this ADR rather than a test fix.
 
 ## Consequences
 

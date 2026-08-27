@@ -20,4 +20,8 @@ class Migration(migrations.Migration):
             model_name="eventticket",
             index=models.Index(fields=["closed_at"], name="event_ticket_closed_idx"),
         ),
+        migrations.AddIndex(
+            model_name="eventticket",
+            index=models.Index(fields=["status", "severity"], name="event_ticket_open_sev_idx"),
+        ),
     ]

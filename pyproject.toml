@@ -123,8 +123,9 @@ disable = """,
 # ADR 0008 puts every piece of UI construction - panels, buttons, viewsets - in one module per
 # concern, so `views.py` and its test grow with the number of models rather than with complexity.
 # Splitting either would move the same code behind a re-export and make it harder to find, not
-# easier to read. Raised deliberately, and still a ceiling.
-max-module-lines = 1400
+# easier to read. Raised deliberately, and still a ceiling. Phase 5B's dashboard panels took it
+# past 1400.
+max-module-lines = 1600
 
 [tool.pylint.similarities]
 # Pylint's default of four flags the two calls to `walk_to_status`, which pass the same five

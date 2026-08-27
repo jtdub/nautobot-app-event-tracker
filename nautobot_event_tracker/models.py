@@ -132,6 +132,11 @@ class EventTicket(PrimaryModel):  # pylint: disable=too-many-ancestors
             # the whole of the schema that phase adds - it introduces no model and no counter.
             models.Index(fields=["created"], name="event_ticket_created_idx"),
             models.Index(fields=["closed_at"], name="event_ticket_closed_idx"),
+            # The dashboard's severity split asks "which tickets are open right now", so it is the
+            # one query on that page with no time bound and nothing to bound it by. Without this
+            # it scans the whole table on every render, and `event_ticket_dedup_idx` cannot serve
+            # it - a leading `dedup_key` does not help a `status NOT IN`.
+            models.Index(fields=["status", "severity"], name="event_ticket_open_sev_idx"),
         ]
 
     def __str__(self):

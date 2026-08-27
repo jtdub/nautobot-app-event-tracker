@@ -35,7 +35,6 @@ tests that fail if the copies drift apart.
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
-from decimal import Decimal
 
 from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured
@@ -80,10 +79,6 @@ DEFAULTS = {
 #: `ingestion/config.py` and `services/llm.py`, so a change in either owner fails the build here.
 INGESTION_STATS_RETENTION_DEFAULT = 30
 LLM_USAGE_RETENTION_DEFAULT = 90
-
-#: Which purposes the cost chart splits by. Read from the choice set rather than written out, so a
-#: fourth purpose appears on the chart the day it appears in `choices.py`.
-COST_PURPOSES = tuple(value for value, _ in LLMPurposeChoices.CHOICES)
 
 
 class Median(Aggregate):  # pylint: disable=abstract-method
@@ -230,19 +225,31 @@ def get_settings():
     )
 
 
+def is_enabled():
+    """Whether the dashboard exists, read without validating the rest of the block.
+
+    `urls.py` and `navigation.py` consult this at import time, and they must not raise there. A
+    typo in `query_timeout_seconds` should break the dashboard page, where somebody can read the
+    message; raising in the URLConf would instead stop Nautobot serving anything at all. That is
+    the posture `_retention_days` takes about a neighbouring block, applied to this one's own keys.
+
+    `get_settings()` stays strict and runs where the page can report it - the view and the form.
+    """
+    configured = django_settings.PLUGINS_CONFIG.get("nautobot_event_tracker", {}).get("dashboard") or {}
+    enabled = configured.get("enabled", DEFAULTS["enabled"])
+    return enabled if isinstance(enabled, bool) else DEFAULTS["enabled"]
+
+
 def window_choices(settings=None):
     """The windows the page offers, bounded by `max_window_days` - rule D4 at the form.
 
     Returned rather than written into `forms.py` so that the bound and the offer cannot disagree.
     """
     settings = settings or get_settings()
-    offered = [1, 7, 14, 30, 60, 90]
-    allowed = [days for days in offered if days <= settings.max_window_days]
-    if settings.max_window_days not in allowed:
-        allowed.append(settings.max_window_days)
-    if settings.default_window_days not in allowed:
-        allowed.append(settings.default_window_days)
-    return tuple(sorted(allowed))
+    # `get_settings()` has already refused a default larger than the maximum, so both bounds are
+    # safe to add unconditionally.
+    offered = {days for days in (1, 7, 14, 30, 60, 90) if days <= settings.max_window_days}
+    return tuple(sorted(offered | {settings.max_window_days, settings.default_window_days}))
 
 
 def _retention_days(block, key, default):
@@ -279,10 +286,12 @@ def _window(days, settings, *, retention_days=None):
 def _deadline(seconds):
     """Bound one panel's queries with PostgreSQL's `statement_timeout` - rule D8.
 
-    `SET LOCAL` lasts until the end of the transaction rather than the end of a savepoint, and
-    under Django's `TestCase` the whole test is one transaction, so the reset in the `finally` is
-    load-bearing rather than tidiness: without it one slow panel would impose its timeout on every
-    query that followed it.
+    `SET LOCAL` lasts until the end of the transaction rather than the end of a savepoint, so under
+    an *enclosing* transaction - Django's `TestCase` wraps a whole test in one - the setting would
+    outlive this block and impose one panel's timeout on every query after it. The reset in the
+    `finally` is what stops that, and it is guarded on `in_atomic_block` because outside such a
+    transaction there is nothing left to reset: the commit above already discarded it, and
+    PostgreSQL answers a bare `SET LOCAL` with a warning and no effect.
 
     Raises `_QueryTooSlow` so the caller returns the empty result for its panel and the page still
     renders. A panel that says it took too long is a defect somebody can see; a page that never
@@ -297,7 +306,7 @@ def _deadline(seconds):
     except OperationalError as error:
         raise _QueryTooSlow() from error
     finally:
-        if connection.connection is not None and not connection.connection.closed:
+        if connection.in_atomic_block:
             with connection.cursor() as cursor:
                 cursor.execute("SET LOCAL statement_timeout = DEFAULT")
 
@@ -358,11 +367,6 @@ def _by_day(rows, value_key):
     return {str(row["day"]): row[value_key] for row in rows if row["day"] is not None}
 
 
-def _labels(choices):
-    """Value-to-label map for a choice set, so a chart shows "In Progress" and not "in_progress"."""
-    return dict(choices.CHOICES)
-
-
 def ingestion_health(*, user, days=None):
     """The ingestion funnel over the window: what arrived, what opened a ticket, what was dropped.
 
@@ -375,14 +379,11 @@ def ingestion_health(*, user, days=None):
         settings,
         retention_days=_retention_days("ingestion", "stats_retention_days", INGESTION_STATS_RETENTION_DEFAULT),
     )
-    empty = IngestionHealth(window=window, volume={}, drops={}, timed_out=True)
-
     try:
         with _deadline(settings.query_timeout_seconds):
-            buckets = (
-                visible_stats(user)
-                .filter(bucket_start__gte=window.start, bucket_start__lte=window.end)
-                .annotate(day=TruncDate("bucket_start"))
+            stats = visible_stats(user).filter(bucket_start__gte=window.start, bucket_start__lte=window.end)
+            rows = list(
+                stats.annotate(day=TruncDate("bucket_start"))
                 .values("day")
                 .annotate(
                     received=Sum("received"),
@@ -391,24 +392,19 @@ def ingestion_health(*, user, days=None):
                 )
                 .order_by("day")
             )
-            rows = list(buckets)
 
             # `drops_by_reason` is a JSONField with operator-supplied keys, so there is no clean
-            # SQL aggregate for it. Summed in Python over one bounded window of an already-bucketed
-            # table, which is a few hundred rows on a busy deployment.
+            # SQL aggregate for it. A second statement rather than one pass carrying the column
+            # beside the counters: `exclude(drops_by_reason={})` means a deployment dropping
+            # nothing reads no rows at all, where a merged query would pull every bucket in the
+            # window into Python to sum counts the database has already summed.
             reasons = {}
-            reason_rows = (
-                visible_stats(user)
-                .filter(bucket_start__gte=window.start, bucket_start__lte=window.end)
-                .exclude(drops_by_reason={})
-                .values_list("drops_by_reason", flat=True)
-            )
-            for mapping in reason_rows:
+            for mapping in stats.exclude(drops_by_reason={}).values_list("drops_by_reason", flat=True):
                 for reason, count in (mapping or {}).items():
                     if isinstance(count, int) and not isinstance(count, bool):
                         reasons[reason] = reasons.get(reason, 0) + count
     except _QueryTooSlow:
-        return empty
+        return IngestionHealth(window=window, volume={}, drops={}, timed_out=True)
 
     volume = {
         "Received": _by_day(rows, "received"),
@@ -430,8 +426,6 @@ def ticket_flow(*, user, days=None):
     """
     settings = get_settings()
     window = _window(days, settings)
-    empty = TicketFlow(window=window, flow={}, open_by_severity={}, timed_out=True)
-
     try:
         with _deadline(settings.query_timeout_seconds):
             tickets = visible_tickets(user)
@@ -459,9 +453,9 @@ def ticket_flow(*, user, days=None):
                 created__isnull=False,
             ).aggregate(median=Median(elapsed, output_field=DurationField()))["median"]
     except _QueryTooSlow:
-        return empty
+        return TicketFlow(window=window, flow={}, open_by_severity={}, timed_out=True)
 
-    labels = _labels(SeverityChoices)
+    labels = SeverityChoices.as_dict()
     ranked = sorted(severities, key=lambda row: -SEVERITY_WEIGHTS.get(row["severity"], 0))
     open_by_severity = (
         {"Open tickets": {labels.get(row["severity"], row["severity"]): row["total"] for row in ranked}}
@@ -494,40 +488,47 @@ def model_cost(*, user, days=None):
         settings,
         retention_days=_retention_days("llm", "usage_retention_days", LLM_USAGE_RETENTION_DEFAULT),
     )
-    empty = ModelCost(window=window, cost_by_purpose={}, cost_by_model={}, timed_out=True)
-
     try:
         with _deadline(settings.query_timeout_seconds):
-            usage = visible_usage(user).filter(called_at__gte=window.start, called_at__lte=window.end)
-            per_day = list(
-                usage.annotate(day=TruncDate("called_at"))
-                .values("day", "purpose")
-                .annotate(total=Sum("cost"))
+            # One pass, pivoted below, rather than three for the day series, the per-model table
+            # and the counts. `LLMUsageRecord` is the fastest-growing table this page reads - a
+            # triage call per ingested message - and each extra pass would carry the whole
+            # restriction subquery with it. The grouped result is bounded by days x purposes x
+            # models, which is the same "aggregate once, pivot in Python" shape used above.
+            rows = list(
+                visible_usage(user)
+                .filter(called_at__gte=window.start, called_at__lte=window.end)
+                .annotate(day=TruncDate("called_at"))
+                .values("day", "purpose", "model__name")
+                .annotate(total=Sum("cost"), calls=Count("pk"), failures=Count("pk", filter=Q(success=False)))
                 .order_by("day")
             )
-            per_model = list(usage.values("model__name").annotate(total=Sum("cost")).order_by("-total"))
-            totals = usage.aggregate(calls=Count("pk"), failures=Count("pk", filter=Q(success=False)))
     except _QueryTooSlow:
-        return empty
+        return ModelCost(window=window, cost_by_purpose={}, cost_by_model={}, timed_out=True)
 
-    purposes = _labels(LLMPurposeChoices)
+    purposes = LLMPurposeChoices.as_dict()
     cost_by_purpose = {}
-    for purpose in COST_PURPOSES:
-        series = {
-            str(row["day"]): float(row["total"] or Decimal(0))
-            for row in per_day
-            if row["purpose"] == purpose and row["day"] is not None
-        }
-        if series:
-            cost_by_purpose[purposes.get(purpose, purpose)] = series
+    cost_by_model = {}
+    calls = failures = 0
+    for row in rows:
+        cost = float(row["total"] or 0)
+        calls += row["calls"]
+        failures += row["failures"]
+        if row["model__name"]:
+            cost_by_model[row["model__name"]] = cost_by_model.get(row["model__name"], 0.0) + cost
+        if row["day"] is not None:
+            series = cost_by_purpose.setdefault(purposes.get(row["purpose"], row["purpose"]), {})
+            day = str(row["day"])
+            series[day] = series.get(day, 0.0) + cost
 
-    cost_by_model = {row["model__name"]: float(row["total"] or Decimal(0)) for row in per_model if row["model__name"]}
     return ModelCost(
         window=window,
-        cost_by_purpose=cost_by_purpose,
-        cost_by_model=cost_by_model,
-        calls=totals["calls"] or 0,
-        failures=totals["failures"] or 0,
+        # Ordered so neither the legend nor the table reshuffles between two renders of the same
+        # window: purposes in the order `choices.py` declares them, models by what they cost.
+        cost_by_purpose={label: cost_by_purpose[label] for label in purposes.values() if label in cost_by_purpose},
+        cost_by_model=dict(sorted(cost_by_model.items(), key=lambda item: (-item[1], item[0]))),
+        calls=calls,
+        failures=failures,
     )
 
 
@@ -541,8 +542,6 @@ def agent_activity(*, user, days=None):
     """
     settings = get_settings()
     window = _window(days, settings)
-    empty = AgentActivity(window=window, runs_by_status={}, decisions={}, timed_out=True)
-
     try:
         with _deadline(settings.query_timeout_seconds):
             runs = list(
@@ -560,9 +559,9 @@ def agent_activity(*, user, days=None):
                 .annotate(total=Count("pk"))
             )
     except _QueryTooSlow:
-        return empty
+        return AgentActivity(window=window, runs_by_status={}, decisions={}, timed_out=True)
 
-    run_labels = _labels(AgentRunStatusChoices)
+    run_labels = AgentRunStatusChoices.as_dict()
     runs_by_status = {}
     for row in runs:
         if row["day"] is None:
@@ -570,7 +569,7 @@ def agent_activity(*, user, days=None):
         name = run_labels.get(row["status"], row["status"])
         runs_by_status.setdefault(name, {})[str(row["day"])] = row["total"]
 
-    call_labels = _labels(AgentToolCallStatusChoices)
+    call_labels = AgentToolCallStatusChoices.as_dict()
     counted = {call_labels.get(row["status"], row["status"]): row["total"] for row in decisions}
     return AgentActivity(
         window=window,

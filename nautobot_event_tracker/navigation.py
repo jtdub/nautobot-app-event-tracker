@@ -7,6 +7,9 @@ from nautobot_event_tracker.services import analytics as analytics_service
 #: The dashboard's menu item, present only when the dashboard is. Turning the block off removes
 #: the route as well, so a menu item left behind would reverse a name that no longer exists.
 #:
+#: `is_enabled()` rather than `get_settings()` for the reason `urls.py` gives: this is read while
+#: the app is loading, and a malformed key elsewhere in the block must not stop Nautobot starting.
+#:
 #: Gated on `view_eventticket` rather than on a permission of its own: the page shows nothing a
 #: ticket reader may not already see, and rule D2 narrows every number on it per user anyway.
 DASHBOARD_ITEMS = (
@@ -17,7 +20,7 @@ DASHBOARD_ITEMS = (
             permissions=["nautobot_event_tracker.view_eventticket"],
         ),
     )
-    if analytics_service.get_settings().enabled
+    if analytics_service.is_enabled()
     else ()
 )
 

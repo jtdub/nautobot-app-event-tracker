@@ -1300,8 +1300,11 @@ class DashboardViewTest(TestCase):
         with CaptureQueriesContext(connection) as small:
             self.page()
 
-        for index in range(40):
-            ticket = fixtures.create_ticket(user=self.user, title=f"noise {index}")
+        # Five rows, not fifty. The assertion is exact equality, so a panel that queries per row
+        # adds five queries and fails just as decisively as it would add fifty.
+        event_type = fixtures.create_event_types()[0]
+        for index in range(5):
+            ticket = fixtures.create_ticket(user=self.user, event_type=event_type, title=f"noise {index}")
             fixtures.create_llmusagerecord(model=self.model, ticket=ticket)
 
         with CaptureQueriesContext(connection) as large:

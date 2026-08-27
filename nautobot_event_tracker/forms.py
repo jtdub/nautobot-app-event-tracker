@@ -224,10 +224,15 @@ class DashboardWindowForm(forms.Form):
         widget=StaticSelect2(),
     )
 
-    def __init__(self, *args, settings=None, **kwargs):
-        """Build the choices from the configured bound, and remember the default."""
+    def __init__(self, *args, **kwargs):
+        """Build the choices from the configured bound, and remember the default.
+
+        `get_settings()` is strict and this is one of the two places it runs, the view being the
+        other. A malformed `dashboard` block therefore fails on the dashboard page, where somebody
+        can read the message - not at import time, where it would stop Nautobot serving anything.
+        """
         super().__init__(*args, **kwargs)
-        settings = settings or analytics.get_settings()
+        settings = analytics.get_settings()
         self.default_days = settings.default_window_days
         self.fields["days"].choices = [
             (days, "Last 24 hours" if days == 1 else f"Last {days} days") for days in analytics.window_choices(settings)
@@ -240,7 +245,7 @@ class DashboardWindowForm(forms.Form):
         A window this form cannot read is the default rather than an error page: the only way to
         send one is to edit the query string by hand, and the answer to that is a chart.
         """
-        if self.is_bound and self.is_valid() and self.cleaned_data.get("days"):
+        if self.is_valid() and self.cleaned_data.get("days"):
             return self.cleaned_data["days"]
         return self.default_days
 

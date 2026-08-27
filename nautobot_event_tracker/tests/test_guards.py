@@ -192,13 +192,25 @@ class TemplateGuardTest(SimpleTestCase):
     #: decision about ADR 0008 rather than a test fix, and the ADR says so.
     ALLOWED_TEMPLATES = {"templates/nautobot_event_tracker/dashboard.html"}
 
-    def test_the_app_ships_only_the_allowed_templates(self):
-        """One page template, and it does nothing but call the framework's own tags."""
+    def test_the_templates_directory_holds_only_the_allowed_files(self):
+        """Everything under `templates/`, not just the `.html` - a `.txt` is a template too."""
+        templates = APP_ROOT / "templates"
+        shipped = sorted(str(path.relative_to(APP_ROOT)) for path in templates.rglob("*") if path.is_file())
+
+        self.assertEqual(shipped, sorted(self.ALLOWED_TEMPLATES))
+
+    def test_no_stray_html_elsewhere_in_the_app_package(self):
+        """Catch a template placed somewhere other than `templates/`."""
         html_files = sorted(
             str(path.relative_to(APP_ROOT)) for path in APP_ROOT.rglob("*.html") if "static" not in path.parts
         )
 
         self.assertEqual(html_files, sorted(self.ALLOWED_TEMPLATES))
+
+    #: Markup the UI Component Framework or a core layout template would otherwise have emitted.
+    #: An allowed template may hold a form and a block wrapper; the moment it holds a grid or a
+    #: table it has started reimplementing the thing ADR 0008 says to delegate to.
+    FRAMEWORK_MARKUP = ("<table", '<div class="row"', '<div class="col-')
 
     def test_the_allowed_template_extends_nothing_but_the_base(self):
         """The hazard ADR 0008 names is coupling to core's page internals, not having a file.
@@ -212,6 +224,26 @@ class TemplateGuardTest(SimpleTestCase):
                 body = (APP_ROOT / name).read_text(encoding="utf-8")
                 extends = [line for line in body.splitlines() if "{% extends" in line]
                 self.assertEqual(extends, ['{% extends "base.html" %}'])
+
+    def test_the_allowed_template_draws_no_layout_of_its_own(self):
+        """The claim the ADR amendment actually makes, asserted rather than trusted.
+
+        Extending `base.html` is necessary and not sufficient: the first version of this template
+        passed that check while containing a private copy of core's `two_over_one.html` grid, which
+        is exactly the drift - every other page in the deployment moves when core changes its
+        layout, and the copy does not.
+        """
+        for name in sorted(self.ALLOWED_TEMPLATES):
+            with self.subTest(template=name):
+                body = (APP_ROOT / name).read_text(encoding="utf-8")
+                offenders = [markup for markup in self.FRAMEWORK_MARKUP if markup in body]
+
+                self.assertEqual(
+                    offenders,
+                    [],
+                    f"{name} draws layout the framework owns; include core's template instead. "
+                    "Found: " + ", ".join(offenders),
+                )
 
 
 def _is_forbidden_package(name, forbidden):
@@ -630,7 +662,7 @@ class AnalyticsGuardTest(SimpleTestCase):
 
     #: The public functions that touch no queryset, so they have nothing to restrict. Every other
     #: public name in the module answers "how many" about somebody's rows.
-    WITHOUT_A_USER = frozenset({"get_settings", "window_choices"})
+    WITHOUT_A_USER = frozenset({"get_settings", "is_enabled", "window_choices"})
 
     #: The four panel groups. These take `user` keyword-only and without a default, so no caller
     #: can supply one positionally by accident or leave it out and get the estate's numbers.

@@ -10,10 +10,13 @@ import json
 from datetime import datetime, timedelta
 from datetime import timezone as datetime_timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
+import jsonschema
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ImproperlyConfigured as DjangoImproperlyConfigured
 from django.test import override_settings
 from django.utils import timezone
 from nautobot.dcim.models import Location, LocationType
@@ -768,6 +771,88 @@ def grant_view(user, model, constraints=None):
     permission.object_types.add(ContentType.objects.get_for_model(model))
     permission.users.add(user)
     return permission
+
+
+class SchemaAgreementAssertions:  # pylint: disable=no-member,invalid-name
+    """`app-config-schema.json` and a block's `get_settings()` must accept and refuse alike.
+
+    Mixed into a `TestCase`, which is where the assertion methods and `setUpClass` come from - the
+    same arrangement `RefusalAssertions` below has, and the reason for the disable above it.
+
+    Two descriptions of one contract, written in different languages and edited at different times.
+    When they disagree the operator gets the worst possible outcome: `nautobot-server
+    validate_app_config` passes, and the app then refuses to start on the config it just approved.
+    A green check followed by a dead app is worse than no check.
+
+    This caught `rag`'s `max_distance` declared as `"minimum": 0` - inclusive - against a validator
+    requiring `0 < distance`. The field below it had the same bound and got it right, which is how
+    these diverge: nobody is comparing them. The blocks that validate through shared helpers -
+    `ingestion/config.py`'s `_positive_int_problem` and `_positive_number_problem`, and
+    `agent.py`'s `POSITIVE_INTEGER_KEYS` - are much less exposed, because one bound expression
+    serves many keys there and drifting means editing the helper. `rag` and `dashboard` write each
+    bound out longhand per key, which is why they are the blocks with suites of their own.
+
+    Subclass it with `BLOCK`, `SETTINGS_MODULE` and `PROBES`, and `BASE_BLOCK` where a key cannot
+    be probed alone.
+    """
+
+    #: The `PLUGINS_CONFIG` key this suite is about.
+    BLOCK = None
+
+    #: The module whose `DEFAULTS` and `get_settings()` are the other half of the contract.
+    SETTINGS_MODULE = None
+
+    #: Values that must be accepted, and values that must be refused, by *both*. Only keys with a
+    #: numeric bound: the string and boolean keys have nothing to disagree about.
+    PROBES = {}
+
+    #: Keys held at a permissive value while another key is probed, for a block with a rule about
+    #: two keys at once. A per-key schema cannot express such a rule, so probing one key against
+    #: the other's default would report that rule as a disagreement, which it is not.
+    BASE_BLOCK = {}
+
+    @classmethod
+    def setUpClass(cls):
+        """Read the shipped schema once."""
+        super().setUpClass()
+        schema_path = Path(cls.SETTINGS_MODULE.__file__).resolve().parent.parent / "app-config-schema.json"
+        cls.properties = json.loads(schema_path.read_text())["properties"][cls.BLOCK]["properties"]
+
+    def _schema_accepts(self, key, value):
+        """Whether the shipped schema accepts this one value for this one key."""
+        try:
+            jsonschema.validate({key: value}, {"type": "object", "properties": self.properties})
+        except jsonschema.ValidationError:
+            return False
+        return True
+
+    def _validator_accepts(self, key, value):
+        """Whether `get_settings()` accepts this one value for this one key."""
+        with app_settings(**{self.BLOCK: {**self.BASE_BLOCK, key: value}}):
+            try:
+                self.SETTINGS_MODULE.get_settings()
+            except DjangoImproperlyConfigured:
+                return False
+        return True
+
+    def test_the_two_agree(self):
+        """Every probe value gets the same answer from the schema and from the validator."""
+        for key, probes in self.PROBES.items():
+            for value in probes["valid"]:
+                with self.subTest(key=key, value=value, expected="accepted"):
+                    self.assertTrue(self._schema_accepts(key, value), "schema refuses it")
+                    self.assertTrue(self._validator_accepts(key, value), "get_settings refuses it")
+            for value in probes["invalid"]:
+                with self.subTest(key=key, value=value, expected="refused"):
+                    self.assertFalse(self._schema_accepts(key, value), "schema accepts it")
+                    self.assertFalse(self._validator_accepts(key, value), "get_settings accepts it")
+
+    def test_every_default_is_declared_and_matches(self):
+        """The schema documents each key once, with the value the code actually falls back to."""
+        self.assertEqual(set(self.properties), set(self.SETTINGS_MODULE.DEFAULTS))
+
+        declared = {key: spec.get("default") for key, spec in self.properties.items()}
+        self.assertEqual(declared, dict(self.SETTINGS_MODULE.DEFAULTS))
 
 
 class RefusalAssertions:  # pylint: disable=too-few-public-methods

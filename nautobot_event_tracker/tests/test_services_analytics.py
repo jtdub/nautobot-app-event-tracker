@@ -5,11 +5,8 @@ easy and proves little; asserting that a user constrained to a subset gets *that
 is what fails when somebody aggregates over `objects.all()`.
 """
 
-import json
 from datetime import timedelta
-from pathlib import Path
 
-import jsonschema
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
@@ -86,73 +83,20 @@ class TestTheSettings(TestCase):
         self.assertEqual(offered, (1, 7, 14))
 
 
-class TestTheSchemaAgreesWithTheValidator(TestCase):
-    """`app-config-schema.json` and `get_settings()` must accept and refuse the same values.
+class TestTheSchemaAgreesWithTheValidator(fixtures.SchemaAgreementAssertions, TestCase):
+    """The `dashboard` block's half of the contract. The argument is in the shared base."""
 
-    Two descriptions of one contract, written in different languages and edited at different times.
-    When they disagree the operator gets a green `nautobot-server validate_app_config` followed by
-    an app that refuses to start on the config it just approved.
-
-    The `dashboard` block writes each bound out longhand per key, which is the shape that diverged
-    in `rag` and earned this test there.
-    """
-
-    #: Values that must be accepted, and values that must be refused, by *both*.
+    BLOCK = "dashboard"
+    SETTINGS_MODULE = analytics
+    #: Both window keys are held wide open while either is probed: `default_window_days` may not
+    #: exceed `max_window_days`, and that is a rule about two keys, which a per-key schema cannot
+    #: express and should not be reported as a disagreement.
+    BASE_BLOCK = {"default_window_days": 1, "max_window_days": 3650}
     PROBES = {
         "default_window_days": {"valid": (1, 7), "invalid": (0, -1)},
         "max_window_days": {"valid": (1, 90), "invalid": (0, -1)},
         "query_timeout_seconds": {"valid": (10, 0.5), "invalid": (0, -1)},
     }
-
-    @classmethod
-    def setUpClass(cls):
-        """Read the shipped schema once."""
-        super().setUpClass()
-        schema_path = Path(analytics.__file__).resolve().parent.parent / "app-config-schema.json"
-        cls.properties = json.loads(schema_path.read_text())["properties"]["dashboard"]["properties"]
-
-    def _schema_accepts(self, key, value):
-        """Whether the shipped schema accepts this one value for this one key."""
-        try:
-            jsonschema.validate({key: value}, {"type": "object", "properties": self.properties})
-        except jsonschema.ValidationError:
-            return False
-        return True
-
-    def _validator_accepts(self, key, value):
-        """Whether `get_settings()` accepts this one value for this one key.
-
-        The other window key is held wide open, because `default_window_days` may not exceed
-        `max_window_days` and a per-key schema cannot express a rule about two keys. Probing one
-        key against the other's default would test that cross-key rule and report it as a
-        disagreement, which it is not.
-        """
-        block = {"default_window_days": 1, "max_window_days": 3650, key: value}
-        with fixtures.app_settings(dashboard=block):
-            try:
-                analytics.get_settings()
-            except ImproperlyConfigured:
-                return False
-        return True
-
-    def test_the_two_agree(self):
-        """Every probe value gets the same answer from the schema and from the validator."""
-        for key, probes in self.PROBES.items():
-            for value in probes["valid"]:
-                with self.subTest(key=key, value=value, expected="accepted"):
-                    self.assertTrue(self._schema_accepts(key, value))
-                    self.assertTrue(self._validator_accepts(key, value))
-            for value in probes["invalid"]:
-                with self.subTest(key=key, value=value, expected="refused"):
-                    self.assertFalse(self._schema_accepts(key, value))
-                    self.assertFalse(self._validator_accepts(key, value))
-
-    def test_every_default_is_declared_in_both_and_matches(self):
-        """A key the schema does not know about is a key `validate_app_config` cannot check."""
-        for key, value in analytics.DEFAULTS.items():
-            with self.subTest(key=key):
-                self.assertIn(key, self.properties)
-                self.assertEqual(self.properties[key]["default"], value)
 
 
 class TestTheRetentionDefaultsMatchTheirOwners(TestCase):
@@ -179,18 +123,25 @@ class TestTheRetentionDefaultsMatchTheirOwners(TestCase):
 
 
 class AnalyticsTestCase(TestCase):
-    """A superuser, one critical ticket and one minor ticket, and rows hanging off each."""
+    """A superuser, one critical ticket and one minor ticket, and rows hanging off each.
 
-    def setUp(self):
-        """Build the corpus every panel test reads."""
-        self.user = fixtures.create_user()
-        self.user.is_superuser = True
-        self.user.save()
+    Built in `setUpTestData` rather than `setUp`: every ticket here goes through the service layer,
+    which is a transaction, a dedup lookup and two inserts, and forty test methods rebuilding it
+    each time is the bulk of this module's runtime. Django rolls each test back and hands every
+    method its own copy of the attributes, so the tests that backdate rows still work.
+    """
 
-        self.model = fixtures.create_llmmodel()
-        self.tool = fixtures.create_mcptool()
-        self.critical = fixtures.create_ticket(user=self.user, title="core-01 down", severity=SeverityChoices.CRITICAL)
-        self.minor = fixtures.create_ticket(user=self.user, title="leaf-09 flap", severity=SeverityChoices.MINOR)
+    @classmethod
+    def setUpTestData(cls):
+        """Build the corpus every panel test reads, once for the class."""
+        cls.user = fixtures.create_user()
+        cls.user.is_superuser = True
+        cls.user.save()
+
+        cls.model = fixtures.create_llmmodel()
+        cls.tool = fixtures.create_mcptool()
+        cls.critical = fixtures.create_ticket(user=cls.user, title="core-01 down", severity=SeverityChoices.CRITICAL)
+        cls.minor = fixtures.create_ticket(user=cls.user, title="leaf-09 flap", severity=SeverityChoices.MINOR)
 
     def usage_for(self, ticket, **overrides):
         """One priced model call against this ticket."""
