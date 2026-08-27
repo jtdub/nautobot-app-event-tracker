@@ -52,6 +52,11 @@ class EventTrackerConfig(NautobotAppConfig):
         # the defaults for the keys inside it are applied by `services.agent`. Agents are off until
         # a deployment names a provider and a model and switches them on.
         "agent": {},
+        # The analytics dashboard (Phase 5B, spec section 4). Empty for the same merge reason as
+        # the blocks above; `services.analytics` applies the defaults for the keys inside it. This
+        # is the one block that is on by default, because it reaches no network and spends no
+        # money: it runs a handful of GROUP BY queries against tables already in the database.
+        "dashboard": {},
     }
     docs_view_name = "plugins:nautobot_event_tracker:docs"
     searchable_models = ["eventticket", "eventtype"]

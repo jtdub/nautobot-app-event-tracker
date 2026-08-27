@@ -533,6 +533,37 @@
                 }
             },
             "additionalProperties": false
+        },
+        "dashboard": {
+            "type": "object",
+            "description": "The analytics dashboard (Phase 5B). Reads what the other phases already recorded and writes nothing - no model, no counter, no cache row (rule D1). On by default, because it reaches no network and spends no money.",
+            "default": {},
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the dashboard view, its route and its menu item exist at all. Turning it off removes all three rather than returning a 404.",
+                    "default": true
+                },
+                "default_window_days": {
+                    "type": "integer",
+                    "description": "The time window the page opens on.",
+                    "minimum": 1,
+                    "default": 7
+                },
+                "max_window_days": {
+                    "type": "integer",
+                    "description": "The largest window a user may ask for - a bound, not a preference (rule D4). Panels are clamped further by the retention of the table they read: `ingestion.stats_retention_days` and `llm.usage_retention_days` both delete their own old rows, and a window past either would draw zeroes it invented.",
+                    "minimum": 1,
+                    "default": 90
+                },
+                "query_timeout_seconds": {
+                    "type": "number",
+                    "description": "How long one panel's queries may take. Past this the panel reports that it took too long and the rest of the page still renders (rule D8).",
+                    "exclusiveMinimum": 0,
+                    "default": 10
+                }
+            },
+            "additionalProperties": false
         }
     },
     "additionalProperties": false

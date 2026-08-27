@@ -126,6 +126,12 @@ class EventTicket(PrimaryModel):  # pylint: disable=too-many-ancestors
         permissions = [("transition_eventticket", "Can transition event ticket status")]
         indexes = [
             models.Index(fields=["dedup_key", "status"], name="event_ticket_dedup_idx"),
+            # The two range scans the analytics dashboard makes (Phase 5B spec, section 8.2).
+            # `created` is inherited from Nautobot's change-logged base and `closed_at` is declared
+            # above; neither carried an index, and the ticket-flow panel groups by both. This is
+            # the whole of the schema that phase adds - it introduces no model and no counter.
+            models.Index(fields=["created"], name="event_ticket_created_idx"),
+            models.Index(fields=["closed_at"], name="event_ticket_closed_idx"),
         ]
 
     def __str__(self):

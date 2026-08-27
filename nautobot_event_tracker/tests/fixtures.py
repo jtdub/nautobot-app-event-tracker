@@ -728,6 +728,48 @@ def create_ticketembedding(ticket=None, model=None, vector=None, **overrides):
     return row
 
 
+#: The dashboard block a test that wants the page on needs. Its only key here is `enabled`,
+#: because every other default is what the tests are usually asserting about.
+DASHBOARD_SETTINGS = {"enabled": True}
+
+
+def dashboard_settings(**overrides):
+    """A PLUGINS_CONFIG override with the dashboard switched on and these keys changed."""
+    return app_settings(dashboard={**DASHBOARD_SETTINGS, **overrides})
+
+
+def backdate(instance, **fields):
+    """Move a timestamp on a row that is already written, and return the refreshed row.
+
+    A queryset update rather than a save, because `created` is `auto_now_add` and a save would
+    overwrite it with now. The analytics tests need it and almost nothing else does: every number
+    on the dashboard is a range over a timestamp, and a window can only be tested against rows on
+    both sides of it.
+    """
+    type(instance).objects.filter(pk=instance.pk).update(**fields)
+    instance.refresh_from_db()
+    return instance
+
+
+def grant_view(user, model, constraints=None):
+    """Give this user view permission on this model, constrained to a subset when asked.
+
+    The constrained case is what the analytics tests are about. An aggregate leaks without
+    returning anything: a user scoped to one subset of tickets, shown a count of the whole estate,
+    has learned its size without reading one row of it.
+    """
+    from nautobot.users.models import ObjectPermission  # pylint: disable=import-outside-toplevel
+
+    permission = ObjectPermission.objects.create(
+        name=f"view {model._meta.model_name} {ObjectPermission.objects.count()}",  # pylint: disable=protected-access
+        actions=["view"],
+        constraints=constraints,
+    )
+    permission.object_types.add(ContentType.objects.get_for_model(model))
+    permission.users.add(user)
+    return permission
+
+
 class RefusalAssertions:  # pylint: disable=too-few-public-methods
     """Assert that something was refused, and that the message says why.
 
