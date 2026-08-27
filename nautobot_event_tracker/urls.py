@@ -6,6 +6,7 @@ from django.views.generic import RedirectView
 from nautobot.apps.urls import NautobotUIViewSetRouter
 
 from nautobot_event_tracker import views
+from nautobot_event_tracker.services import analytics as analytics_service
 
 app_name = "nautobot_event_tracker"
 router = NautobotUIViewSetRouter()
@@ -57,5 +58,11 @@ urlpatterns = [
     ),
     path("docs/", RedirectView.as_view(url=static("nautobot_event_tracker/docs/index.html")), name="docs"),
 ]
+
+# Turning the dashboard off removes the route rather than leaving one that returns 404, which is
+# what acceptance criterion 7 asks for: an operator who has switched a feature off should find no
+# trace of it, and a reverse() for a name that does not exist fails loudly at the menu item too.
+if analytics_service.get_settings().enabled:
+    urlpatterns.append(path("dashboard/", views.DashboardView.as_view(), name="dashboard"))
 
 urlpatterns += router.urls

@@ -2,7 +2,26 @@
 
 from nautobot.apps.ui import NavMenuAddButton, NavMenuGroup, NavMenuItem, NavMenuTab
 
-items = (
+from nautobot_event_tracker.services import analytics as analytics_service
+
+#: The dashboard's menu item, present only when the dashboard is. Turning the block off removes
+#: the route as well, so a menu item left behind would reverse a name that no longer exists.
+#:
+#: Gated on `view_eventticket` rather than on a permission of its own: the page shows nothing a
+#: ticket reader may not already see, and rule D2 narrows every number on it per user anyway.
+DASHBOARD_ITEMS = (
+    (
+        NavMenuItem(
+            link="plugins:nautobot_event_tracker:dashboard",
+            name="Analytics",
+            permissions=["nautobot_event_tracker.view_eventticket"],
+        ),
+    )
+    if analytics_service.get_settings().enabled
+    else ()
+)
+
+items = DASHBOARD_ITEMS + (
     NavMenuItem(
         link="plugins:nautobot_event_tracker:eventticket_list",
         name="Tickets",

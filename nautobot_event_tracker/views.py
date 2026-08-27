@@ -19,6 +19,9 @@ from nautobot.apps.ui import (
     Button,
     ButtonColorChoices,
     DropdownButton,
+    EChartsBase,
+    EChartsPanel,
+    EChartsTypeChoices,
     GroupedKeyValueTablePanel,
     KeyValueTablePanel,
     ObjectDetailContent,
@@ -41,6 +44,7 @@ from nautobot_event_tracker.api import serializers
 from nautobot_event_tracker.choices import AgentToolCallStatusChoices, TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.jobs import EventTicketAgentJob
 from nautobot_event_tracker.services import agent as agent_service
+from nautobot_event_tracker.services import analytics as analytics_service
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import rag as rag_service
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -1300,4 +1304,267 @@ class TicketEmbeddingUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-anc
                 object_field="document",
             ),
         ),
+    )
+
+
+class DashboardChart(EChartsBase):
+    """A chart whose subtitle reports the window its query actually covered.
+
+    `header` is fixed when the panel is built and the window is not. Retention shortens it per
+    panel - `IngestionStats` is pruned at thirty days, `LLMUsageRecord` at ninety - and a chart
+    that does not say so reports deletion as quiet. A panel that ran out of time says that here
+    too, which is rule D8's posture: a slow panel should be a defect somebody can see rather than
+    a page that never returns.
+    """
+
+    def __init__(self, *, subtitle=None, **kwargs):
+        """Take a callable that reads this render's result, then build the stock chart."""
+        self._subtitle = subtitle
+        super().__init__(**kwargs)
+
+    def get_config(self, context=None):
+        """The stock configuration, with the subtitle computed from this render's result."""
+        config = super().get_config(context=context)
+        if self._subtitle is not None and context is not None:
+            config["title"]["subtext"] = self._subtitle(context)
+        return config
+
+
+#: The four analytics results, under the name a panel asks for them by.
+ANALYTICS_RESULTS = {
+    "ingestion": analytics_service.ingestion_health,
+    "tickets": analytics_service.ticket_flow,
+    "cost": analytics_service.model_cost,
+    "agents": analytics_service.agent_activity,
+}
+
+
+def analytics_result(context, name):
+    """One analytics result per request, however many panels read it.
+
+    Ten panels are drawn from four results, and the framework renders each panel independently.
+    Cached on the request rather than on the panel: panels are module-level singletons shared
+    across threads, and this page has no object to hang a cache on - which is the one thing an
+    object-less page costs. `RelatedObjectsPanel` and `SimilarTicketsPanel` cache on the object
+    for the same reason, and this is the same idea with the only per-render thing there is.
+    """
+    request = context["request"]
+    cache = getattr(request, "event_tracker_analytics", None)
+    if cache is None:
+        cache = {}
+        request.event_tracker_analytics = cache
+    if name not in cache:
+        cache[name] = ANALYTICS_RESULTS[name](user=request.user, days=context.get("window_days"))
+    return cache[name]
+
+
+def _series(name, attribute):
+    """A chart's data callable: one attribute of a result computed once per request."""
+    return lambda context: getattr(analytics_result(context, name), attribute)
+
+
+def _subtitle(name):
+    """A chart's subtitle callable: the window it covered, or why it is empty."""
+
+    def render(context):
+        result = analytics_result(context, name)
+        if result.timed_out:
+            return "This took too long to draw. Try a shorter window."
+        return result.window.label
+
+    return render
+
+
+def _chart_panel(*, name, attribute, chart_type, header, weight, section, x_label="Day", y_label="Count"):
+    """One `EChartsPanel` over one attribute of one analytics result.
+
+    A function rather than ten near-identical literals: every panel on this page differs only in
+    which result it reads and how it draws it, and the framework's own component id is derived
+    from the kwargs, so the distinct headers keep the ids distinct.
+    """
+    return EChartsPanel(
+        weight=weight,
+        section=section,
+        label="",
+        chart_class=DashboardChart,
+        chart_height="24rem",
+        chart_kwargs={
+            "chart_type": chart_type,
+            "header": header,
+            "data": _series(name, attribute),
+            "subtitle": _subtitle(name),
+            "x_label": x_label,
+            "y_label": y_label,
+        },
+    )
+
+
+class TimeToClosePanel(KeyValueTablePanel):
+    """Median time to close, over tickets closed within the window.
+
+    Measured over tickets *closed* in the window rather than opened in it (spec 11.2). By opening
+    date, a long-running incident never appears at all and the number flatters - and the two
+    readings differ most exactly when things are going badly, which is when somebody is looking.
+    """
+
+    def get_data(self, context):
+        """The median as a phrase, or nothing when no ticket closed in the window."""
+        result = analytics_result(context, "tickets")
+        if result.median_hours_to_close is None:
+            return {}
+        return {
+            "Median time to close": _humanize_hours(result.median_hours_to_close),
+            "Window": result.window.label,
+        }
+
+    def render_key(self, key, value, context):
+        """A phrase, not a title-cased guess at a field name."""
+        return key
+
+
+class ModelCostPanel(KeyValueTablePanel):
+    """Cost per model over the window, in USD, with the failure rate beside it.
+
+    USD because `LLMUsageRecord.cost` says so in its own help text. The figure is the sum of what
+    the service layer priced at call time and is never recomputed from token counts (rule D5): a
+    price edited since must not retroactively rewrite what a past call cost.
+    """
+
+    def get_data(self, context):
+        """Cost by model, then the call and failure counts, then the window."""
+        result = analytics_result(context, "cost")
+        if not result.cost_by_model and not result.calls:
+            return {}
+        data = {f"{name} (USD)": f"{cost:.4f}" for name, cost in result.cost_by_model.items()}
+        if result.calls:
+            data["Calls"] = str(result.calls)
+            data["Failed"] = f"{result.failures} ({result.failure_rate:.0%})"
+        data["Window"] = result.window.label
+        return data
+
+    def render_key(self, key, value, context):
+        """A model's own name, not a title-cased guess at one."""
+        return key
+
+
+def _humanize_hours(hours):
+    """Hours as something a person reads, because 41.7 hours is arithmetic rather than an answer."""
+    if hours < 1:
+        return f"{hours * 60:.0f} minutes"
+    if hours < 48:
+        return f"{hours:.1f} hours"
+    return f"{hours / 24:.1f} days"
+
+
+#: The dashboard's panels, in four groups. Every chart is an `EChartsPanel` from the public API and
+#: no template of this app's draws one (rule D3, ADR 0008).
+DASHBOARD_PANELS = (
+    # Ingestion health - is the consumer running, and is it doing anything.
+    _chart_panel(
+        name="ingestion",
+        attribute="volume",
+        chart_type=EChartsTypeChoices.LINE,
+        header="Ingestion funnel",
+        weight=100,
+        section=SectionChoices.LEFT_HALF,
+        y_label="Messages",
+    ),
+    _chart_panel(
+        name="ingestion",
+        attribute="drops",
+        chart_type=EChartsTypeChoices.PIE,
+        header="Why messages were dropped",
+        weight=110,
+        section=SectionChoices.RIGHT_HALF,
+    ),
+    # Ticket flow - how many, in what state, and how long they take.
+    _chart_panel(
+        name="tickets",
+        attribute="flow",
+        chart_type=EChartsTypeChoices.BAR,
+        header="Tickets opened and closed",
+        weight=200,
+        section=SectionChoices.LEFT_HALF,
+        y_label="Tickets",
+    ),
+    _chart_panel(
+        name="tickets",
+        attribute="open_by_severity",
+        chart_type=EChartsTypeChoices.PIE,
+        header="Open tickets by severity",
+        weight=210,
+        section=SectionChoices.RIGHT_HALF,
+    ),
+    TimeToClosePanel(weight=220, section=SectionChoices.RIGHT_HALF, label="Time to Close"),
+    # Model cost - why the LLM registry records prices at all.
+    _chart_panel(
+        name="cost",
+        attribute="cost_by_purpose",
+        chart_type=EChartsTypeChoices.BAR,
+        header="Model cost by purpose",
+        weight=300,
+        section=SectionChoices.LEFT_HALF,
+        y_label="Cost (USD)",
+    ),
+    ModelCostPanel(weight=310, section=SectionChoices.RIGHT_HALF, label="Cost by Model"),
+    # Agent activity - whether Phase 4B's gate is used or rubber-stamped.
+    _chart_panel(
+        name="agents",
+        attribute="runs_by_status",
+        chart_type=EChartsTypeChoices.BAR,
+        header="Agent runs by status",
+        weight=400,
+        section=SectionChoices.LEFT_HALF,
+        y_label="Runs",
+    ),
+    _chart_panel(
+        name="agents",
+        attribute="decisions",
+        chart_type=EChartsTypeChoices.PIE,
+        header="Tool calls by decision",
+        weight=410,
+        section=SectionChoices.RIGHT_HALF,
+    ),
+)
+
+
+class DashboardView(GenericView):
+    """The analytics dashboard: four groups of panels over what the app already recorded.
+
+    Object-less, which is the one place this app steps outside the `NautobotUIViewSet` pattern.
+    Nautobot's UI Component Framework renders panels inside an object detail page - `Tab`
+    asks the object for its own URL before deciding whether to render - and this page has no
+    object. `GenericView` is core's own base for a non-object page, and the template beside it
+    does nothing but call the framework's own `render_components` tag. ADR 0008 records the
+    exception and why it is the whole of it.
+
+    Holds no ORM (rule D6). Every query is in `services/analytics.py`; this assembles panels.
+    """
+
+    template_name = "nautobot_event_tracker/dashboard.html"
+
+    def get(self, request, *args, **kwargs):
+        """Read the window, then render the panels against it."""
+        settings = analytics_service.get_settings()
+        form = forms.DashboardWindowForm(request.GET or None, settings=settings)
+
+        return render(
+            request,
+            self.template_name,
+            {
+                "title": "Event Tracker Analytics",
+                "window_form": form,
+                "window_days": form.window_days(),
+                "left_half_panels": _panels_in(SectionChoices.LEFT_HALF),
+                "right_half_panels": _panels_in(SectionChoices.RIGHT_HALF),
+                "full_width_panels": _panels_in(SectionChoices.FULL_WIDTH),
+            },
+        )
+
+
+def _panels_in(section):
+    """This section's panels, in weight order - what `Tab.panels_for_section()` does for a tab."""
+    return sorted(
+        (panel for panel in DASHBOARD_PANELS if panel.section == section),
+        key=lambda panel: panel.weight,
     )

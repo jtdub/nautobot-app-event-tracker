@@ -2,14 +2,17 @@
 
 # pylint: disable=too-many-ancestors,duplicate-code
 
+import importlib
 from decimal import Decimal
 from unittest import mock
 
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ImproperlyConfigured as DjangoImproperlyConfigured
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import NoReverseMatch, reverse
 from nautobot.apps.choices import CustomFieldTypeChoices
-from nautobot.apps.testing import TestCase, ViewTestCases
+from nautobot.apps.testing import AssertNoRepeatedQueries, TestCase, ViewTestCases
 from nautobot.dcim.models import Location
 from nautobot.extras.models import CustomField
 
@@ -38,6 +41,7 @@ from nautobot_event_tracker.models import (
     TicketEmbedding,
 )
 from nautobot_event_tracker.services import agent as agent_service
+from nautobot_event_tracker.services import analytics as analytics_service
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import MCPCallError
@@ -1116,3 +1120,214 @@ class SimilarTicketsPanelTest(TestCase):
             content = self.client.get(closed.get_absolute_url()).content.decode()
 
         self.assertNotIn("SIMILAR TICKETS", content)
+
+
+class DashboardViewTest(TestCase):
+    """The analytics page: the panels, the window control, and the switch that removes it.
+
+    The one page in this app with no object behind it. What it must get right is rule D2 - the
+    numbers on it are the requesting user's numbers - and rule D8, that a slow panel says so
+    rather than taking the page with it.
+    """
+
+    #: What an operator who is meant to read this page holds. The record models are here as well
+    #: as `view_eventticket` because rule D2 narrows the numbers by the *ticket*, and a user who
+    #: cannot read a usage record at all would tell us nothing about whether that narrowing works.
+    user_permissions = [
+        "nautobot_event_tracker.view_eventticket",
+        "nautobot_event_tracker.view_ingestionstats",
+        "nautobot_event_tracker.view_llmusagerecord",
+        "nautobot_event_tracker.view_agentrun",
+        "nautobot_event_tracker.view_agenttoolcall",
+    ]
+
+    #: Every chart header the page draws, so a panel that quietly stops rendering is a failure
+    #: rather than a page that still returns 200.
+    HEADERS = (
+        "Ingestion funnel",
+        "Why messages were dropped",
+        "Tickets opened and closed",
+        "Open tickets by severity",
+        "Model cost by purpose",
+        "Agent runs by status",
+        "Tool calls by decision",
+    )
+
+    def setUp(self):
+        """One ticket of each severity, and a row in every table the page reads."""
+        super().setUp()
+        fixtures.create_event_types()
+        self.model = fixtures.create_llmmodel()
+        self.tool = fixtures.create_mcptool()
+        self.critical = fixtures.create_ticket(user=self.user, title="core-01 down", severity=SeverityChoices.CRITICAL)
+        fixtures.create_ingestionstats(received=10, tickets_opened=3, dropped=7, drops_by_reason={"rate_limit": 7})
+        fixtures.create_llmusagerecord(model=self.model, ticket=self.critical)
+        run = fixtures.create_agentrun(ticket=self.critical)
+        fixtures.create_agenttoolcall(run=run, tool=self.tool, status=AgentToolCallStatusChoices.APPROVED)
+
+        self.url = reverse("plugins:nautobot_event_tracker:dashboard")
+
+    def page(self, query="", **overrides):
+        """The dashboard, rendered with these dashboard settings."""
+        with fixtures.dashboard_settings(**overrides):
+            return self.client.get(f"{self.url}{query}")
+
+    def test_the_page_draws_every_panel(self):
+        """Ten panels from four queries' worth of work, and none of them silently missing."""
+        content = self.page().content.decode()
+
+        for header in self.HEADERS:
+            with self.subTest(header=header):
+                self.assertIn(header, content)
+
+    def test_every_chart_is_an_echarts_panel_from_the_public_api(self):
+        """Acceptance criterion 6. The framework's own template is what renders these."""
+        content = self.page().content.decode()
+
+        self.assertIn("echarts-config-", content)
+        self.assertEqual(content.count("window.echarts.init"), len(self.HEADERS))
+
+    def test_the_cost_table_appears_when_there_have_been_calls(self):
+        """The figures beside the cost chart: what each model cost, and how often it failed."""
+        content = self.page().content.decode()
+
+        self.assertIn("COST BY MODEL", content.upper())
+        self.assertIn(self.model.name, content)
+
+    def test_the_time_to_close_figure_appears_once_something_has_closed(self):
+        """The number most likely to be asked for in a review, and least reconstructable after."""
+        fixtures.create_ticket_in_status(TicketStatusChoices.CLOSED, user=self.user, title="done")
+
+        content = self.page().content.decode()
+
+        self.assertIn("Median time to close", content)
+
+    def test_a_table_panel_with_nothing_to_say_does_not_appear(self):
+        """An empty panel headed "Time to Close" reads as a broken feature rather than an honest no.
+
+        The posture `SimilarTicketsPanel` takes, for the same reason. Nothing has closed in this
+        deployment, so there is no median, so there is no panel.
+        """
+        content = self.page().content.decode()
+
+        self.assertNotIn("Median time to close", content)
+
+    def test_the_window_control_offers_only_permitted_windows(self):
+        """Rule D4 at the form: the offer cannot exceed `max_window_days`."""
+        content = self.page(max_window_days=14).content.decode()
+
+        self.assertIn("Last 7 days", content)
+        self.assertNotIn("Last 90 days", content)
+
+    def test_the_window_in_the_query_string_is_used(self):
+        """The control is a GET form, so the window is a link somebody can send to a colleague."""
+        response = self.page(query="?days=30")
+
+        self.assertEqual(response.context["window_days"], 30)
+
+    def test_a_window_the_form_cannot_read_falls_back_to_the_default(self):
+        """The only way to send one is to edit the query string, and the answer to that is a chart."""
+        response = self.page(query="?days=nonsense")
+
+        self.assertEqual(response.context["window_days"], 7)
+
+    def test_a_clamped_panel_says_which_window_it_actually_covered(self):
+        """A ninety-day chart over a thirty-day retention must not report deletion as quiet."""
+        with fixtures.app_settings(
+            dashboard={"enabled": True, "max_window_days": 90},
+            ingestion={"stats_retention_days": 30},
+        ):
+            content = self.client.get(f"{self.url}?days=90").content.decode()
+
+        self.assertIn("last 30 days (retention; 90 requested)", content)
+
+    def test_a_panel_that_runs_out_of_time_says_so_and_the_page_still_renders(self):
+        """Rule D8 and spec 11.6: a slow panel is a defect somebody can see, not a dead page."""
+        with mock.patch(
+            "nautobot_event_tracker.services.analytics._deadline",
+            side_effect=analytics_service._QueryTooSlow,  # pylint: disable=protected-access
+        ):
+            response = self.page()
+
+        self.assertHttpStatus(response, 200)
+        self.assertIn("This took too long to draw", response.content.decode())
+
+    def test_a_user_who_may_not_read_usage_records_sees_no_cost_figures(self):
+        """The cost panels are gated on their own model as well as on the ticket.
+
+        Both halves have to hold. Following the parent stops a usage record disclosing a ticket;
+        `view_llmusagerecord` stops it disclosing what the deployment spends.
+        """
+        self.user.object_permissions.clear()
+        self.add_permissions("nautobot_event_tracker.view_eventticket")
+
+        content = self.page().content.decode()
+
+        self.assertNotIn("COST BY MODEL", content.upper())
+
+    def test_a_user_with_no_ticket_permission_sees_no_ticket_numbers(self):
+        """Rule D2 on the surface it is about. An aggregate leaks without returning anything."""
+        self.user.is_superuser = False
+        self.user.save()
+        self.user.object_permissions.clear()
+
+        response = self.page()
+
+        # 200 with zeroes, not 403. A refusal would confirm there is something there, which is the
+        # disclosure rule D2 is about; a page of zeroes is the honest answer.
+        self.assertHttpStatus(response, 200)
+        self.assertNotIn("core-01 down", response.content.decode())
+        self.assertNotIn("Median time to close", response.content.decode())
+
+    def test_the_page_makes_no_repeated_query(self):
+        """The failure mode here is not one slow query, it is forty fast ones."""
+        with AssertNoRepeatedQueries(self, threshold=10):
+            self.page()
+
+    def test_the_query_count_does_not_grow_with_the_corpus(self):
+        """The honest form of the budget: aggregation is done by the database, not by Python.
+
+        A wall-clock assertion in CI fails for reasons unrelated to this code. This one fails for
+        exactly one reason - somebody aggregated in a loop - which is the defect the budget in
+        section 8 is really about. The full-size measurement is a manual step; `docs/admin/
+        dashboard.md` says how to take it.
+        """
+        # One render first, discarded: the first request of a test warms caches that have nothing
+        # to do with this page - content types, the permission set - and counting them would make
+        # the comparison noise rather than a measurement.
+        self.page()
+
+        with CaptureQueriesContext(connection) as small:
+            self.page()
+
+        for index in range(40):
+            ticket = fixtures.create_ticket(user=self.user, title=f"noise {index}")
+            fixtures.create_llmusagerecord(model=self.model, ticket=ticket)
+
+        with CaptureQueriesContext(connection) as large:
+            self.page()
+
+        self.assertEqual(len(large.captured_queries), len(small.captured_queries))
+
+    def test_turning_it_off_leaves_no_route_and_no_menu_item(self):
+        """Acceptance criterion 7: an operator who switched it off should find no trace of it."""
+        from nautobot_event_tracker import navigation, urls  # pylint: disable=import-outside-toplevel
+
+        with fixtures.dashboard_settings(enabled=False):
+            importlib.reload(urls)
+            importlib.reload(navigation)
+            try:
+                route_names = [getattr(pattern, "name", None) for pattern in urls.urlpatterns]
+
+                self.assertNotIn("dashboard", route_names)
+                self.assertNotIn(self.url, [item.link for item in navigation.items])
+            finally:
+                importlib.reload(urls)
+                importlib.reload(navigation)
+
+    def test_leaving_it_on_gives_a_route_and_a_menu_item(self):
+        """The other half, so the test above cannot pass by reloading something broken."""
+        from nautobot_event_tracker import navigation  # pylint: disable=import-outside-toplevel
+
+        # `NavMenuItem` resolves its `link` to a path when it is built, so this compares paths.
+        self.assertIn(self.url, [item.link for item in navigation.items])
