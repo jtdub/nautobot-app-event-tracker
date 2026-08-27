@@ -521,6 +521,28 @@ def ticket_flow(*, user, days=None):
     )
 
 
+def _pivot_cost(rows, purposes):
+    """Pivot the single grouped cost pass into a day series per purpose and a total per model.
+
+    Split out from `model_cost` so the one query stays legible beside the shape it produces.
+    Returns the two mappings plus the call and failure counts read off the same rows.
+    """
+    cost_by_purpose = {}
+    cost_by_model = {}
+    calls = failures = 0
+    for row in rows:
+        cost = float(row["total"] or 0)
+        calls += row["calls"]
+        failures += row["failures"]
+        if row["model__name"]:
+            cost_by_model[row["model__name"]] = cost_by_model.get(row["model__name"], 0.0) + cost
+        if row["day"] is not None:
+            series = cost_by_purpose.setdefault(purposes.get(row["purpose"], row["purpose"]), {})
+            day = str(row["day"])
+            series[day] = series.get(day, 0.0) + cost
+    return cost_by_purpose, cost_by_model, calls, failures
+
+
 def model_cost(*, user, days=None):
     """What the models cost over the window, split by purpose and by model, plus a failure rate.
 
@@ -555,19 +577,7 @@ def model_cost(*, user, days=None):
         return ModelCost(window=window, cost_by_purpose={}, cost_by_model={}, timed_out=True)
 
     purposes = LLMPurposeChoices.as_dict()
-    cost_by_purpose = {}
-    cost_by_model = {}
-    calls = failures = 0
-    for row in rows:
-        cost = float(row["total"] or 0)
-        calls += row["calls"]
-        failures += row["failures"]
-        if row["model__name"]:
-            cost_by_model[row["model__name"]] = cost_by_model.get(row["model__name"], 0.0) + cost
-        if row["day"] is not None:
-            series = cost_by_purpose.setdefault(purposes.get(row["purpose"], row["purpose"]), {})
-            day = str(row["day"])
-            series[day] = series.get(day, 0.0) + cost
+    cost_by_purpose, cost_by_model, calls, failures = _pivot_cost(rows, purposes)
 
     # Ordered so neither the legend nor the table reshuffles between two renders of the same
     # window: purposes in the order `choices.py` declares them, models by what they cost.
