@@ -239,13 +239,23 @@ class DashboardWindowForm(forms.Form):
         ]
         self.fields["days"].initial = self.default_days
 
+        if self.is_bound and not self.is_valid():
+            # Unbind, so the control shows the window the page actually drew. Left bound, the
+            # `<select>` carries a value matching no option and the browser falls back to the first
+            # one - a bookmarked `?days=90` opened after `max_window_days` was tightened would
+            # render a seven-day page labelled "Last 24 hours". The realistic way to send an
+            # unreadable window is a stale link, not a hand-edited URL.
+            self.is_bound = False
+            self.data = {}
+            self._errors = None
+
     def window_days(self):
         """The window the page asked for, or the configured default when it did not ask.
 
         A window this form cannot read is the default rather than an error page: the only way to
         send one is to edit the query string by hand, and the answer to that is a chart.
         """
-        if self.is_valid() and self.cleaned_data.get("days"):
+        if self.is_bound and self.is_valid() and self.cleaned_data.get("days"):
             return self.cleaned_data["days"]
         return self.default_days
 

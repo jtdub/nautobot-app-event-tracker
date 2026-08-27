@@ -301,10 +301,17 @@ persistently slow panel becomes invisible furniture rather than an error somebod
   which is the defect — aggregating in a loop — the budget was really about. The full-size
   measurement is a documented manual step in `docs/admin/dashboard.md`.
 
-- **Two indexes, as section 8.2 allowed.** `EventTicket.created` and `EventTicket.closed_at`, in
+- **Three indexes, as section 8.2 allowed.** `EventTicket.created` and `EventTicket.closed_at` for
+  the ticket-flow range scans, and `(status, severity)` for the severity pie, in
   `0011_analytics_indexes`. Nothing else needed one: `IngestionStats.bucket_start`,
   `LLMUsageRecord.called_at`, `AgentRun.started_at` and `AgentToolCall.proposed_at` all already
   carried `db_index=True`.
+
+- **D4 has one exception, and it is now written down.** The rule says there is no "all time", and
+  the severity split breaks it: "which tickets are open right now" has no time bound to give it, so
+  it scans the whole open backlog. The third index exists for that query alone. Stating the
+  exception matters more than the index does — a rule the code does not keep is worse than a
+  narrower rule, because the next maintainer trusts it.
 
 - **Only `EventTicket` has a `created` column.** Every other model the dashboard reads is a
   `BaseModel` with no change-logging, so the buckets are `bucket_start`, `called_at`, `started_at`
@@ -380,3 +387,38 @@ the first implementation should have made:
 - **The `statement_timeout` reset is guarded on `in_atomic_block`.** Outside an enclosing
   transaction the commit has already discarded the setting, so the reset did nothing but spend a
   round trip and draw a PostgreSQL warning, four times per render.
+
+The following came out of the Nautobot review that followed the cleanup pass:
+
+- **Pie slices are handed over pre-transformed.** `EChartsBase._transform_data` builds its x axis
+  with `sorted()` over the union of the keys it is given, so the nested format silently re-sorted
+  every pie: the severity split rendered Critical, Info, Major, Minor, Warning, and two tests
+  asserted an order the page did not have. The drop breakdown, the severity split and the
+  approve/deny split now go over in the framework's internal `{"x": ..., "series": ...}` form,
+  which it passes through untouched. Only the pies; the bar and line charts order their *series*,
+  which the nested format does preserve.
+
+- **A purpose the choice set no longer names keeps its spend on the chart.** The stable-ordering
+  step iterated the declared labels, but the pivot deliberately falls back to the raw value for an
+  unrecognized purpose — so those records counted toward `calls` and the failure rate while their
+  cost silently vanished from the chart beside them. Undeclared purposes now come last rather than
+  not at all.
+
+- **Only a cancelled statement is a timeout.** `except OperationalError` also caught a failover, a
+  dropped connection and an administrator's `pg_cancel_backend`, each of which would have rendered
+  as "this took too long, try a shorter window" and sent the reader of `docs/admin/dashboard.md`
+  off to check indexes. SQLSTATE `57014` is matched exactly and everything else propagates. The
+  `statement_timeout` reset also moved into its own `try`: raised from a `finally`, a second error
+  on an already-broken connection would have replaced the first and taken the page down, which is
+  the opposite of what D8 promises.
+
+- **A window the form rejects unbinds the form.** Left bound, the `<select>` carried a value
+  matching no option and the browser showed the first one, so a bookmarked `?days=90` opened after
+  `max_window_days` was tightened rendered a seven-day page labelled "Last 24 hours". The number in
+  the context was right the whole time, which is why the existing test passed through it.
+
+- **The page has a breadcrumb trail and a declared title.** `DashboardView` inherited
+  `UIComponentsMixin` through `GenericView` and used neither of its helpers, and the template
+  overrode no `breadcrumbs_wrapper` block. Every object-less page in Nautobot core does both. This
+  was the one concrete way the page failed the benefit ADR 0008 claims for staying inside the
+  framework — that the app tracks core's look through upgrades.

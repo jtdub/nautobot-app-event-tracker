@@ -6,9 +6,11 @@ is what fails when somebody aggregates over `objects.all()`.
 """
 
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
+from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -248,16 +250,20 @@ class TestIngestionHealth(AnalyticsTestCase):
         with fixtures.dashboard_settings():
             drops = analytics.ingestion_health(user=self.user).drops
 
-        self.assertEqual(drops["Dropped"], {"severity_floor": 6, "rate_limit": 1})
+        self.assertEqual(dict(zip(drops["x"], drops["series"][0]["data"])), {"severity_floor": 6, "rate_limit": 1})
 
     def test_the_largest_reason_comes_first(self):
-        """A pie whose slices reorder between renders is a pie nobody trusts."""
+        """A pie whose slices reorder between renders is a pie nobody trusts.
+
+        Handed over in the framework's internal format, because the nested one is re-sorted when
+        the x axis is built and this order is the point of the chart.
+        """
         fixtures.create_ingestionstats(dropped=5, drops_by_reason={"rate_limit": 1, "severity_floor": 4})
 
         with fixtures.dashboard_settings():
             drops = analytics.ingestion_health(user=self.user).drops
 
-        self.assertEqual(list(drops["Dropped"]), ["severity_floor", "rate_limit"])
+        self.assertEqual(drops["x"], ["severity_floor", "rate_limit"])
 
     def test_a_bucket_outside_the_window_is_not_counted(self):
         """Rule D4, on the one table that was already bucketed."""
@@ -297,8 +303,8 @@ class TestTicketFlow(AnalyticsTestCase):
         with fixtures.dashboard_settings():
             severities = analytics.ticket_flow(user=self.user).open_by_severity
 
-        self.assertEqual(list(severities["Open tickets"]), ["Critical", "Minor"])
-        self.assertEqual(severities["Open tickets"]["Critical"], 1)
+        self.assertEqual(severities["x"], ["Critical", "Minor"])
+        self.assertEqual(severities["series"][0]["data"], [1, 1])
 
     def test_a_closed_ticket_is_not_an_open_one(self):
         """The severity pie is about work outstanding."""
@@ -307,7 +313,7 @@ class TestTicketFlow(AnalyticsTestCase):
         with fixtures.dashboard_settings():
             severities = analytics.ticket_flow(user=self.user).open_by_severity
 
-        self.assertEqual(sum(severities["Open tickets"].values()), 2)
+        self.assertEqual(sum(severities["series"][0]["data"]), 2)
 
     def test_the_median_time_to_close_is_measured_over_tickets_closed_in_the_window(self):
         """Spec 11.2. Measured by opening date, a long-running incident never appears at all."""
@@ -387,6 +393,34 @@ class TestModelCost(AnalyticsTestCase):
         self.assertEqual(cost.failures, 1)
         self.assertAlmostEqual(cost.failure_rate, 0.5)
 
+    def test_spend_under_a_purpose_the_choice_set_no_longer_names_is_still_charted(self):
+        """Otherwise the chart under-reports while the figures beside it keep counting.
+
+        The pivot falls back to the raw value for an unrecognized purpose, and those records still
+        reach `calls` and the failure rate. Ordering by the declared labels alone silently dropped
+        their spend from the chart, which is the one place somebody looks for the total.
+        """
+        record = self.usage_for(self.critical)
+        LLMUsageRecord.objects.filter(pk=record.pk).update(purpose="retired-purpose")
+
+        with fixtures.dashboard_settings():
+            cost = analytics.model_cost(user=self.user)
+
+        charted = sum(sum(series.values()) for series in cost.cost_by_purpose.values())
+        self.assertEqual(cost.calls, 1)
+        self.assertIn("retired-purpose", cost.cost_by_purpose)
+        self.assertAlmostEqual(charted, float(record.cost), places=6)
+
+    def test_declared_purposes_come_before_undeclared_ones(self):
+        """A legend that reshuffles between two renders of the same window is a legend nobody reads."""
+        self.usage_for(self.critical)
+        LLMUsageRecord.objects.filter(pk=self.usage_for(self.minor).pk).update(purpose="retired-purpose")
+
+        with fixtures.dashboard_settings():
+            cost = analytics.model_cost(user=self.user)
+
+        self.assertEqual(list(cost.cost_by_purpose), ["Triage", "retired-purpose"])
+
     def test_no_calls_means_no_rate_rather_than_a_zero(self):
         """Nought failures out of nought calls is not a healthy deployment, it is no deployment."""
         with fixtures.dashboard_settings():
@@ -426,8 +460,11 @@ class TestAgentActivity(AnalyticsTestCase):
         with fixtures.dashboard_settings():
             decisions = analytics.agent_activity(user=self.user).decisions
 
-        self.assertEqual(decisions["Tool calls"]["Approved"], 1)
-        self.assertEqual(decisions["Tool calls"]["Denied"], 1)
+        counted = dict(zip(decisions["x"], decisions["series"][0]["data"]))
+        self.assertEqual(counted["Approved"], 1)
+        self.assertEqual(counted["Denied"], 1)
+        # Declared order, so approved and denied sit in the same place on every render.
+        self.assertEqual(decisions["x"], ["Approved", "Denied"])
 
     def test_a_run_outside_the_window_is_not_counted(self):
         """Rule D4 on the last of the four tables."""
@@ -446,6 +483,48 @@ class TestAgentActivity(AnalyticsTestCase):
 
         self.assertEqual(activity.runs_by_status, {})
         self.assertEqual(activity.decisions, {})
+
+
+class DriverError(Exception):
+    """Stands in for the psycopg exception Django wraps, which is where the SQLSTATE lives."""
+
+    def __init__(self, pgcode):
+        """Carry the SQLSTATE and nothing else."""
+        super().__init__(pgcode)
+        self.pgcode = pgcode
+
+
+def _database_error(message, pgcode):
+    """A Django `OperationalError` wrapping a driver error with this SQLSTATE, as psycopg raises."""
+    error = OperationalError(message)
+    error.__cause__ = DriverError(pgcode)
+    return error
+
+
+class TestTheDeadline(AnalyticsTestCase):
+    """Rule D8: a slow panel says so, and a broken database does not pretend to be one."""
+
+    def test_a_cancelled_statement_becomes_a_timed_out_panel(self):
+        """The case the timeout exists for."""
+        cancelled = _database_error("canceling statement due to statement timeout", analytics.QUERY_CANCELED)
+
+        with fixtures.dashboard_settings(), mock.patch.object(analytics, "visible_stats", side_effect=cancelled):
+            health = analytics.ingestion_health(user=self.user)
+
+        self.assertTrue(health.timed_out)
+        self.assertEqual(health.volume, {})
+
+    def test_a_database_that_has_gone_away_is_not_reported_as_slowness(self):
+        """A failover raises `OperationalError` too, and "try a shorter window" will never fix it.
+
+        Swallowing it would put a real outage behind a panel apologising for being slow, and send
+        whoever is reading `docs/admin/dashboard.md` off to check indexes.
+        """
+        gone = _database_error("server closed the connection unexpectedly", "08006")
+
+        with fixtures.dashboard_settings(), mock.patch.object(analytics, "visible_stats", side_effect=gone):
+            with self.assertRaises(OperationalError):
+                analytics.ingestion_health(user=self.user)
 
 
 class TestPermissions(AnalyticsTestCase):
@@ -511,7 +590,7 @@ class TestPermissions(AnalyticsTestCase):
             flow = analytics.ticket_flow(user=user)
 
         self.assertEqual(sum(flow.flow["Opened"].values()), 1)
-        self.assertEqual(list(flow.open_by_severity["Open tickets"]), ["Critical"])
+        self.assertEqual(flow.open_by_severity["x"], ["Critical"])
 
     def test_a_constrained_user_sees_only_their_own_tickets_costs(self):
         """A cost chart built from unrestricted usage records is a ticket-existence oracle."""
@@ -556,7 +635,7 @@ class TestPermissions(AnalyticsTestCase):
         with fixtures.dashboard_settings():
             decisions = analytics.agent_activity(user=user).decisions
 
-        self.assertEqual(sum(decisions["Tool calls"].values()), 1)
+        self.assertEqual(sum(decisions["series"][0]["data"]), 1)
 
     def test_ingestion_counters_need_their_own_permission(self):
         """The one model here with no parent: a counter names a consumer and a topic, not a ticket."""
@@ -570,7 +649,11 @@ class TestPermissions(AnalyticsTestCase):
 
 
 def _totals(result):
-    """Every number a panel result carries, added together. Zero means it disclosed nothing."""
+    """Every number a panel result carries, added together. Zero means it disclosed nothing.
+
+    Reads both chart shapes: the nested one the bar and line charts use, and the framework's
+    internal one the pies are handed over in.
+    """
     total = 0
     for mapping in (
         getattr(result, "volume", {}),
@@ -581,6 +664,9 @@ def _totals(result):
         getattr(result, "runs_by_status", {}),
         getattr(result, "decisions", {}),
     ):
+        if "series" in mapping:
+            total += sum(sum(series["data"]) for series in mapping["series"])
+            continue
         for series in mapping.values():
             total += sum(series.values())
     total += sum(getattr(result, "cost_by_model", {}).values())

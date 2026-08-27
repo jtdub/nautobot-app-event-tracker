@@ -15,7 +15,9 @@ Rules implemented here, referenced by number from the Phase 5B spec:
   here takes `user` as a keyword argument with no default, because the rule is only enforceable if
   there is no way to call one without saying who is asking.
 * **D4** - every query is bounded by an explicit time window, and the window is bounded by
-  `max_window_days`. There is no "all time".
+  `max_window_days`. There is no "all time", with one exception written down rather than left to be
+  discovered: the severity split asks which tickets are open *right now*, and a backlog has no time
+  bound to give it. `EventTicket` has a `(status, severity)` index for that query alone.
 * **D5** - money comes from `LLMUsageRecord.cost` and is never recomputed from token counts. The
   service layer priced it once, at call time, against the registry as it stood then (rule L5).
 * **D6** - every query in this phase lives here. The view assembles panels and holds no ORM.
@@ -32,13 +34,14 @@ than importing it. Both duplications are the price of the import direction, and 
 tests that fail if the copies drift apart.
 """
 
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 
 from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured
-from django.db import OperationalError, connection, transaction
+from django.db import DatabaseError, OperationalError, connection, transaction
 from django.db.models import Aggregate, Count, DurationField, ExpressionWrapper, F, Q, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
@@ -60,6 +63,8 @@ from nautobot_event_tracker.models import (
     LLMUsageRecord,
 )
 
+logger = logging.getLogger(__name__)
+
 #: Defaults for the `dashboard` block, applied per key here rather than left to Nautobot's
 #: top-level `PLUGINS_CONFIG` merge, for the reason `ingestion.config` documents.
 #:
@@ -79,6 +84,12 @@ DEFAULTS = {
 #: `ingestion/config.py` and `services/llm.py`, so a change in either owner fails the build here.
 INGESTION_STATS_RETENTION_DEFAULT = 30
 LLM_USAGE_RETENTION_DEFAULT = 90
+
+#: PostgreSQL's SQLSTATE for a statement the server cancelled, which is what `statement_timeout`
+#: produces. Matched exactly rather than catching `OperationalError`, because a failover, a dropped
+#: connection and an administrator's `pg_cancel_backend` raise that too - and telling an operator
+#: their window is too long will never fix any of them.
+QUERY_CANCELED = "57014"
 
 
 class Median(Aggregate):  # pylint: disable=abstract-method
@@ -304,11 +315,32 @@ def _deadline(seconds):
                 cursor.execute("SET LOCAL statement_timeout = %s", [milliseconds])
             yield
     except OperationalError as error:
+        if getattr(error.__cause__, "pgcode", None) != QUERY_CANCELED:
+            # Not a timeout. A database that has gone away is a real failure and belongs in the
+            # error log with its own message, not behind a panel apologising for being slow.
+            raise
         raise _QueryTooSlow() from error
     finally:
-        if connection.in_atomic_block:
-            with connection.cursor() as cursor:
-                cursor.execute("SET LOCAL statement_timeout = DEFAULT")
+        _clear_statement_timeout()
+
+
+def _clear_statement_timeout():
+    """Undo `_deadline`'s `SET LOCAL`, when there is anything left to undo.
+
+    Only meaningful inside an enclosing transaction: outside one the commit has already discarded
+    the setting, and PostgreSQL answers a bare `SET LOCAL` with a warning and no effect.
+
+    Failures are swallowed deliberately. This runs in a `finally`, so an exception raised here
+    would replace whichever exception is already on its way up - and the case where the reset
+    fails is exactly the case where that other exception is the one worth reading.
+    """
+    if not connection.in_atomic_block:
+        return
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL statement_timeout = DEFAULT")
+    except DatabaseError:
+        logger.debug("Could not reset statement_timeout; the connection is already in trouble.")
 
 
 def visible_tickets(user):
@@ -356,6 +388,23 @@ def visible_runs(user):
 def visible_tool_calls(user):
     """Proposed tool calls `user` may view, following the run's ticket - rule D2."""
     return AgentToolCall.objects.restrict(user, "view").filter(run__ticket__in=visible_tickets(user).values("pk"))
+
+
+def _pie(name, pairs):
+    """A pie's slices, in the order given, in the format `EChartsBase` passes through untouched.
+
+    The nested format the bar and line charts use is re-sorted when the framework builds its x
+    axis - `_transform_data` does `sorted(...)` over the union of keys - which turns a severity
+    split into Critical, Info, Major, Minor, Warning and a drop breakdown into whatever its reasons
+    happen to spell. Every ordering below is the point of the chart it belongs to, so these go over
+    in the internal `{"x": ..., "series": ...}` form, which the framework returns as it stands.
+    """
+    if not pairs:
+        return {}
+    return {
+        "x": [label for label, _ in pairs],
+        "series": [{"name": name, "data": [value for _, value in pairs]}],
+    }
 
 
 def _by_day(rows, value_key):
@@ -411,7 +460,7 @@ def ingestion_health(*, user, days=None):
         "Tickets opened": _by_day(rows, "tickets_opened"),
         "Dropped": _by_day(rows, "dropped"),
     }
-    drops = {"Dropped": dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))} if reasons else {}
+    drops = _pie("Dropped", sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
     return IngestionHealth(window=window, volume=volume, drops=drops)
 
 
@@ -457,10 +506,9 @@ def ticket_flow(*, user, days=None):
 
     labels = SeverityChoices.as_dict()
     ranked = sorted(severities, key=lambda row: -SEVERITY_WEIGHTS.get(row["severity"], 0))
-    open_by_severity = (
-        {"Open tickets": {labels.get(row["severity"], row["severity"]): row["total"] for row in ranked}}
-        if ranked
-        else {}
+    open_by_severity = _pie(
+        "Open tickets",
+        [(labels.get(row["severity"], row["severity"]), row["total"]) for row in ranked],
     )
     return TicketFlow(
         window=window,
@@ -521,11 +569,18 @@ def model_cost(*, user, days=None):
             day = str(row["day"])
             series[day] = series.get(day, 0.0) + cost
 
+    # Ordered so neither the legend nor the table reshuffles between two renders of the same
+    # window: purposes in the order `choices.py` declares them, models by what they cost.
+    #
+    # The declared labels do not have to cover everything. The pivot above falls back to the raw
+    # value for a purpose the choice set no longer names, and those records still count toward
+    # `calls` and the failure rate - so dropping them here would have made the chart under-report
+    # spend the figures beside it were still counting. They go last, after the declared ones.
+    declared = [label for label in purposes.values() if label in cost_by_purpose]
+    undeclared = [label for label in cost_by_purpose if label not in purposes.values()]
     return ModelCost(
         window=window,
-        # Ordered so neither the legend nor the table reshuffles between two renders of the same
-        # window: purposes in the order `choices.py` declares them, models by what they cost.
-        cost_by_purpose={label: cost_by_purpose[label] for label in purposes.values() if label in cost_by_purpose},
+        cost_by_purpose={label: cost_by_purpose[label] for label in declared + undeclared},
         cost_by_model=dict(sorted(cost_by_model.items(), key=lambda item: (-item[1], item[0]))),
         calls=calls,
         failures=failures,
@@ -570,9 +625,16 @@ def agent_activity(*, user, days=None):
         runs_by_status.setdefault(name, {})[str(row["day"])] = row["total"]
 
     call_labels = AgentToolCallStatusChoices.as_dict()
-    counted = {call_labels.get(row["status"], row["status"]): row["total"] for row in decisions}
+    counted = {row["status"]: row["total"] for row in decisions}
     return AgentActivity(
         window=window,
         runs_by_status=runs_by_status,
-        decisions={"Tool calls": counted} if counted else {},
+        # In the order `choices.py` declares the statuses, so approved and denied always sit in the
+        # same place. A status the choice set no longer names still gets its slice, for the reason
+        # `model_cost` keeps an undeclared purpose.
+        decisions=_pie(
+            "Tool calls",
+            [(call_labels.get(status, status), counted[status]) for status in call_labels if status in counted]
+            + [(status, total) for status, total in counted.items() if status not in call_labels],
+        ),
     )

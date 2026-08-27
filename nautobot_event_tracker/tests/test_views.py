@@ -3,6 +3,7 @@
 # pylint: disable=too-many-ancestors,duplicate-code
 
 import importlib
+import re
 from decimal import Decimal
 from unittest import mock
 
@@ -1226,10 +1227,38 @@ class DashboardViewTest(TestCase):
         self.assertEqual(response.context["window_days"], 30)
 
     def test_a_window_the_form_cannot_read_falls_back_to_the_default(self):
-        """The only way to send one is to edit the query string, and the answer to that is a chart."""
+        """A stale bookmark, not a hand-edited URL, is how this arrives."""
         response = self.page(query="?days=nonsense")
 
         self.assertEqual(response.context["window_days"], 7)
+
+    def test_the_control_shows_the_window_the_page_actually_drew(self):
+        """A bookmarked `?days=90` opened after `max_window_days` was tightened.
+
+        Left bound, the `<select>` carries a value matching no option, the browser shows the first
+        one, and the page reads "Last 24 hours" over charts drawn across seven days. The number
+        being right in the context is not enough; the control is what somebody believes.
+        """
+        response = self.page(query="?days=90", max_window_days=14)
+        content = response.content.decode()
+
+        selected = re.findall(r'<option value="(\d+)"\s*selected', content)
+
+        self.assertEqual(response.context["window_days"], 7)
+        self.assertEqual(selected, ["7"])
+
+    def test_the_page_carries_a_breadcrumb_trail_and_a_declared_title(self):
+        """Every object-less page in Nautobot core has both, and ADR 0008 promises this one will.
+
+        The benefit the ADR claims for staying inside the framework is that the app tracks core's
+        look through upgrades. A page with no trail is the one concrete way this one would not.
+        """
+        response = self.page()
+        content = response.content.decode()
+
+        self.assertIn("Event Tracker Analytics", content)
+        self.assertIn("breadcrumb", content)
+        self.assertIn(reverse("plugins:nautobot_event_tracker:eventticket_list"), content)
 
     def test_a_clamped_panel_says_which_window_it_actually_covered(self):
         """A ninety-day chart over a thirty-day retention must not report deletion as quiet."""

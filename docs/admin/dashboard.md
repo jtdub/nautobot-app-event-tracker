@@ -15,7 +15,7 @@ The dashboard lives at **Apps → Event Tracker → Analytics**
 
 ## What this does not do
 
-**It writes nothing.** No model, no counter, no cache row, no migration beyond two indexes. A cache
+**It writes nothing.** No model, no counter, no cache row, no migration beyond three indexes. A cache
 table is the obvious thing to reach for and this app refuses it: it would be stale in exactly the
 case somebody is staring at the page, which is during an incident.
 
@@ -93,6 +93,10 @@ a longer view of the funnel, and be aware that the table then grows for as long 
 Ticket flow and agent activity are not clamped. Nothing prunes `EventTicket`, `AgentRun` or
 `AgentToolCall`.
 
+The severity pie is not windowed at all, and deliberately: "which tickets are open right now" has no
+time bound to give it. It is the one query on the page that grows with the whole open backlog, which
+is why it has an index of its own.
+
 ## Reading the cost figures
 
 The money comes from `LLMUsageRecord.cost` and is **USD**, as that field's own help text says. It is
@@ -111,9 +115,12 @@ Try a shorter window."** under its title. The rest of the page still renders.
 Treat that as a defect rather than as a setting to raise. In order of what to try:
 
 1. **A shorter window.** The default of seven days is what the page is built around.
-2. **Check the indexes landed.** Migration `0011_analytics_indexes` adds indexes on
-   `EventTicket.created` and `EventTicket.closed_at`. Everything else the page groups by was
-   already indexed.
+2. **Check the indexes landed.** Migration `0011_analytics_indexes` adds three indexes on
+   `EventTicket`: `created` and `closed_at` for the ticket-flow range scans, and
+   `(status, severity)` for the open-tickets pie. That last one matters most if the slow panel is
+   **Open tickets by severity** — it asks which tickets are open *right now*, so it is the one
+   query on the page with no time bound and nothing to bound it by. Everything else the page groups
+   by was already indexed.
 3. **Report it.** Raising the timeout hides the problem, and a persistently slow panel becomes
    invisible furniture rather than something somebody fixes.
 

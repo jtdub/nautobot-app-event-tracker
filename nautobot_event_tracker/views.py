@@ -16,6 +16,7 @@ from django.utils.html import format_html
 from nautobot.apps.models import count_related
 from nautobot.apps.templatetags import hyperlinked_object
 from nautobot.apps.ui import (
+    Breadcrumbs,
     Button,
     ButtonColorChoices,
     DropdownButton,
@@ -31,6 +32,8 @@ from nautobot.apps.ui import (
     PostButton,
     SectionChoices,
     Tab,
+    Titles,
+    ViewNameBreadcrumbItem,
 )
 from nautobot.apps.views import (
     GenericView,
@@ -1533,6 +1536,20 @@ DASHBOARD_PANELS = (
 DASHBOARD_TAB = Tab(tab_id="analytics", label="Analytics", weight=100, panels=DASHBOARD_PANELS)
 
 
+#: The page's own trail and heading, through the mixin `GenericView` already carries. Every
+#: object-less page in core - the profile, the token list, the worker status - declares both, and a
+#: page that declares neither is the one concrete way this one would stop looking like the rest of
+#: Nautobot, which is the benefit ADR 0008 claims.
+DASHBOARD_BREADCRUMBS = Breadcrumbs(
+    items={
+        "*": [
+            ViewNameBreadcrumbItem(view_name="plugins:nautobot_event_tracker:eventticket_list", label="Event Tracker"),
+            ViewNameBreadcrumbItem(view_name="plugins:nautobot_event_tracker:dashboard", label="Analytics"),
+        ]
+    }
+)
+
+
 class DashboardView(GenericView):
     """The analytics dashboard: four groups of panels over what the app already recorded.
 
@@ -1547,6 +1564,8 @@ class DashboardView(GenericView):
     """
 
     template_name = "nautobot_event_tracker/dashboard.html"
+    breadcrumbs = DASHBOARD_BREADCRUMBS
+    view_titles = Titles(titles={"*": "Event Tracker Analytics"})
 
     def get(self, request, *args, **kwargs):
         """Read the window, then render the panels against it."""
@@ -1557,7 +1576,10 @@ class DashboardView(GenericView):
             request,
             self.template_name,
             {
-                "title": "Event Tracker Analytics",
+                # `render_title` and `render_breadcrumbs` read these; no raw title string, so the
+                # heading and the document title come from one declaration.
+                "view_titles": self.get_view_titles(),
+                "breadcrumbs": self.get_breadcrumbs(),
                 "window_form": form,
                 "window_days": window_days,
                 "analytics": AnalyticsResults(user=request.user, days=window_days),
