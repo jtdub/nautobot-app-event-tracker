@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% load ui_framework %}
+
+{# The app's one template, and ADR 0008 records why it exists: the UI Component Framework renders #}
+{# panels inside an object detail page, and the dashboard has no object. It draws no layout of its #}
+{# own - the grid below is core's, included rather than copied, so this page moves when every #}
+{# other page does. #}
+
+{% block breadcrumbs_wrapper %}{% render_breadcrumbs %}{% endblock breadcrumbs_wrapper %}
+
+{% block content %}
+    <form method="get" class="align-items-center d-flex flex-wrap gap-8 mb-16 d-print-none">
+        {{ window_form.days }}
+        <button type="submit" class="btn btn-primary">Apply</button>
+    </form>
+    {% include "components/layout/two_over_one.html" %}
+{% endblock content %}

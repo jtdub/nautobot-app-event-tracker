@@ -38,6 +38,7 @@ from nautobot_event_tracker.models import (
     MCPTool,
     TicketEmbedding,
 )
+from nautobot_event_tracker.services import analytics
 from nautobot_event_tracker.services import tickets as ticket_service
 
 #: The model registry entry's editable fields, in the order they read best. Shared with the detail
@@ -207,6 +208,56 @@ class TicketTransitionForm(forms.Form):
         label="Resolution",
         help_text="Required when resolving a ticket.",
     )
+
+
+class DashboardWindowForm(forms.Form):
+    """The analytics dashboard's time window, submitted by GET.
+
+    The choices come from `services.analytics.window_choices()` rather than being written out
+    here, so what the page offers and what `max_window_days` allows cannot disagree (rule D4).
+    """
+
+    days = forms.TypedChoiceField(
+        coerce=int,
+        required=False,
+        label="Window",
+        widget=StaticSelect2(),
+    )
+
+    def __init__(self, *args, **kwargs):
+        """Build the choices from the configured bound, and remember the default.
+
+        `get_settings()` is strict and this is one of the two places it runs, the view being the
+        other. A malformed `dashboard` block therefore fails on the dashboard page, where somebody
+        can read the message - not at import time, where it would stop Nautobot serving anything.
+        """
+        super().__init__(*args, **kwargs)
+        settings = analytics.get_settings()
+        self.default_days = settings.default_window_days
+        self.fields["days"].choices = [
+            (days, "Last 24 hours" if days == 1 else f"Last {days} days") for days in analytics.window_choices(settings)
+        ]
+        self.fields["days"].initial = self.default_days
+
+        if self.is_bound and not self.is_valid():
+            # Unbind, so the control shows the window the page actually drew. Left bound, the
+            # `<select>` carries a value matching no option and the browser falls back to the first
+            # one - a bookmarked `?days=90` opened after `max_window_days` was tightened would
+            # render a seven-day page labelled "Last 24 hours". The realistic way to send an
+            # unreadable window is a stale link, not a hand-edited URL.
+            self.is_bound = False
+            self.data = {}
+            self._errors = None
+
+    def window_days(self):
+        """The window the page asked for, or the configured default when it did not ask.
+
+        A window this form cannot read is the default rather than an error page: the only way to
+        send one is to edit the query string by hand, and the answer to that is a chart.
+        """
+        if self.is_bound and self.is_valid() and self.cleaned_data.get("days"):
+            return self.cleaned_data["days"]
+        return self.default_days
 
 
 class AttachObjectTypeForm(forms.Form):

@@ -178,20 +178,72 @@ class SerializerAndFormGuardTest(SimpleTestCase):
 
 
 class TemplateGuardTest(SimpleTestCase):
-    """ADR 0008: the app ships no hand-written page templates."""
+    """ADR 0008: the app ships one page template, and this is the list of it.
 
-    def test_no_templates_directory(self):
-        """A templates/ directory in the app would mean the UI framework was bypassed."""
-        templates_dir = APP_ROOT / "templates"
-        self.assertFalse(
-            templates_dir.exists(),
-            "The app must not ship page templates; build the UI from the UI Component Framework.",
+    The rule was "no templates at all" for four phases. Phase 5B needed a page with no object,
+    which Nautobot's UI Component Framework cannot render on its own - a `Tab` asks the object for
+    its own URL before deciding whether to draw - and core ships no template that takes a bare list
+    of panels. So the allowlist is one file, and it exists to keep the count at one: the risk ADR
+    0008 is about is an app that drifts into hand-written pages, and that starts with a second
+    template rather than with the first.
+    """
+
+    #: Every template the app is allowed to ship, relative to the app package. Adding to this is a
+    #: decision about ADR 0008 rather than a test fix, and the ADR says so.
+    ALLOWED_TEMPLATES = {"templates/nautobot_event_tracker/dashboard.html"}
+
+    def test_the_templates_directory_holds_only_the_allowed_files(self):
+        """Everything under `templates/`, not just the `.html` - a `.txt` is a template too."""
+        templates = APP_ROOT / "templates"
+        shipped = sorted(str(path.relative_to(APP_ROOT)) for path in templates.rglob("*") if path.is_file())
+
+        self.assertEqual(shipped, sorted(self.ALLOWED_TEMPLATES))
+
+    def test_no_stray_html_elsewhere_in_the_app_package(self):
+        """Catch a template placed somewhere other than `templates/`."""
+        html_files = sorted(
+            str(path.relative_to(APP_ROOT)) for path in APP_ROOT.rglob("*.html") if "static" not in path.parts
         )
 
-    def test_no_html_files_in_the_app_package(self):
-        """Catch a stray template placed somewhere other than templates/."""
-        html_files = [path.relative_to(APP_ROOT) for path in APP_ROOT.rglob("*.html") if "static" not in path.parts]
-        self.assertEqual([str(path) for path in html_files], [])
+        self.assertEqual(html_files, sorted(self.ALLOWED_TEMPLATES))
+
+    #: Markup the UI Component Framework or a core layout template would otherwise have emitted.
+    #: An allowed template may hold a form and a block wrapper; the moment it holds a grid or a
+    #: table it has started reimplementing the thing ADR 0008 says to delegate to.
+    FRAMEWORK_MARKUP = ("<table", '<div class="row"', '<div class="col-')
+
+    def test_the_allowed_template_extends_nothing_but_the_base(self):
+        """The hazard ADR 0008 names is coupling to core's page internals, not having a file.
+
+        A template that extends `generic/object_retrieve.html` inherits every change core makes to
+        it. One that extends `base.html` and calls `render_components` inherits the framework's
+        panels instead, which is the whole point of the exception.
+        """
+        for name in sorted(self.ALLOWED_TEMPLATES):
+            with self.subTest(template=name):
+                body = (APP_ROOT / name).read_text(encoding="utf-8")
+                extends = [line for line in body.splitlines() if "{% extends" in line]
+                self.assertEqual(extends, ['{% extends "base.html" %}'])
+
+    def test_the_allowed_template_draws_no_layout_of_its_own(self):
+        """The claim the ADR amendment actually makes, asserted rather than trusted.
+
+        Extending `base.html` is necessary and not sufficient: the first version of this template
+        passed that check while containing a private copy of core's `two_over_one.html` grid, which
+        is exactly the drift - every other page in the deployment moves when core changes its
+        layout, and the copy does not.
+        """
+        for name in sorted(self.ALLOWED_TEMPLATES):
+            with self.subTest(template=name):
+                body = (APP_ROOT / name).read_text(encoding="utf-8")
+                offenders = [markup for markup in self.FRAMEWORK_MARKUP if markup in body]
+
+                self.assertEqual(
+                    offenders,
+                    [],
+                    f"{name} draws layout the framework owns; include core's template instead. "
+                    "Found: " + ", ".join(offenders),
+                )
 
 
 def _is_forbidden_package(name, forbidden):
@@ -351,6 +403,23 @@ def _write_call_offenders(paths, methods):
                 yield f"{path.relative_to(APP_ROOT)}:{node.lineno} calls .{node.func.attr}()"
 
 
+#: The two test modules exempt from every record-model sole-writer guard. The fixtures build rows
+#: directly, because a fixture that went through the service would need a model call to produce
+#: one; the model suite constructs them to exercise the model itself.
+RECORD_WRITE_EXEMPT = frozenset({"tests/fixtures.py", "tests/test_models.py"})
+
+
+def _record_writer_paths():
+    """Every app module outside `services/`, minus the test modules those guards exempt.
+
+    Lifted out of `AgentGuardTest` and `RagGuardTest`, which each carried a copy. Phase 5B would
+    have made a third, which is the point at which two copies become a helper.
+    """
+    return [
+        path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in RECORD_WRITE_EXEMPT
+    ]
+
+
 def _app_import_offenders(paths, prefix):
     """Yield `path:line imports <module>` for every import of an app package under `prefix`."""
     for path in paths:
@@ -461,22 +530,10 @@ class AgentGuardTest(SimpleTestCase):
     and no way to start a process. These are the three this phase adds.
     """
 
-    #: The fixtures build runs and calls directly, because a fixture that went through the service
-    #: would need a model call to produce a row; the model suite constructs them to exercise the
-    #: model itself. The same exemption `TicketUpdate` and `LLMUsageRecord` have, for the same
-    #: reason.
-    ALLOWED = {"tests/fixtures.py", "tests/test_models.py"}
-
-    def _paths(self):
-        """Every app module outside `services/`, minus the two exempt test modules."""
-        return [
-            path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in self.ALLOWED
-        ]
-
     def test_agent_records_are_written_only_by_the_service_layer(self):
         """A run and a tool call are records of what a service did, like every other row of the kind."""
-        offenders = list(_manager_call_offenders(self._paths(), {"AgentRun", "AgentToolCall"}))
-        offenders += list(_constructor_call_offenders(self._paths(), {"AgentRun", "AgentToolCall"}))
+        offenders = list(_manager_call_offenders(_record_writer_paths(), {"AgentRun", "AgentToolCall"}))
+        offenders += list(_constructor_call_offenders(_record_writer_paths(), {"AgentRun", "AgentToolCall"}))
 
         self.assertEqual(
             offenders,
@@ -523,16 +580,6 @@ class AgentGuardTest(SimpleTestCase):
 
 class RagGuardTest(SimpleTestCase):
     """Phase 5A section 10: the three rules that are otherwise only conventions."""
-
-    #: The fixtures build embeddings directly, and the model suite constructs them to exercise the
-    #: model itself. The same exemption every other record model has.
-    ALLOWED = {"tests/fixtures.py", "tests/test_models.py"}
-
-    def _paths(self):
-        """Every app module outside `services/`, minus the two exempt test modules."""
-        return [
-            path for path in _python_files_outside_services() if str(path.relative_to(APP_ROOT)) not in self.ALLOWED
-        ]
 
     def test_nothing_retrieved_can_reach_a_prompt(self):
         """R9, and the only half of it that survives somebody deciding it would be nice to try.
@@ -585,11 +632,122 @@ class RagGuardTest(SimpleTestCase):
 
     def test_embeddings_are_written_only_by_the_service_layer(self):
         """A corpus row is derived data, like every other record model in this app."""
-        offenders = list(_manager_call_offenders(self._paths(), {"TicketEmbedding"}))
-        offenders += list(_constructor_call_offenders(self._paths(), {"TicketEmbedding"}))
+        offenders = list(_manager_call_offenders(_record_writer_paths(), {"TicketEmbedding"}))
+        offenders += list(_constructor_call_offenders(_record_writer_paths(), {"TicketEmbedding"}))
 
         self.assertEqual(
             offenders,
             [],
             "TicketEmbedding rows must only be written under services/. Offending lines: " + ", ".join(offenders),
+        )
+
+
+class AnalyticsGuardTest(SimpleTestCase):
+    """Phase 5B section 9: the dashboard reads, calls no model, and always knows who is asking.
+
+    The first phase whose guards are entirely about a module's *absences*. There is no new writer
+    to constrain, because there is no new writer at all.
+    """
+
+    ANALYTICS = SERVICES_DIR / "analytics.py"
+
+    #: The two modules a dashboard would most plausibly reach for, and the one that would let it
+    #: summarize its own charts. Rule D7 forecloses "describe this month's incidents", which is a
+    #: different phase and a different argument.
+    FORBIDDEN_SERVICES = (
+        "nautobot_event_tracker.services.llm",
+        "nautobot_event_tracker.services.agent",
+        "nautobot_event_tracker.services.rag",
+    )
+
+    #: The public functions that touch no queryset, so they have nothing to restrict. Every other
+    #: public name in the module answers "how many" about somebody's rows.
+    WITHOUT_A_USER = frozenset({"get_settings", "is_enabled", "window_choices"})
+
+    #: The four panel groups. These take `user` keyword-only and without a default, so no caller
+    #: can supply one positionally by accident or leave it out and get the estate's numbers.
+    PANEL_FUNCTIONS = frozenset({"ingestion_health", "ticket_flow", "model_cost", "agent_activity"})
+
+    def _public_functions(self):
+        """Every module-level public function in `services/analytics.py`, as AST nodes."""
+        tree = ast.parse(self.ANALYTICS.read_text(encoding="utf-8"), filename=str(self.ANALYTICS))
+        return [node for node in tree.body if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")]
+
+    def test_the_dashboard_writes_nothing(self):
+        """D1 - the first phase in this app that adds no writer, asserted rather than promised.
+
+        The same sweep the enrichment resolver gets, and for the same reason: a `save()` on an
+        instance the module happens to be holding is as much a write as a manager call. A cache
+        table is the obvious thing to reach for here, and this is what refuses it.
+        """
+        offenders = list(_write_call_offenders([self.ANALYTICS], EnrichmentGuardTest.WRITE_CALLS))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "services/analytics.py must only read. Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_dashboard_calls_no_model(self):
+        """D7 - the page shows numbers a person reads; it does not narrate them.
+
+        `services/llm.py` is the import that matters. The other two are here because each of them
+        would bring it along, and an indirect model call is a model call.
+        """
+        offenders = []
+        for prefix in self.FORBIDDEN_SERVICES:
+            offenders += list(_app_import_offenders([self.ANALYTICS], prefix))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "The dashboard describes what happened; it does not narrate it with a model. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_every_analytics_function_takes_a_user(self):
+        """D2 stated as a property of the module rather than of a panel.
+
+        An aggregate leaks without returning anything: a count of 4,812 open tickets tells a user
+        scoped out of that estate exactly how large it is. Phase 5A wrote R6 about a panel and left
+        three other surfaces unguarded; this is that lesson, asserted at the only place it can be -
+        the signature, where there is no way to ask without saying who is asking.
+        """
+        offenders = []
+        for node in self._public_functions():
+            if node.name in self.WITHOUT_A_USER:
+                continue
+            arguments = [argument.arg for argument in node.args.args + node.args.kwonlyargs]
+            if "user" not in arguments:
+                offenders.append(f"services/analytics.py:{node.lineno} {node.name}()")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Every public analytics function must take `user`. Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_panel_functions_take_a_user_keyword_only_and_without_a_default(self):
+        """The other half of D2: not optional, not defaulted, not `None` for "internal use".
+
+        There is no internal use. A default would be the one call site that quietly aggregates over
+        everything, and it would look exactly like every other call.
+        """
+        offenders = []
+        for node in self._public_functions():
+            if node.name not in self.PANEL_FUNCTIONS:
+                continue
+            keyword_only = [argument.arg for argument in node.args.kwonlyargs]
+            if "user" not in keyword_only:
+                offenders.append(f"services/analytics.py:{node.lineno} {node.name}() takes user positionally")
+                continue
+            default = node.args.kw_defaults[keyword_only.index("user")]
+            if default is not None:
+                offenders.append(f"services/analytics.py:{node.lineno} {node.name}() defaults user")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "The panel functions must take `user` keyword-only and without a default. "
+            "Offending lines: " + ", ".join(offenders),
         )
