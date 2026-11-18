@@ -232,7 +232,9 @@ def enabled_tools():
     way.
     """
     return (
-        MCPTool.objects.filter(enabled=True, mcp_server__enabled=True)
+        MCPTool.objects.filter(
+            enabled=True, mcp_server__enabled=True, mcp_server__transport__in=mcp_service.CALLABLE_TRANSPORTS
+        )
         .select_related("mcp_server")
         .order_by("mcp_server__name", "name")
     )

@@ -9,6 +9,7 @@ import json
 
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
+from nautobot_ai_models.choices import MCPTransportChoices
 
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
@@ -427,6 +428,16 @@ class TestTheToolsOnOffer(AgentTestCase):
         _, complete = self.run_agent("Nothing to report.")
 
         self.assertEqual(complete.offered_tools, ["allowed"])
+
+    def test_a_tool_on_a_transport_this_app_cannot_call_is_not_offered(self):
+        """A call to a tool on an `sse` server is always refused, so the model does not see it."""
+        sse_server = fixtures.create_mcpserver(name="SSE Server", transport=MCPTransportChoices.TYPE_SSE)
+        fixtures.create_mcptool(server=sse_server, name="on_an_sse_server", enabled=True, writable=False)
+        fixtures.create_mcptool(name="on_streamable_http", enabled=True, writable=False)
+
+        _, complete = self.run_agent("Nothing to report.")
+
+        self.assertEqual(complete.offered_tools, ["on_streamable_http"])
 
     def test_a_writable_tool_is_offered_and_labelled(self):
         """It is offered, because proposing it is the point. It is labelled for the same reason."""
