@@ -9,11 +9,7 @@ from nautobot_event_tracker.models import (
     EventTicket,
     EventType,
     IngestionStats,
-    LLMModel,
-    LLMProvider,
     LLMUsageRecord,
-    MCPServer,
-    MCPTool,
     TicketEmbedding,
     TicketUpdate,
 )
@@ -171,26 +167,6 @@ class IngestionStatsSerializer(BaseModelSerializer):
         read_only_fields = fields
 
 
-class LLMProviderSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
-    """LLMProvider Serializer."""
-
-    class Meta:
-        """Meta attributes."""
-
-        model = LLMProvider
-        fields = "__all__"
-
-
-class LLMModelSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
-    """LLMModel Serializer."""
-
-    class Meta:
-        """Meta attributes."""
-
-        model = LLMModel
-        fields = "__all__"
-
-
 class LLMUsageRecordSerializer(BaseModelSerializer):
     """LLMUsageRecord Serializer.
 
@@ -219,26 +195,6 @@ class LLMUsageRecordSerializer(BaseModelSerializer):
             "called_at",
         ]
         read_only_fields = fields
-
-
-class MCPServerSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
-    """MCPServer Serializer."""
-
-    class Meta:
-        """Meta attributes."""
-
-        model = MCPServer
-        fields = "__all__"
-
-
-class MCPToolSerializer(NautobotModelSerializer):  # pylint: disable=too-many-ancestors
-    """MCPTool Serializer."""
-
-    class Meta:
-        """Meta attributes."""
-
-        model = MCPTool
-        fields = "__all__"
 
 
 class AgentRunSerializer(BaseModelSerializer):

@@ -1,0 +1,5 @@
+Usage records, agent runs, agent tool calls and ticket embeddings move out of **Apps → Event Tracker** and into a new **Event Tracker AI** group under the shared **AI Tools** tab, beside the registry they read. Tickets, event types, ingestion statistics and the analytics dashboard stay where they are. The tab is the one `nautobot-ai-models` publishes, and its name, weight and icon are imported from that app's constants rather than copied - Nautobot merges two tab declarations only when all three match exactly.
+
+Two MCP tool fields are renamed to the registry's names, which is visible in filters, in the API and in the ticket's agent panel: `mutating` is now `writable`, and a tool's `server` is now its `mcp_server`. The meanings are unchanged.
+
+`services/mcp.py:call_tool()` now refuses a server whose transport is not streamable HTTP, before any network I/O. The registry records `sse` and `stdio` so that a server this app cannot reach can still be catalogued; [ADR 0007](../docs/decisions/0007-mcp-tools-streamable-http-and-default-deny.md) still refuses both here, and now says so with a sentence rather than an opaque transport failure.

@@ -38,3 +38,18 @@ Cost is the third pressure. LLM spend is invisible until it is a surprise, and a
 **Credentials in `PLUGINS_CONFIG`.** Rejected: it puts secrets in configuration files and ignores the secrets infrastructure Nautobot already provides.
 
 **Usage accounting at call sites.** Rejected: optional instrumentation is instrumentation that gets skipped.
+
+## Amendment (Phase 6, ADR 0010)
+
+`LLMProvider` and `LLMModel` are gone. The registry objects this record describes are now
+`AIProvider` and `AIModel` in `nautobot-ai-models`, and this app reads them.
+
+Nothing in the decision changes. Credentials still live in an `ExternalIntegration` and its
+secrets group, because that is the arrangement the other app uses too. All model calls still go
+through litellm, wrapped in this app's own service layer, and litellm is still this app's
+dependency rather than the registry's - that app performs no inference at all. Every call is still
+recorded in `LLMUsageRecord`, which stays here: it carries a foreign key to `EventTicket` and could
+not move.
+
+What moves is where an operator adds a provider, and what the app can be sure a provider row says
+about itself. Both are the subject of ADR 0010.

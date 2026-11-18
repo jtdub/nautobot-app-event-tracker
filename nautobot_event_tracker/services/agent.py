@@ -45,6 +45,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from nautobot.apps.utils import deepmerge
+from nautobot_ai_models.models import MCPTool
 
 from nautobot_event_tracker.choices import (
     AGENT_ALLOWED_TRANSITIONS,
@@ -57,7 +58,7 @@ from nautobot_event_tracker.choices import (
     TicketStatusChoices,
     UpdateTypeChoices,
 )
-from nautobot_event_tracker.models import AgentRun, AgentToolCall, EventTicket, MCPTool
+from nautobot_event_tracker.models import AgentRun, AgentToolCall, EventTicket
 from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import tickets as ticket_service
@@ -231,9 +232,9 @@ def enabled_tools():
     way.
     """
     return (
-        MCPTool.objects.filter(enabled=True, server__enabled=True)
-        .select_related("server")
-        .order_by("server__name", "name")
+        MCPTool.objects.filter(enabled=True, mcp_server__enabled=True)
+        .select_related("mcp_server")
+        .order_by("mcp_server__name", "name")
     )
 
 
@@ -254,8 +255,8 @@ def pending_call(run):
     if run is None:
         return None
     return (
-        run.tool_calls.filter(status=AgentToolCallStatusChoices.PROPOSED, tool__mutating=True)
-        .select_related("tool__server")
+        run.tool_calls.filter(status=AgentToolCallStatusChoices.PROPOSED, tool__writable=True)
+        .select_related("tool__mcp_server")
         .first()
     )
 
@@ -341,7 +342,9 @@ def _decide(*, tool_call, user, approved):
         # Re-read under a row lock: two approvers pressing at once is exactly the case "a call is
         # decided once" exists to cover, and the check has to run on the row that is written.
         tool_call = (
-            AgentToolCall.objects.select_for_update().select_related("run__ticket", "tool__server").get(pk=tool_call.pk)
+            AgentToolCall.objects.select_for_update()
+            .select_related("run__ticket", "tool__mcp_server")
+            .get(pk=tool_call.pk)
         )
         if tool_call.is_decided:
             raise AgentDecisionError(
@@ -525,15 +528,15 @@ def _tool_definitions(by_name):
     definitions = []
     for name, tool in by_name.items():
         description = tool.description or f"The '{tool.name}' tool."
-        server = f"MCP server: {tool.server.name}."
-        if tool.server.description:
+        server = f"MCP server: {tool.mcp_server.name}."
+        if tool.mcp_server.description:
             # The operator's own note about what this server reaches and how to address it. It is
             # the one place in the registry a person can write down what a model cannot be assumed
             # to know - the lab's is a line of SR Linux command syntax, because a model asked for
             # an SR Linux command will otherwise answer with a Cisco one and be refused all day.
-            server = f"{server} {tool.server.description}"
+            server = f"{server} {tool.mcp_server.description}"
         description = f"{description} ({server})"
-        if tool.mutating:
+        if tool.writable:
             description += " This tool changes something; asking for it proposes it to a person, who decides."
         schema = tool.input_schema if isinstance(tool.input_schema, dict) and tool.input_schema else None
         definitions.append(
@@ -755,7 +758,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             self._conclude_at_bound(f"the limit of {self.settings.max_tool_calls} tool calls")
             return False
 
-        if tool.mutating:
+        if tool.writable:
             # A3 - propose and stop. Nothing else in this turn is answered: the resumption replays
             # this transcript, and the approved call's result is what answers the pending id.
             self._propose(tool, first)
@@ -796,7 +799,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         """Make the call a person approved, then carry on from where the parent stopped (7.4)."""
         approved = (
             self.run.parent.tool_calls.filter(status=AgentToolCallStatusChoices.APPROVED)
-            .select_related("tool__server")
+            .select_related("tool__mcp_server")
             .first()
         )
         if approved is None:

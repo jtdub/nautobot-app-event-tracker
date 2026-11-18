@@ -5,7 +5,6 @@ from django.contrib.contenttypes.models import ContentType
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.forms import (
     DynamicModelChoiceField,
-    DynamicModelMultipleChoiceField,
     NautobotBulkEditForm,
     NautobotFilterForm,
     NautobotModelForm,
@@ -13,13 +12,11 @@ from nautobot.apps.forms import (
     StaticSelect2Multiple,
     TagsBulkEditFormMixin,
 )
-from nautobot.extras.models import ExternalIntegration
+from nautobot_ai_models.models import AIModel, MCPTool
 
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
-    LLMModelKindChoices,
-    LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
     TicketSourceChoices,
@@ -31,34 +28,11 @@ from nautobot_event_tracker.models import (
     EventTicket,
     EventType,
     IngestionStats,
-    LLMModel,
-    LLMProvider,
     LLMUsageRecord,
-    MCPServer,
-    MCPTool,
     TicketEmbedding,
 )
 from nautobot_event_tracker.services import analytics
 from nautobot_event_tracker.services import tickets as ticket_service
-
-#: The model registry entry's editable fields, in the order they read best. Shared with the detail
-#: panel in views.py so the form and the page cannot drift apart. Homed here rather than in
-#: tables.py: no table uses it, and forms must not depend on presentation modules.
-LLM_MODEL_FIELDS = (
-    "provider",
-    "name",
-    "description",
-    "enabled",
-    # Beside `enabled`, because they are the two things an operator decides about a model rather
-    # than reads off a price list. Omitting it here made Kind unsettable and invisible in the UI -
-    # this tuple backs both the form and the detail panel - while the admin guide told operators
-    # to set it there.
-    "kind",
-    "input_cost_per_million",
-    "output_cost_per_million",
-    "max_output_tokens",
-    "default_parameters",
-)
 
 #: Nautobot has BOOLEAN_WITH_BLANK_CHOICES, but only under nautobot.core.forms.constants, which is
 #: outside the public nautobot.apps surface this app otherwise stays within.
@@ -328,98 +302,6 @@ class IngestionStatsFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
     topic = forms.CharField(required=False, label="Topic")
 
 
-class LLMProviderForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
-    """LLMProvider creation/edit form."""
-
-    external_integration = DynamicModelChoiceField(queryset=ExternalIntegration.objects.all())
-
-    class Meta:
-        """Meta attributes."""
-
-        model = LLMProvider
-        fields = [  # pylint: disable=nb-use-fields-all
-            "name",
-            "description",
-            "provider_type",
-            "external_integration",
-            "enabled",
-            "tags",
-        ]
-
-
-class LLMProviderBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
-    """LLMProvider bulk edit form.
-
-    `TagsBulkEditFormMixin` for the same reason `EventTicketBulkEditForm` has it: both models are
-    PrimaryModels, both filtersets offer a `tags` filter, and a tag nobody can apply in bulk is a
-    filter for something the UI cannot produce.
-    """
-
-    pk = forms.ModelMultipleChoiceField(queryset=LLMProvider.objects.all(), widget=forms.MultipleHiddenInput)
-    description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-
-    class Meta:
-        """Meta attributes."""
-
-        nullable_fields = ["description"]
-
-
-class LLMProviderFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
-    """Filter form for LLMProvider."""
-
-    model = LLMProvider
-    field_order = ["q", "name", "provider_type", "enabled"]
-
-    q = forms.CharField(required=False, label="Search", help_text="Search within name and description.")
-    name = forms.CharField(required=False, label="Name")
-    provider_type = forms.MultipleChoiceField(
-        choices=LLMProviderTypeChoices, required=False, widget=StaticSelect2Multiple
-    )
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-
-
-class LLMModelForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
-    """LLMModel creation/edit form."""
-
-    provider = DynamicModelChoiceField(queryset=LLMProvider.objects.all())
-
-    class Meta:
-        """Meta attributes."""
-
-        model = LLMModel
-        # One definition of the field list, shared with the detail panel, plus tags - which the
-        # form offers and the panel does not, because Nautobot renders tags on a detail page
-        # itself.
-        fields = [*LLM_MODEL_FIELDS, "tags"]  # pylint: disable=nb-use-fields-all
-
-
-class LLMModelBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
-    """LLMModel bulk edit form."""
-
-    pk = forms.ModelMultipleChoiceField(queryset=LLMModel.objects.all(), widget=forms.MultipleHiddenInput)
-    description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-
-    class Meta:
-        """Meta attributes."""
-
-        nullable_fields = ["description"]
-
-
-class LLMModelFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
-    """Filter form for LLMModel."""
-
-    model = LLMModel
-    field_order = ["q", "provider", "name", "kind", "enabled"]
-
-    q = forms.CharField(required=False, label="Search", help_text="Search within name, description and provider.")
-    provider = DynamicModelChoiceField(queryset=LLMProvider.objects.all(), required=False, to_field_name="name")
-    name = forms.CharField(required=False, label="Name")
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-    kind = forms.MultipleChoiceField(choices=LLMModelKindChoices, required=False, widget=StaticSelect2Multiple)
-
-
 class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
     """Filter form for LLMUsageRecord.
 
@@ -444,7 +326,7 @@ class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
         """
         super().__init__(*args, **kwargs)
         self.fields["model"] = DynamicModelChoiceField(
-            queryset=LLMModel.objects.all(),
+            queryset=AIModel.objects.all(),
             required=False,
             label="Model",
         )
@@ -453,111 +335,8 @@ class LLMUsageRecordFilterForm(NautobotFilterForm):  # pylint: disable=too-many-
         # a reader is meant to reach after it.
         self.order_fields(self.field_order)
 
-
-class MCPServerForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
-    """MCPServer creation/edit form."""
-
-    external_integration = DynamicModelChoiceField(queryset=ExternalIntegration.objects.all())
-
-    class Meta:
-        """Meta attributes."""
-
-        model = MCPServer
-        fields = [  # pylint: disable=nb-use-fields-all
-            "name",
-            "description",
-            "external_integration",
-            "enabled",
-            "tags",
-        ]
-
-
-class MCPServerBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
-    """MCPServer bulk edit form."""
-
-    pk = forms.ModelMultipleChoiceField(queryset=MCPServer.objects.all(), widget=forms.MultipleHiddenInput)
-    description = forms.CharField(required=False, max_length=CHARFIELD_MAX_LENGTH)
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-
-    class Meta:
-        """Meta attributes."""
-
-        nullable_fields = ["description"]
-
-
-class MCPServerFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
-    """Filter form for MCPServer."""
-
-    model = MCPServer
-    field_order = ["q", "name", "enabled"]
-
-    q = forms.CharField(required=False, label="Search", help_text="Search within name and description.")
-    name = forms.CharField(required=False, label="Name")
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-
-
-class MCPToolForm(NautobotModelForm):  # pylint: disable=too-many-ancestors
-    """MCPTool creation/edit form.
-
-    `name`, `description` and `input_schema` are what a server advertised, and discovery rewrites
-    them. What an operator owns is the two decisions: whether this tool may be called at all, and
-    whether calling it changes something.
-    """
-
-    server = DynamicModelChoiceField(queryset=MCPServer.objects.all())
-
-    class Meta:
-        """Meta attributes."""
-
-        model = MCPTool
-        fields = [  # pylint: disable=nb-use-fields-all
-            "server",
-            "name",
-            "description",
-            "mutating",
-            "enabled",
-            "input_schema",
-            "tags",
-        ]
         # `advertised_read_only` is deliberately absent: it records what the server claimed, and a
         # field an operator can type into is no longer a record of that.
-
-
-class MCPToolBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):  # pylint: disable=too-many-ancestors
-    """MCPTool bulk edit form.
-
-    The one that carries the weight of ADR 0007's admitted friction: reviewing a forty-tool server
-    one row at a time is how an operator ends up enabling all of them to be done with it.
-    """
-
-    pk = forms.ModelMultipleChoiceField(queryset=MCPTool.objects.all(), widget=forms.MultipleHiddenInput)
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-    mutating = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-
-    class Meta:
-        """Meta attributes."""
-
-        nullable_fields = []
-
-
-class MCPToolFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors
-    """Filter form for MCPTool."""
-
-    model = MCPTool
-    field_order = ["q", "server", "name", "enabled", "mutating", "advertised_read_only"]
-
-    q = forms.CharField(required=False, label="Search", help_text="Search within name, description and server.")
-    # Multiple, because the filterset takes multiple and reviewing two servers at once is an
-    # ordinary thing to want on the page whose whole purpose is review.
-    server = DynamicModelMultipleChoiceField(queryset=MCPServer.objects.all(), to_field_name="name", required=False)
-    name = forms.CharField(required=False, label="Name")
-    enabled = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-    mutating = forms.NullBooleanField(required=False, widget=StaticSelect2(choices=YES_NO_CHOICES))
-    advertised_read_only = forms.NullBooleanField(
-        required=False,
-        label="Server claims read-only",
-        widget=StaticSelect2(choices=YES_NO_CHOICES),
-    )
 
 
 class AgentRunFilterForm(NautobotFilterForm):  # pylint: disable=too-many-ancestors

@@ -373,7 +373,7 @@ class TestAPlainRun(AgentTestCase):
 
     def test_a_bound_report_is_kept_out_too(self):
         """ "The agent stopped at the limit of 3 model calls" is not a fact about the network."""
-        fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
         self.run_agent([fixtures.fake_tool_call("look")])
 
         run, _ = self.run_agent("Nothing to report.")
@@ -419,18 +419,18 @@ class TestTheToolsOnOffer(AgentTestCase):
     def test_only_enabled_tools_on_enabled_servers_are_offered(self):
         """A server advertising forty tools grants forty times nothing."""
         server = fixtures.create_mcpserver()
-        fixtures.create_mcptool(server=server, name="allowed", enabled=True, mutating=False)
+        fixtures.create_mcptool(server=server, name="allowed", enabled=True, writable=False)
         fixtures.create_mcptool(server=server, name="not_enabled")
         disabled_server = fixtures.create_mcpserver(name="Off Server", enabled=False)
-        fixtures.create_mcptool(server=disabled_server, name="on_a_disabled_server", enabled=True, mutating=False)
+        fixtures.create_mcptool(server=disabled_server, name="on_a_disabled_server", enabled=True, writable=False)
 
         _, complete = self.run_agent("Nothing to report.")
 
         self.assertEqual(complete.offered_tools, ["allowed"])
 
-    def test_a_mutating_tool_is_offered_and_labelled(self):
+    def test_a_writable_tool_is_offered_and_labelled(self):
         """It is offered, because proposing it is the point. It is labelled for the same reason."""
-        fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
 
         _, complete = self.run_agent("Nothing to report.")
 
@@ -442,8 +442,8 @@ class TestTheToolsOnOffer(AgentTestCase):
         """Providers key tool calls by name, so two of them cannot be the same name."""
         first = fixtures.create_mcpserver(name="Server A")
         second = fixtures.create_mcpserver(name="Server B")
-        fixtures.create_mcptool(server=first, name="show", enabled=True, mutating=False)
-        fixtures.create_mcptool(server=second, name="show", enabled=True, mutating=False)
+        fixtures.create_mcptool(server=first, name="show", enabled=True, writable=False)
+        fixtures.create_mcptool(server=second, name="show", enabled=True, writable=False)
 
         _, complete = self.run_agent("Nothing to report.")
 
@@ -451,7 +451,7 @@ class TestTheToolsOnOffer(AgentTestCase):
 
     def test_a_name_a_provider_would_refuse_is_rewritten(self):
         """A server may name a tool anything; the OpenAI schema may not."""
-        fixtures.create_mcptool(name="show interface (all)", enabled=True, mutating=False)
+        fixtures.create_mcptool(name="show interface (all)", enabled=True, writable=False)
 
         _, complete = self.run_agent("Nothing to report.")
 
@@ -470,7 +470,7 @@ class TestReadOnlyCalls(AgentTestCase):
     def setUp(self):
         """One enabled read-only tool for the model to reach for."""
         super().setUp()
-        self.tool = fixtures.create_mcptool(name="get_interface_status", enabled=True, mutating=False)
+        self.tool = fixtures.create_mcptool(name="get_interface_status", enabled=True, writable=False)
 
     def test_a_read_only_call_runs_and_its_answer_reaches_the_model(self):
         """The loop's step 6, end to end."""
@@ -573,7 +573,7 @@ class TestTheGate(AgentTestCase):
     def setUp(self):
         """One enabled mutating tool, which is the whole point of the gate."""
         super().setUp()
-        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
 
     def propose(self, arguments=None):
         """Run until the model asks for the mutating tool."""
@@ -611,7 +611,7 @@ class TestTheGate(AgentTestCase):
 
         entry = self.updates(UpdateTypeChoices.TOOL_PROPOSED)[-1]
         self.assertIn("push_config", entry.message)
-        self.assertIn(self.tool.server.name, entry.message)
+        self.assertIn(self.tool.mcp_server.name, entry.message)
         self.assertIn("leaf-01", entry.message)
         self.assertIn("Nothing has been called", entry.message)
 
@@ -621,7 +621,7 @@ class TestTheGate(AgentTestCase):
 
         self.assertEqual(self.messages(run, "tool"), [])
 
-    def test_a_mutating_tool_is_proposed_even_when_the_server_claims_it_reads(self):
+    def test_a_writable_tool_is_proposed_even_when_the_server_claims_it_reads(self):
         """4.2 - the hint is recorded and decides nothing."""
         self.tool.advertised_read_only = True
         self.tool.validated_save()
@@ -639,7 +639,7 @@ class TestDecisions(AgentTestCase):
         """A run waiting on one proposal."""
         super().setUp()
         self.run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
-        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
         self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, arguments={"device": "leaf-01"})
 
     def test_approving_records_who_and_when(self):
@@ -675,7 +675,7 @@ class TestDecisions(AgentTestCase):
         already making: press Approve in that window and the ticket's trail records a human
         approving something nobody was asked about.
         """
-        read_only = fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        read_only = fixtures.create_mcptool(name="look", enabled=True, writable=False)
         run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.RUNNING)
         fixtures.create_agenttoolcall(run=run, tool=read_only)
 
@@ -687,7 +687,7 @@ class TestDecisions(AgentTestCase):
         A read-only row left `proposed` by a failure sorts first by `proposed_at`, so the ticket
         page showed it and the genuine mutating proposal was never offered to anybody.
         """
-        read_only = fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        read_only = fixtures.create_mcptool(name="look", enabled=True, writable=False)
         run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
         fixtures.create_agenttoolcall(run=run, tool=read_only)
         real = fixtures.create_agenttoolcall(run=run, tool=self.tool)
@@ -730,7 +730,7 @@ class TestResumption(AgentTestCase):
     def setUp(self):
         """A run that proposed a mutating call and stopped."""
         super().setUp()
-        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
         self.parent, _ = self.run_agent(
             [fixtures.fake_tool_call("push_config", {"device": "leaf-01"})],
         )
@@ -800,7 +800,7 @@ class TestBounds(AgentTestCase):
     def setUp(self):
         """One read-only tool, so a run can be made to loop."""
         super().setUp()
-        fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
 
     def test_the_iteration_limit_ends_the_run(self):
         """A model that never stops asking is a bill, and "usually stops" is not a bound."""
@@ -923,7 +923,7 @@ class TestTheTranscriptShape(AgentTestCase):
 
     def test_an_assistant_turn_carries_its_tool_calls_as_the_provider_sent_them(self):
         """The next request has to send them back exactly, ids and all."""
-        fixtures.create_mcptool(name="look", enabled=True, mutating=False)
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
 
         run, _ = self.run_agent(
             [fixtures.fake_tool_call("look", {"device": "leaf-01"}, identifier="call-9")],

@@ -38,3 +38,35 @@ The reachability question is sharper. An agent working a ticket about a degraded
 **Server-level rather than tool-level approval.** Rejected: it makes the security boundary the server author's tool list, which can change under you without notice.
 
 **Trust the model to avoid dangerous tools.** Rejected: prompt-level restrictions are guidance, not a control, and they are defeated by exactly the adversarial input a ticket about a security incident is likely to contain.
+
+## Amendment (Phase 6, ADR 0010)
+
+`MCPServer` and `MCPTool` are gone. Both are now the `nautobot-ai-models` models of the same names,
+and discovery is that app's Job rather than this app's command.
+
+**Streamable HTTP only still holds, and is now checked rather than assumed.** That registry records
+a transport per server and accepts `sse` and `stdio` so that a server this app cannot reach is
+still catalogued. `services/mcp.py:call_tool()` refuses any transport but streamable HTTP before
+any network I/O, and the guard that forbids every process-starting import is unchanged.
+
+**Default-deny still holds, and is now configuration rather than a field default.** The registry's
+own defaults are the other way round - a newly advertised tool arrives enabled, and one whose
+definition moved stays enabled - which is a defensible choice for a catalogue and the wrong one for
+a registry an agent calls from. Two settings on that app restore the posture this record decided:
+
+```python
+PLUGINS_CONFIG["nautobot_ai_models"] = {
+    "new_tools_enabled": False,
+    "disable_on_definition_change": True,
+}
+```
+
+Both are documented in `docs/admin/mcp.md` and set in the development stack. This is a real
+weakening in one respect and it is worth naming: the posture is now a deployment's to configure,
+and a deployment that does not read the documentation gets the permissive default.
+
+**What does not depend on that configuration.** A writable tool still needs a human approval per
+call. A call whose tool has changed - its definition, its name, or the endpoint it is reached at -
+since the call was proposed is still refused at execution, unconditionally, by
+`services/mcp.py:_check_callable()`. That check used to be a backstop behind an automatic disable;
+it is now the thing itself, which is why it is unconditional rather than guarded.

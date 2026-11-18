@@ -141,8 +141,8 @@ When it shows nothing, that is an answer: nothing in the corpus is within `max_d
 
 ## Where to look when it is quiet
 
-- **Apps → Event Tracker → Ticket Embeddings** — what is in the corpus, and under which model.
-- **Apps → Event Tracker → LLM Usage** — filter on purpose *Embedding* to see the calls and what
+- **AI Tools → Event Tracker AI → Ticket Embeddings** — what is in the corpus, and under which model.
+- **AI Tools → Event Tracker AI → LLM Usage** — filter on purpose *Embedding* to see the calls and what
   they cost.
 - The Job Hook's own results, under **Jobs → Job Results**.
 

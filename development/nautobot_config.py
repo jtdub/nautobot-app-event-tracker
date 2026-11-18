@@ -107,11 +107,24 @@ if not _TESTING:
 #
 
 # Enable installed Apps. Add the name of each App to the list.
-PLUGINS = ["nautobot_event_tracker"]
+#
+# `nautobot_ai_models` is a dependency rather than a companion (ADR 0010): it owns the AI provider,
+# AI model, MCP server and MCP tool registries this app reads, and `models.py` holds foreign keys
+# into it. A Nautobot that loads this app without that one does not start.
+PLUGINS = ["nautobot_ai_models", "nautobot_event_tracker"]
 
 # Apps configuration settings. These settings are used by various Apps that the user may have installed.
 # Each key in the dictionary is the name of an installed App and its value is a dictionary of settings.
 PLUGINS_CONFIG = {
+    # The registry app's own two policy settings, and the reason ADR 0007 survives the move. Its
+    # defaults are the other way round - a newly discovered tool arrives enabled, and one whose
+    # definition moved stays enabled - which is a defensible choice for a catalogue and the wrong
+    # one for a registry an agent calls from. Set here so the development stack behaves the way
+    # `docs/admin/mcp.md` tells a deployment to.
+    "nautobot_ai_models": {
+        "new_tools_enabled": False,
+        "disable_on_definition_change": True,
+    },
     "nautobot_event_tracker": {},
 }
 
@@ -210,4 +223,9 @@ PLUGINS_CONFIG["nautobot_event_tracker"]["agent"] = {
     # than a broken one. The tool timeout is raised for the same reason.
     "timeout_seconds": 180,
     "tool_timeout_seconds": 60,
+    # Raised from the stock 8. A small local model spends calls learning the tool set - it picked
+    # the wrong one of two similarly named tools four times in a row against the lab - and 8 was
+    # exhausted before it reached a conclusion, so the run ended at the bound with its one good
+    # command result unsummarised. Still well under `max_tool_calls`, which stays at 20.
+    "max_iterations": 15,
 }

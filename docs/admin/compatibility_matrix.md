@@ -1,8 +1,8 @@
 # Compatibility Matrix
 
-| Event Tracker Version | Nautobot First Support Version | Nautobot Last Support Version |
-| ------------- | -------------------- | ------------- |
-| 1.0.X         | 3.2.0                | 3.99.99        |
+| Event Tracker Version | Nautobot First Support Version | Nautobot Last Support Version | AI Models App |
+| ------------- | -------------------- | ------------- | ------------- |
+| 1.0.X         | 3.2.0                | 3.99.99        | >=1.1.0,<2.0.0 |
 
 ## How to read this
 
@@ -42,3 +42,17 @@ of this app, called out in the [release notes](release_notes/index.md).
 
 Python support follows Nautobot's: 3.10 through 3.14. PostgreSQL is the only supported database
 ([ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md)); MySQL is not supported and is not planned.
+
+## The AI Models app
+
+`nautobot-ai-models` owns the registry this app reads, and the pin is a floor with a major-version
+ceiling, declared in `pyproject.toml` alone — Nautobot's `min_version` mechanism checks Nautobot,
+not a sibling app, so there is no second place to keep in step.
+
+The floor is 1.1 rather than 1.0 and every part of that is load-bearing: 1.1 is the release that
+records a provider's dialect and whether it is enabled, a model's kind and its generation
+parameters, and the two MCP registry-policy settings
+[ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md) relies on. Against 1.0
+this app cannot address an Ollama endpoint, tell a chat model from an embedding one, or keep an
+unreviewed tool out of an agent's hands. Raising the floor again is a minor release of this app and
+is called out in the [release notes](release_notes/index.md).

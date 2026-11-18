@@ -21,17 +21,18 @@ from django.test import override_settings
 from django.utils import timezone
 from nautobot.dcim.models import Location, LocationType
 from nautobot.extras.models import Status
+from nautobot_ai_models.choices import AIModelKindChoices, AIProviderTypeChoices
+from nautobot_ai_models.models import AIModel, AIProvider, MCPServer, MCPTool
 
 from nautobot_event_tracker import dcim_fixtures
 from nautobot_event_tracker.choices import (
-    LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
 )
 from nautobot_event_tracker.ingestion.consumers import BrokerMessage, EventConsumer
-from nautobot_event_tracker.models import EventType, IngestionStats, LLMModel, LLMProvider
+from nautobot_event_tracker.models import EventType, IngestionStats
 from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services import tickets as ticket_service
 
@@ -287,17 +288,22 @@ def create_external_integration(name="Test LLM Endpoint", remote_url="http://llm
 
 
 def create_llmprovider(name="Test Provider", **overrides):
-    """One LLM provider, pointing at a test integration."""
+    """One AI provider, pointing at a test integration.
+
+    Still named for what this app calls it rather than for the registry's class, because every
+    caller here is a test about this app's behaviour. The row it makes is a `nautobot_ai_models`
+    row (ADR 0010).
+    """
     defaults = {
-        "provider_type": LLMProviderTypeChoices.OPENAI_COMPATIBLE,
+        "provider_type": AIProviderTypeChoices.OPENAI_COMPATIBLE,
         "external_integration": create_external_integration(),
     }
-    provider, _ = LLMProvider.objects.get_or_create(name=name, defaults={**defaults, **overrides})
+    provider, _ = AIProvider.objects.get_or_create(name=name, defaults={**defaults, **overrides})
     return provider
 
 
 def create_llmmodel(name="test-model", provider=None, **overrides):
-    """One LLM model on a provider."""
+    """One AI model on a provider."""
     if provider is None:
         provider = create_llmprovider()
     defaults = {
@@ -305,8 +311,9 @@ def create_llmmodel(name="test-model", provider=None, **overrides):
         # and the service does arithmetic with it before any refresh from the database.
         "input_cost_per_million": Decimal("1.0000"),
         "output_cost_per_million": Decimal("2.0000"),
+        "kind": AIModelKindChoices.CHAT,
     }
-    model, _ = LLMModel.objects.get_or_create(provider=provider, name=name, defaults={**defaults, **overrides})
+    model, _ = AIModel.objects.get_or_create(provider=provider, name=name, defaults={**defaults, **overrides})
     return model
 
 
@@ -421,8 +428,6 @@ def create_mcpserver(name="Test MCP Server", **overrides):
     Reuses a server of this name when one already exists, so that `create_mcptool()` can fall back
     to a default server without every caller having to know whether somebody made it first.
     """
-    from nautobot_event_tracker.models import MCPServer  # pylint: disable=import-outside-toplevel
-
     existing = MCPServer.objects.filter(name=name).first()
     if existing is not None:
         # Whatever the overrides say. Falling through with them would build a second server of the
@@ -441,44 +446,29 @@ def create_mcpserver(name="Test MCP Server", **overrides):
 
 
 def create_mcptool(server=None, name="get_interface_status", **overrides):
-    """One tool on a server, disabled and mutating unless a test says otherwise.
+    """One tool on a server, disabled and writable unless a test says otherwise.
 
-    The defaults are the model's own, restated here so a test that wants a callable tool has to
-    say so - which is the same thing an operator has to do.
+    `enabled=False` is stated here rather than inherited. The registry's own default is True - it
+    is a catalogue, and a deployment turns default-deny on with a setting (ADR 0007's amendment) -
+    so a fixture that inherited it would hand every test a callable tool and quietly stop testing
+    the refusal. A test that wants one says so, which is the same thing an operator has to do.
     """
-    from nautobot_event_tracker.models import MCPTool  # pylint: disable=import-outside-toplevel
-
     if server is None:
         server = create_mcpserver()
-    tool = MCPTool(server=server, name=name, **overrides)
+    defaults = {"enabled": False, "writable": True}
+    tool = MCPTool(mcp_server=server, name=name, **{**defaults, **overrides})
     tool.validated_save()
     return tool
 
 
-class FakeMCPClient:  # pylint: disable=too-few-public-methods
-    """The `client` seam of `services.mcp`: records connections, returns canned tool lists.
-
-    Tests inject this rather than mocking the MCP SDK's internals, so they exercise everything up
-    to the wire and no test opens a socket.
-    """
-
-    def __init__(self, tools=(), *, error=None):
-        """Advertise these tools, or raise this error instead."""
-        self.tools = tuple(tools)
-        self.error = error
-        self.connections = []
-
-    def list_tools(self, connection):
-        """Record the connection, then answer or refuse."""
-        self.connections.append(connection)
-        if self.error is not None:
-            raise self.error
-        return self.tools
-
-
 def tool_definition(name="get_interface_status", **overrides):
-    """One advertised tool, as `services.mcp` models what a server said."""
-    from nautobot_event_tracker.services.mcp import ToolDefinition  # pylint: disable=import-outside-toplevel
+    """One advertised tool, as the registry app models what a server said.
+
+    Kept although this app no longer discovers anything: `call_binding()` is computed from a tool's
+    stored `definition_fingerprint`, and a test that wants to move a definition under an approved
+    call needs to produce the same digest the registry would have written.
+    """
+    from nautobot_ai_models.services.mcp import ToolDefinition  # pylint: disable=import-outside-toplevel
 
     defaults = {
         "description": "Read an interface's operational state.",
@@ -650,10 +640,8 @@ def rag_settings(**overrides):
 
 
 def create_embedding_model(name="test-embedding", provider=None, **overrides):
-    """An LLMModel registered for embeddings rather than chat."""
-    from nautobot_event_tracker.choices import LLMModelKindChoices  # pylint: disable=C0415
-
-    overrides.setdefault("kind", LLMModelKindChoices.EMBEDDING)
+    """An AIModel registered for embeddings rather than chat."""
+    overrides.setdefault("kind", AIModelKindChoices.EMBEDDING)
     return create_llmmodel(name=name, provider=provider, **overrides)
 
 

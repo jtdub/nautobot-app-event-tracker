@@ -13,7 +13,6 @@ from nautobot_event_tracker import models
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
-    LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
     TicketSourceChoices,
@@ -419,208 +418,6 @@ class TestIngestionStats(TestCase):
         self.assertFalse(hasattr(self._create(), "to_objectchange"))
 
 
-class TestLLMProvider(ModelTestCases.BaseModelTestCase):
-    """The LLM provider registry entry."""
-
-    model = models.LLMProvider
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        super().setUpTestData()
-        fixtures.create_llmprovider(name="Provider One")
-        fixtures.create_llmprovider(name="Provider Two")
-        fixtures.create_llmprovider(name="Provider Three")
-
-    def test_str(self):
-        """A provider stringifies as its name."""
-        self.assertEqual(str(fixtures.create_llmprovider(name="Stringify Me")), "Stringify Me")
-
-    def test_an_openai_compatible_provider_needs_a_remote_url(self):
-        """There is no default endpoint to fall back to for a self-hosted protocol."""
-        integration = fixtures.create_external_integration(name="No URL", remote_url="")
-        provider = models.LLMProvider(
-            name="Missing Endpoint",
-            provider_type=LLMProviderTypeChoices.OPENAI_COMPATIBLE,
-            external_integration=integration,
-        )
-        with self.assertRaises(ValidationError) as raised:
-            provider.full_clean()
-        self.assertIn("external_integration", raised.exception.message_dict)
-
-    def test_a_hosted_provider_passes_the_apps_own_url_check(self):
-        """The app's extra demand applies to self-hosted endpoints only.
-
-        Nautobot requires a remote URL on every external integration regardless, so this is
-        about which provider types the app adds a check of its own for - not about a hosted
-        provider being usable without a URL.
-        """
-        integration = fixtures.create_external_integration(name="Hosted", remote_url="")
-        provider = models.LLMProvider(
-            name="Hosted Provider",
-            provider_type=LLMProviderTypeChoices.OPENAI,
-            external_integration=integration,
-        )
-        provider.full_clean()
-
-    def test_protected_while_models_exist(self):
-        """A provider with models cannot be deleted out from under them."""
-        model = fixtures.create_llmmodel()
-        with self.assertRaises(ProtectedError):
-            model.provider.delete()
-
-
-class TestLLMModel(ModelTestCases.BaseModelTestCase):
-    """The LLM model registry entry."""
-
-    model = models.LLMModel
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        super().setUpTestData()
-        provider = fixtures.create_llmprovider()
-        fixtures.create_llmmodel(name="model-one", provider=provider)
-        fixtures.create_llmmodel(name="model-two", provider=provider)
-        fixtures.create_llmmodel(name="model-three", provider=provider)
-
-    def test_str_names_the_provider_and_the_model(self):
-        """Two providers may offer the same model name, so both halves matter."""
-        model = models.LLMModel.objects.get(name="model-one")
-        self.assertEqual(str(model), "Test Provider: model-one")
-
-    def test_one_name_per_provider(self):
-        """The same name on the same provider is a duplicate; on another provider it is not."""
-        provider = fixtures.create_llmprovider()
-        with self.assertRaises(IntegrityError):
-            models.LLMModel.objects.create(provider=provider, name="model-one")
-
-    def test_the_same_name_on_another_provider_is_allowed(self):
-        """A model name is only unique within its provider."""
-        other = fixtures.create_llmprovider(name="Other Provider")
-        models.LLMModel.objects.create(provider=other, name="model-one")
-        self.assertEqual(models.LLMModel.objects.filter(name="model-one").count(), 2)
-
-    def test_a_credential_in_the_default_parameters_is_refused(self):
-        """Rule L3: a key here would be change-logged and served over REST and GraphQL."""
-        model = models.LLMModel(
-            provider=fixtures.create_llmprovider(),
-            name="smuggler",
-            default_parameters={"api_key": "sk-not-here", "temperature": 0.1},
-        )
-        with self.assertRaises(ValidationError) as raised:
-            model.full_clean()
-        self.assertIn("default_parameters", raised.exception.message_dict)
-        self.assertIn("api_key", str(raised.exception))
-
-    def test_the_calls_own_arguments_are_refused(self):
-        """Passing `model` or `messages` here fails the call rather than configuring it."""
-        model = models.LLMModel(
-            provider=fixtures.create_llmprovider(),
-            name="confuser",
-            default_parameters={"model": "something-else", "messages": []},
-        )
-        with self.assertRaises(ValidationError) as raised:
-            model.full_clean()
-        # Both are named, so one edit fixes the object rather than one per attempt.
-        self.assertIn("messages", str(raised.exception))
-        self.assertIn("model", str(raised.exception))
-
-    def test_an_aliased_endpoint_is_refused(self):
-        """`base_url` overrides `api_base` inside litellm, so naming `api_base` alone was not enough.
-
-        The whole reason this field is an allowlist: a denylist has to know every alias litellm
-        accepts, in every release. An operator with only `change_llmmodel` would otherwise redirect
-        the call - and the provider's key with it - to an address of their choosing.
-        """
-        model = models.LLMModel(
-            provider=fixtures.create_llmprovider(),
-            name="redirector",
-            default_parameters={"base_url": "https://somewhere.example/v1"},
-        )
-        with self.assertRaises(ValidationError) as raised:
-            model.full_clean()
-        self.assertIn("default_parameters", raised.exception.message_dict)
-        self.assertIn("base_url", str(raised.exception))
-
-    def test_every_key_that_decides_who_answers_is_refused(self):
-        """Routing, fallbacks, headers and canned responses all choose the responder, not the answer.
-
-        `extra_headers` is refused *here* and sent from the provider's ExternalIntegration, which
-        is the point: editing an integration is already the permission that owns the endpoint and
-        its credential, and `change_llmmodel` is not.
-        """
-        for key, value in (
-            ("custom_llm_provider", "openai"),
-            ("model_list", [{"model_name": "anything"}]),
-            ("fallbacks", ["another-model"]),
-            ("extra_headers", {"authorization": "Bearer smuggled"}),
-            ("mock_response", "a canned answer"),
-            ("api_version", "2024-01-01"),
-        ):
-            with self.subTest(key=key):
-                model = models.LLMModel(
-                    provider=fixtures.create_llmprovider(),
-                    name=f"refuses-{key}",
-                    default_parameters={key: value},
-                )
-                with self.assertRaises(ValidationError) as raised:
-                    model.full_clean()
-                self.assertIn(key, str(raised.exception))
-
-    def test_ordinary_parameters_are_allowed(self):
-        """The field's actual purpose still works."""
-        model = models.LLMModel(
-            provider=fixtures.create_llmprovider(),
-            name="tuned",
-            default_parameters={"temperature": 0.1, "top_p": 0.9},
-        )
-        model.full_clean()
-
-    def test_a_registry_timeout_is_allowed(self):
-        """The registry's own timeout is a documented use of this field, not a smuggled argument."""
-        model = models.LLMModel(
-            provider=fixtures.create_llmprovider(),
-            name="patient",
-            default_parameters={"timeout": 45},
-        )
-        model.full_clean()
-
-    def test_a_timeout_that_is_not_a_positive_number_is_refused(self):
-        """Rule L6 promises every call carries one, and null is not an answer to that question."""
-        for value in (None, 0, -1, "soon", True):
-            with self.subTest(value=value):
-                model = models.LLMModel(
-                    provider=fixtures.create_llmprovider(),
-                    name=f"timeout-{value}",
-                    default_parameters={"timeout": value},
-                )
-                with self.assertRaises(ValidationError) as raised:
-                    model.full_clean()
-                self.assertIn("timeout", str(raised.exception))
-
-    def test_the_parameters_other_providers_need_are_allowed(self):
-        """The allowlist covers the registry's provider types, not one of them.
-
-        Refusing these did not make the field safer - none of them decides who answers. It made a
-        legitimate Anthropic or vLLM row unsavable, including the edit that unticks Enabled.
-        """
-        for key, value in (
-            ("top_k", 40),
-            ("extra_body", {"guided_json": {"type": "object"}}),
-            ("reasoning_effort", "low"),
-            ("n", 1),
-            ("logit_bias", {"1234": -100}),
-        ):
-            with self.subTest(key=key):
-                model = models.LLMModel(
-                    provider=fixtures.create_llmprovider(),
-                    name=f"allows-{key}",
-                    default_parameters={key: value},
-                )
-                model.full_clean()
-
-
 class TestLLMUsageRecord(ModelTestCases.BaseModelTestCase):
     """The accounting row. Constructed directly only here, as the guard tests allow."""
 
@@ -673,97 +470,11 @@ class TestLLMUsageRecord(ModelTestCases.BaseModelTestCase):
         """Deleting a registry entry must not silently delete its accounting."""
         record = self._record(model=fixtures.create_llmmodel(name="Protected Model"))
         with self.assertRaises(ProtectedError):
-            record.model.delete()
+            record.model.delete()  # pylint: disable=no-member  # pylint-django cannot resolve the cross-app ForeignKey.
 
     def test_records_are_not_change_logged(self):
         """One ObjectChange per model call would bury the change log, as for IngestionStats."""
         self.assertFalse(hasattr(self._record(), "to_objectchange"))
-
-
-class TestMCPServer(ModelTestCases.BaseModelTestCase):
-    """The MCP server registry entry."""
-
-    model = models.MCPServer
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        super().setUpTestData()
-        fixtures.create_mcpserver(name="Server One")
-        fixtures.create_mcpserver(name="Server Two")
-        fixtures.create_mcpserver(name="Server Three")
-
-    def test_str(self):
-        """A server stringifies as its name."""
-        self.assertEqual(str(fixtures.create_mcpserver(name="Stringify Me")), "Stringify Me")
-
-    def test_a_server_needs_a_remote_url(self):
-        """An integration is a shared object, and the one chosen may never have needed a URL."""
-        integration = fixtures.create_external_integration(name="No URL", remote_url="")
-        server = models.MCPServer(name="Missing Endpoint", external_integration=integration)
-
-        with self.assertRaises(ValidationError) as raised:
-            server.full_clean()
-        self.assertIn("external_integration", raised.exception.message_dict)
-
-    def test_its_tools_go_with_it(self):
-        """A tool cannot outlive the server that offers it."""
-        tool = fixtures.create_mcptool()
-        server = tool.server
-        server.delete()
-        self.assertFalse(models.MCPTool.objects.filter(pk=tool.pk).exists())
-
-
-class TestMCPTool(ModelTestCases.BaseModelTestCase):
-    """The tool registry entry, and the two defaults that carry the security argument."""
-
-    model = models.MCPTool
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        super().setUpTestData()
-        server = fixtures.create_mcpserver()
-        fixtures.create_mcptool(server=server, name="tool_one")
-        fixtures.create_mcptool(server=server, name="tool_two")
-        fixtures.create_mcptool(server=server, name="tool_three")
-
-    def test_str(self):
-        """A tool stringifies as its server and its name, because the name alone is not unique."""
-        tool = fixtures.create_mcptool(name="stringify_me")
-        self.assertEqual(str(tool), f"{tool.server.name}: stringify_me")
-
-    def test_a_new_tool_is_not_callable(self):
-        """Registering a server grants nothing (rule M4)."""
-        tool = fixtures.create_mcptool(name="fresh")
-        self.assertFalse(tool.enabled)
-        self.assertFalse(tool.is_callable)
-
-    def test_a_new_tool_is_mutating(self):
-        """Until a person says otherwise, it is assumed to change the network."""
-        self.assertTrue(fixtures.create_mcptool(name="unclassified").mutating)
-
-    def test_a_disabled_server_makes_its_enabled_tools_uncallable(self):
-        """The server-level off switch has to mean something, or it is decoration."""
-        server = fixtures.create_mcpserver(name="Switched Off", enabled=False)
-        tool = fixtures.create_mcptool(server=server, name="ready", enabled=True)
-        self.assertTrue(tool.enabled)
-        self.assertFalse(tool.is_callable)
-
-    def test_two_servers_may_offer_the_same_tool_name(self):
-        """`get_interface_status` is not one tool across the estate."""
-        first = fixtures.create_mcpserver(name="First")
-        second = fixtures.create_mcpserver(name="Second")
-        fixtures.create_mcptool(server=first, name="shared")
-        fixtures.create_mcptool(server=second, name="shared")
-        self.assertEqual(models.MCPTool.objects.filter(name="shared").count(), 2)
-
-    def test_one_server_may_not_offer_two_tools_of_one_name(self):
-        """The natural key is the pair, and a duplicate would make an allowlist ambiguous."""
-        server = fixtures.create_mcpserver(name="Duplicating")
-        fixtures.create_mcptool(server=server, name="twice")
-        with self.assertRaises((IntegrityError, ValidationError)):
-            fixtures.create_mcptool(server=server, name="twice")
 
 
 class TestAgentRun(ModelTestCases.BaseModelTestCase):
@@ -879,7 +590,7 @@ class TestAgentToolCall(ModelTestCases.BaseModelTestCase):
         call = fixtures.create_agenttoolcall(tool=fixtures.create_mcptool(name="protected_tool"))
 
         with self.assertRaises(ProtectedError):
-            call.tool.delete()
+            call.tool.delete()  # pylint: disable=no-member  # pylint-django cannot resolve the cross-app ForeignKey.
 
     def test_a_deleted_run_takes_its_calls_with_it(self):
         """A call means nothing without the run that asked for it."""
@@ -937,7 +648,7 @@ class TestTicketEmbedding(ModelTestCases.BaseModelTestCase):
         row = fixtures.create_ticketembedding(model=fixtures.create_embedding_model(name="protected-embed"))
 
         with self.assertRaises(ProtectedError):
-            row.model.delete()
+            row.model.delete()  # pylint: disable=no-member  # pylint-django cannot resolve the cross-app ForeignKey.
 
     def test_the_vector_round_trips(self):
         """pgvector is doing real work here, not storing a string."""

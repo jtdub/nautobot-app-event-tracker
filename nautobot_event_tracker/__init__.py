@@ -45,8 +45,8 @@ class EventTrackerConfig(NautobotAppConfig):
         "ingestion": {},
         # LLM service settings. Defaults for the keys inside this one are applied by
         # `services.llm`, not here, for the same merge reason as `ingestion`. Providers, models,
-        # and credentials are registry objects, never settings (ADR 0006). See the Phase 3 spec,
-        # section 3.
+        # and credentials are registry objects in the AI Models app, never settings (ADR 0006,
+        # ADR 0010). See the Phase 3 spec, section 3.
         "llm": {},
         # The agent (Phase 4B, spec section 3). Empty for the same merge reason as the two above:
         # the defaults for the keys inside it are applied by `services.agent`. Agents are off until

@@ -4,11 +4,9 @@
 
 import importlib
 import re
-from decimal import Decimal
 from unittest import mock
 
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import ImproperlyConfigured as DjangoImproperlyConfigured
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import NoReverseMatch, reverse
@@ -22,8 +20,6 @@ from nautobot_event_tracker.api.serializers import SERVICE_OWNED_FIELDS
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
-    LLMModelKindChoices,
-    LLMProviderTypeChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
@@ -34,18 +30,12 @@ from nautobot_event_tracker.models import (
     AgentToolCall,
     EventTicket,
     EventType,
-    LLMModel,
-    LLMProvider,
     LLMUsageRecord,
-    MCPServer,
-    MCPTool,
     TicketEmbedding,
 )
 from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import analytics as analytics_service
-from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import tickets as ticket_service
-from nautobot_event_tracker.services.exceptions import MCPCallError
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -575,58 +565,6 @@ class TestDetachingSomethingNotAttached(TestCase):
         self.assertEqual(self.ticket.updates.count(), before)
 
 
-class LLMProviderViewTest(ViewTestCases.PrimaryObjectViewTestCase):
-    """Standard view test cases for LLMProvider."""
-
-    model = LLMProvider
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        fixtures.create_llmprovider(name="Provider One")
-        fixtures.create_llmprovider(name="Provider Two")
-        fixtures.create_llmprovider(name="Provider Three")
-        integration = fixtures.create_external_integration()
-        cls.form_data = {
-            "name": "View Test Provider",
-            "description": "created through the form",
-            "provider_type": LLMProviderTypeChoices.OPENAI_COMPATIBLE,
-            "external_integration": integration.pk,
-            "enabled": True,
-        }
-        cls.bulk_edit_data = {"description": "bulk edited"}
-
-
-class LLMModelViewTest(ViewTestCases.PrimaryObjectViewTestCase):
-    """Standard view test cases for LLMModel."""
-
-    model = LLMModel
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        provider = fixtures.create_llmprovider()
-        fixtures.create_llmmodel(name="model-one", provider=provider)
-        fixtures.create_llmmodel(name="model-two", provider=provider)
-        fixtures.create_llmmodel(name="model-three", provider=provider)
-        cls.form_data = {
-            "provider": provider.pk,
-            "name": "view-test-model",
-            "description": "created through the form",
-            "enabled": True,
-            # Required since Kind joined the form. It has a model default, but a ModelForm field
-            # without `blank=True` is required regardless, so the generic create/edit cases have to
-            # send it.
-            "kind": LLMModelKindChoices.CHAT,
-            # Decimal, not string: the generic edit test compares this dict against the saved
-            # instance, which holds Decimals.
-            "input_cost_per_million": Decimal("1.0000"),
-            "output_cost_per_million": Decimal("2.0000"),
-            "default_parameters": "{}",
-        }
-        cls.bulk_edit_data = {"description": "bulk edited"}
-
-
 class LLMUsageRecordViewTest(
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.ListObjectsViewTestCase,
@@ -668,143 +606,6 @@ class TicketDetailShowsLLMUsageTest(TestCase):
         text = response.content.decode()
         self.assertIn("LLM Usage", text)
         self.assertIn("test-model", text)
-
-
-class MCPServerViewTest(ViewTestCases.PrimaryObjectViewTestCase):
-    """Standard view test cases for MCPServer."""
-
-    model = MCPServer
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        fixtures.create_mcpserver(name="Server One")
-        fixtures.create_mcpserver(name="Server Two")
-        fixtures.create_mcpserver(name="Server Three")
-        integration = fixtures.create_external_integration(
-            name="View MCP Endpoint", remote_url="https://view.example.test/mcp"
-        )
-        cls.form_data = {
-            "name": "View Test Server",
-            "description": "created through the form",
-            "external_integration": integration.pk,
-            "enabled": True,
-        }
-        cls.bulk_edit_data = {"description": "bulk edited"}
-
-
-class MCPToolViewTest(ViewTestCases.PrimaryObjectViewTestCase):
-    """Standard view test cases for MCPTool."""
-
-    model = MCPTool
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        server = fixtures.create_mcpserver()
-        fixtures.create_mcptool(server=server, name="tool_one")
-        fixtures.create_mcptool(server=server, name="tool_two")
-        fixtures.create_mcptool(server=server, name="tool_three")
-        cls.form_data = {
-            "server": server.pk,
-            "name": "view_test_tool",
-            "description": "created through the form",
-            "mutating": True,
-            "enabled": False,
-            "input_schema": "{}",
-        }
-        cls.bulk_edit_data = {"enabled": True}
-
-
-class MCPServerDiscoverViewTest(TestCase):
-    """The Discover Tools action: what it writes, what it refuses, and who may press it."""
-
-    user_permissions = ["nautobot_event_tracker.view_mcpserver"]
-
-    #: What the action actually needs: the server row it stamps, and the tool rows it writes.
-    DISCOVER_PERMISSIONS = ("nautobot_event_tracker.change_mcpserver", "nautobot_event_tracker.add_mcptool")
-
-    def setUp(self):
-        """A registered server to discover against."""
-        super().setUp()
-        self.server = fixtures.create_mcpserver()
-        self.url = reverse("plugins:nautobot_event_tracker:mcpserver_discover", kwargs={"pk": self.server.pk})
-
-    def test_the_button_on_the_page_posts(self):
-        """The regression that 1384 green tests missed: a plain Button renders a link.
-
-        A link issues a GET, this view accepts POST only, and an operator holding both permissions
-        got a 405 from the only documented way to run discovery. Asserting on the rendered page is
-        the only thing that catches it - posting to the URL directly, which every other test here
-        does, works perfectly well against a button nobody can use.
-        """
-        self.add_permissions(*self.DISCOVER_PERMISSIONS)
-        response = self.client.get(self.server.get_absolute_url())
-
-        self.assertHttpStatus(response, 200)
-        content = response.content.decode()
-        self.assertIn(f'<form method="post" action="{self.url}"', content)
-
-    def test_the_button_is_hidden_for_a_disabled_server(self):
-        """Offering an action that would be refused is how an operator learns to ignore buttons."""
-        self.add_permissions(*self.DISCOVER_PERMISSIONS)
-        self.server.enabled = False
-        self.server.validated_save()
-
-        response = self.client.get(self.server.get_absolute_url())
-
-        self.assertNotIn(self.url, response.content.decode())
-
-    def test_it_needs_more_than_permission_to_look(self):
-        """Discovery writes rows; viewing the server is not enough to make it."""
-        self.assertHttpStatus(self.client.post(self.url), 403)
-
-    def test_editing_a_server_does_not_carry_the_right_to_add_tools(self):
-        """The two are separate decisions: one edits a record, one widens what may be called."""
-        self.add_permissions("nautobot_event_tracker.change_mcpserver")
-        self.assertHttpStatus(self.client.post(self.url), 403)
-
-    def test_it_writes_the_tools_it_finds(self):
-        """The happy path, with the client seam standing in for a server."""
-        self.add_permissions(*self.DISCOVER_PERMISSIONS)
-        client = fixtures.FakeMCPClient([fixtures.tool_definition(name="get_device")])
-        # The real function, captured before the patch: inside the side effect,
-        # `mcp_service.discover` is the mock, and calling it would recurse.
-        real_discover = mcp_service.discover
-
-        with mock.patch(
-            "nautobot_event_tracker.services.mcp.discover",
-            side_effect=lambda server: real_discover(server, client=client),
-        ):
-            response = self.client.post(self.url)
-
-        self.assertHttpStatus(response, 302)
-        self.assertTrue(MCPTool.objects.filter(name="get_device", enabled=False).exists())
-
-    def test_a_failure_is_a_message_rather_than_a_traceback(self):
-        """An unreachable server is an ordinary state of the world, not a server error."""
-        self.add_permissions(*self.DISCOVER_PERMISSIONS)
-
-        with mock.patch(
-            "nautobot_event_tracker.services.mcp.discover",
-            side_effect=MCPCallError("connection refused"),
-        ):
-            response = self.client.post(self.url)
-
-        self.assertHttpStatus(response, 302)
-        self.assertFalse(MCPTool.objects.exists())
-
-    def test_a_missing_extra_is_a_message_too(self):
-        """`ImproperlyConfigured` is outside the MCPError family and would otherwise be a 500."""
-        self.add_permissions(*self.DISCOVER_PERMISSIONS)
-
-        with mock.patch(
-            "nautobot_event_tracker.services.mcp.discover",
-            side_effect=DjangoImproperlyConfigured("The MCP client is not installed."),
-        ):
-            response = self.client.post(self.url)
-
-        self.assertHttpStatus(response, 302)
 
 
 class AgentRunViewTest(
@@ -874,7 +675,7 @@ class AgentDecisionViewTest(TestCase):
         fixtures.create_event_types()
         self.ticket = fixtures.create_ticket(user=self.user)
         self.run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
-        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
         self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, arguments={"device": "leaf-01"})
         self.approve_url = reverse("plugins:nautobot_event_tracker:agenttoolcall_approve", kwargs={"pk": self.call.pk})
         self.deny_url = reverse("plugins:nautobot_event_tracker:agenttoolcall_deny", kwargs={"pk": self.call.pk})
@@ -940,7 +741,7 @@ class TicketAgentPanelTest(TestCase):
         fixtures.create_event_types()
         self.ticket = fixtures.create_ticket(user=self.user)
         self.run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
-        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
         self.call = fixtures.create_agenttoolcall(
             run=self.run, tool=self.tool, arguments={"device": "leaf-01", "config": "shutdown"}
         )

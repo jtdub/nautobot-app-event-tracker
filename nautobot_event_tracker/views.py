@@ -49,19 +49,12 @@ from nautobot_event_tracker.choices import AgentToolCallStatusChoices, TicketSou
 from nautobot_event_tracker.jobs import EventTicketAgentJob
 from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import analytics as analytics_service
-from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services import rag as rag_service
 from nautobot_event_tracker.services import tickets as ticket_service
-from nautobot_event_tracker.services.exceptions import AgentError, MCPError, TicketServiceError
+from nautobot_event_tracker.services.exceptions import AgentError, TicketServiceError
 
 TRANSITION_PERMISSION = "nautobot_event_tracker.transition_eventticket"
 CHANGE_PERMISSION = "nautobot_event_tracker.change_eventticket"
-#: Discovery writes both: the server's `last_discovered_at`, and a row per tool it found. The
-#: first is what the view's queryset is restricted by, so it is the one the mixin is given; the
-#: second goes in `additional_permissions`, which the mixin checks without touching the
-#: restriction. Editing a server does not carry the right to widen what may be called.
-DISCOVER_PERMISSION = "nautobot_event_tracker.change_mcpserver"
-DISCOVER_TOOL_PERMISSION = "nautobot_event_tracker.add_mcptool"
 #: Deciding a proposed tool call is its own permission, and `change_agenttoolcall` does not imply
 #: it (7.3). Approving a call against the network is not the same right as editing a row.
 APPROVE_PERMISSION = "nautobot_event_tracker.approve_agenttoolcall"
@@ -332,7 +325,7 @@ class AgentProposalPanel(KeyValueTablePanel):
         if proposal is None:
             return {}
         return {
-            "MCP server": proposal.tool.server.name,
+            "MCP server": proposal.tool.mcp_server.name,
             "Tool": proposal.tool.name,
             "Arguments": format_html('<pre class="mb-0">{}</pre>', json.dumps(proposal.arguments, indent=2)),
             "Proposed": proposal.proposed_at,
@@ -846,74 +839,6 @@ class IngestionStatsUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ance
     )
 
 
-class LLMProviderUIViewSet(NautobotUIViewSet):
-    """ViewSet for LLMProvider views."""
-
-    bulk_update_form_class = forms.LLMProviderBulkEditForm
-    filterset_class = filters.LLMProviderFilterSet
-    filterset_form_class = forms.LLMProviderFilterForm
-    form_class = forms.LLMProviderForm
-    lookup_field = "pk"
-    # Annotated so the table's model count is one query rather than one per row.
-    queryset = models.LLMProvider.objects.select_related("external_integration").annotate(
-        model_count=count_related(models.LLMModel, "provider")
-    )
-    serializer_class = serializers.LLMProviderSerializer
-    table_class = tables.LLMProviderTable
-
-    object_detail_content = ObjectDetailContent(
-        panels=[
-            ObjectFieldsPanel(
-                weight=100,
-                section=SectionChoices.LEFT_HALF,
-                fields=["name", "description", "provider_type", "external_integration", "enabled"],
-            ),
-            ObjectsTablePanel(
-                weight=200,
-                section=SectionChoices.FULL_WIDTH,
-                table_class=tables.LLMModelTable,
-                table_filter="provider",
-                related_field_name="provider",
-                label="Models",
-                select_related_fields=["provider"],
-            ),
-        ],
-    )
-
-
-class LLMModelUIViewSet(NautobotUIViewSet):
-    """ViewSet for LLMModel views."""
-
-    bulk_update_form_class = forms.LLMModelBulkEditForm
-    filterset_class = filters.LLMModelFilterSet
-    filterset_form_class = forms.LLMModelFilterForm
-    form_class = forms.LLMModelForm
-    lookup_field = "pk"
-    queryset = models.LLMModel.objects.select_related("provider")
-    serializer_class = serializers.LLMModelSerializer
-    table_class = tables.LLMModelTable
-
-    object_detail_content = ObjectDetailContent(
-        panels=[
-            ObjectFieldsPanel(
-                weight=100,
-                section=SectionChoices.LEFT_HALF,
-                fields=list(forms.LLM_MODEL_FIELDS),
-            ),
-            ObjectsTablePanel(
-                weight=200,
-                section=SectionChoices.FULL_WIDTH,
-                table_class=tables.LLMUsageRecordTable,
-                table_filter="model",
-                label="Recent Usage",
-                select_related_fields=["model__provider", "ticket"],
-                enable_bulk_actions=False,
-                add_button_route=None,
-            ),
-        ],
-    )
-
-
 class LLMUsageRecordUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,abstract-method
     """Read-only views for the LLM usage records: the service layer is the only writer (rule L1)."""
 
@@ -932,149 +857,6 @@ class LLMUsageRecordUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ance
             ),
         ),
     )
-
-
-class DiscoverToolsButton(PostButton):
-    """Reads a server's tool list and reconciles the registry with it. Hidden for a disabled server.
-
-    A `PostButton`, not a `Button`: the plain one renders an anchor, which issues a GET, and this
-    action writes rows. It also means the request carries a CSRF token, which a link cannot.
-    """
-
-    link_name = "plugins:nautobot_event_tracker:mcpserver_discover"
-    required_permissions = (DISCOVER_PERMISSION, DISCOVER_TOOL_PERMISSION)
-
-    def should_render(self, context):
-        """Only for an enabled server, on top of the framework's permission check."""
-        server = context.get("object")
-        if server is None or not super().should_render(context):
-            return False
-        return server.enabled
-
-
-class MCPServerUIViewSet(NautobotUIViewSet):
-    """ViewSet for MCPServer views."""
-
-    bulk_update_form_class = forms.MCPServerBulkEditForm
-    filterset_class = filters.MCPServerFilterSet
-    filterset_form_class = forms.MCPServerFilterForm
-    form_class = forms.MCPServerForm
-    lookup_field = "pk"
-    # Both counts annotated: the gap between them is the thing worth seeing on the list page. A
-    # server offering forty tools of which two are enabled is the default-deny rule working, and
-    # one where the two numbers are equal is a review nobody did.
-    queryset = models.MCPServer.objects.select_related("external_integration").annotate(
-        tool_count=count_related(models.MCPTool, "server"),
-        enabled_tool_count=count_related(models.MCPTool, "server", filter_dict={"enabled": True}),
-    )
-    serializer_class = serializers.MCPServerSerializer
-    table_class = tables.MCPServerTable
-
-    object_detail_content = ObjectDetailContent(
-        panels=[
-            ObjectFieldsPanel(
-                weight=100,
-                section=SectionChoices.LEFT_HALF,
-                fields=["name", "description", "external_integration", "enabled", "last_discovered_at"],
-            ),
-            ObjectsTablePanel(
-                weight=200,
-                section=SectionChoices.FULL_WIDTH,
-                table_class=tables.MCPToolTable,
-                table_filter="server",
-                related_field_name="server",
-                label="Tools",
-                select_related_fields=["server"],
-            ),
-        ],
-        extra_buttons=[
-            DiscoverToolsButton(
-                weight=100,
-                label="Discover Tools",
-                icon="mdi-magnify-scan",
-                color=ButtonColorChoices.BLUE,
-            ),
-        ],
-    )
-
-
-class MCPToolUIViewSet(NautobotUIViewSet):
-    """ViewSet for MCPTool views."""
-
-    bulk_update_form_class = forms.MCPToolBulkEditForm
-    filterset_class = filters.MCPToolFilterSet
-    filterset_form_class = forms.MCPToolFilterForm
-    form_class = forms.MCPToolForm
-    lookup_field = "pk"
-    queryset = models.MCPTool.objects.select_related("server")
-    serializer_class = serializers.MCPToolSerializer
-    table_class = tables.MCPToolTable
-
-    object_detail_content = ObjectDetailContent(
-        panels=[
-            ObjectFieldsPanel(
-                weight=100,
-                section=SectionChoices.LEFT_HALF,
-                fields=[
-                    "server",
-                    "name",
-                    "description",
-                    "enabled",
-                    "mutating",
-                    "advertised_read_only",
-                    "last_seen_at",
-                ],
-            ),
-            ObjectTextPanel(
-                weight=200,
-                section=SectionChoices.RIGHT_HALF,
-                label="Input Schema",
-                object_field="input_schema",
-                render_as=ObjectTextPanel.RenderOptions.JSON,
-            ),
-        ],
-    )
-
-
-class MCPServerDiscoverView(ObjectPermissionRequiredMixin, GenericView):
-    """Read one server's tool list and reconcile the registry with it (rule M5).
-
-    POST only: it writes rows, and a discovery reachable by following a link is a discovery a
-    crawler can trigger. The button posts.
-    """
-
-    queryset = models.MCPServer.objects.all()
-    #: Checked alongside the required permission, without being used to restrict this view's
-    #: queryset - which is what makes it the right home for a permission on another model.
-    additional_permissions = [DISCOVER_TOOL_PERMISSION]
-
-    def get_required_permission(self):
-        """The permission the queryset is restricted by: discovery stamps the server it is given."""
-        return DISCOVER_PERMISSION
-
-    def post(self, request, pk):
-        """Discover, then say what changed in the terms an operator has to act on."""
-        server = get_object_or_404(self.queryset, pk=pk)
-        try:
-            report = mcp_service.discover(server)
-        except MCPError as error:
-            messages.error(request, str(error))
-            return redirect(server.get_absolute_url())
-        except DjangoImproperlyConfigured as error:
-            # The missing `mcp` extra, deliberately outside the MCPError family: a deployment
-            # fault, and one an operator can only fix by installing something.
-            messages.error(request, str(error))
-            return redirect(server.get_absolute_url())
-
-        messages.success(request, f"Discovered tools on '{server}': {report.summary()}.")
-        if report.needs_attention:
-            # The whole point of the default-deny rule is that somebody looks. Saying so here is
-            # what stops a new tool sitting disabled and unnoticed for a month.
-            messages.warning(
-                request,
-                "These tools are disabled and need review: " + ", ".join(tool.name for tool in report.needs_attention),
-            )
-        return redirect(server.get_absolute_url())
 
 
 class CallDecisionButton(PostButton):
@@ -1139,7 +921,7 @@ class AgentRunUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,
                 table_filter="run",
                 related_field_name="run",
                 label="Tool Calls",
-                select_related_fields=["tool__server", "decided_by"],
+                select_related_fields=["tool__mcp_server", "decided_by"],
                 enable_bulk_actions=False,
                 add_button_route=None,
             ),
@@ -1155,7 +937,7 @@ class AgentToolCallUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ances
     with its own permission and its own trail entry, and it is not an edit.
     """
 
-    queryset = models.AgentToolCall.objects.select_related("run__ticket", "tool__server", "decided_by")
+    queryset = models.AgentToolCall.objects.select_related("run__ticket", "tool__mcp_server", "decided_by")
     table_class = tables.AgentToolCallTable
     filterset_class = filters.AgentToolCallFilterSet
     filterset_form_class = forms.AgentToolCallFilterForm
@@ -1213,7 +995,7 @@ class AgentToolCallDecisionView(ObjectPermissionRequiredMixin, GenericView):
     routes and neither can be reached by editing a form field.
     """
 
-    queryset = models.AgentToolCall.objects.select_related("run__ticket", "tool__server")
+    queryset = models.AgentToolCall.objects.select_related("run__ticket", "tool__mcp_server")
     approve = True
 
     def get_required_permission(self):

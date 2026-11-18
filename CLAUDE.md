@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Nautobot app (`nautobot_event_tracker`) that turns raw network events into tickets and keeps an append-only record of every change. Built in phases (see `docs/architecture.md`): Phase 1 (tickets, service layer, UI/API), Phase 2 (broker consumers, ingestion pipeline) and Phase 3 (LLM layer + triage; spec: `docs/specs/phase-3-llm-triage.md`) are implemented. `services/llm.py` is the **only** module that imports litellm (lazily; optional `llm` extra) and the only writer of `LLMUsageRecord` — rules L1–L8. LLM triage (`ingestion/triage.py`, rules T1–T9) sits between the pre-filter and the ticket write, imports only `services.llm`, and fails open to accept. No provider SDK is imported anywhere; static guards in `tests/test_guards.py` enforce all of this. Agents, MCP, and RAG are later phases and deliberately absent.
+A Nautobot app (`nautobot_event_tracker`) that turns raw network events into tickets and keeps an append-only record of every change. Built in phases (see `docs/architecture.md`); all of Phases 1 through 5B are implemented, and Phase 6 adopted a shared registry.
+
+`services/llm.py` is the **only** module that imports litellm (lazily; optional `llm` extra) and the only writer of `LLMUsageRecord` — rules L1–L8. `services/mcp.py` is the only module that imports the MCP client, and the only one that calls a tool. LLM triage (`ingestion/triage.py`, rules T1–T9) sits between the pre-filter and the ticket write, imports only `services.llm`, and fails open to accept. No provider SDK is imported anywhere; static guards in `tests/test_guards.py` enforce all of this.
+
+**The registry is not in this app** (ADR 0010). `AIProvider`, `AIModel`, `MCPServer` and `MCPTool` belong to `nautobot-ai-models` (>=1.1), a required dependency, and `LLMUsageRecord.model`, `TicketEmbedding.model` and `AgentToolCall.tool` are foreign keys into it. This app never writes those tables — discovery is that app's two Jobs. A field the registry lacks is an issue against that repository, not a fifth table here; `AIRegistryGuardTest` asserts both halves.
 
 ## Development commands
 
@@ -69,7 +73,8 @@ Ingestion (Phase 2) is a standalone process, not a Celery task: `nautobot-server
 
 Other constraints from the ADRs (`docs/decisions/`):
 
-- PostgreSQL only (pgvector later); no MySQL support.
+- PostgreSQL only, with pgvector; no MySQL support.
+- The AI registry is a dependency, not a local model (ADR 0010). Its MCP default-deny posture is configuration on that app (`new_tools_enabled`, `disable_on_definition_change`), not a field default here — see ADR 0007's amendment.
 - UI is `NautobotUIViewSet` + UI Component Framework only — no hand-written templates.
 - Phase specs live in `docs/specs/` and code comments reference them by section number; keep those references accurate when editing.
 

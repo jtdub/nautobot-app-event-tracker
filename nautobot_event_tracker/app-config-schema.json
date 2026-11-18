@@ -24,7 +24,7 @@
         },
         "llm": {
             "type": "object",
-            "description": "LLM service layer settings. Providers, models and credentials are registry objects managed in the UI, never settings, so this block holds almost nothing.",
+            "description": "LLM service layer settings. Providers, models and credentials are registry objects in the AI Models app, never settings, so this block holds almost nothing.",
             "default": {},
             "properties": {
                 "usage_retention_days": {

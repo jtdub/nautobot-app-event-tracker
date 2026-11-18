@@ -35,8 +35,6 @@ subgraph APP["Nautobot Events Tracker App"]
     ENRICH["Enrichment resolver"]
     AGENTS["Agents<br/>tool loop + approval gates"]
     LLMSVC["litellm service layer"]
-    PROV["LLMProvider / LLMModel"]
-    MCPREG["MCPServer / MCPTool<br/>default-deny allowlist"]
     RAG["RAG ingestion + similarity<br/>(closed tickets indexed)"]
     USAGE["LLMUsageRecord /<br/>IngestionStats"]
     DASH["Analytics dashboard<br/>(ECharts panels)"]
@@ -45,6 +43,11 @@ end
 subgraph CORE["Nautobot Core"]
     SOT["DCIM / IPAM / Circuits<br/>Devices, Interfaces, IPs,<br/>Circuits, Cables, Locations"]
     EI["ExternalIntegration<br/>+ SecretsGroup"]
+end
+
+subgraph AIMODELS["nautobot-ai-models App (dependency)"]
+    PROV["AIProvider / AIModel"]
+    MCPREG["MCPServer / MCPTool<br/>allowlist + discovery Jobs"]
 end
 
 subgraph DB["PostgreSQL"]
@@ -128,6 +131,7 @@ Dashboard panels built on the UI Component Framework's ECharts components, readi
 | 3 | LLM service layer, provider/model registry, usage accounting, LLM triage in the consumer. |
 | 4 | **4A:** the enrichment resolver. **4B:** agents, MCP tooling and the approval gate. |
 | 5 | RAG indexing on close, similarity surfacing, analytics dashboard. |
+| 6 | The provider, model, server and tool registries move to `nautobot-ai-models`, a required dependency. See [ADR 0010](decisions/0010-ai-registry-lives-in-nautobot-ai-models.md). |
 
 Phase 1 is AI-free by design. The `source` field on tickets and updates already carries an `ai` value, and the service layer already enforces the AI immutability rule, so that later phases plug in without reopening the domain model. Nothing in Phase 1 imports litellm or talks to a provider.
 
@@ -143,3 +147,5 @@ Phase 1 is AI-free by design. The `source` field on tickets and updates already 
 | [0006](decisions/0006-litellm-service-layer-and-credential-storage.md) | All LLM calls go through litellm; credentials live in `ExternalIntegration` |
 | [0007](decisions/0007-mcp-tools-streamable-http-and-default-deny.md) | MCP over streamable HTTP only, default-deny allowlist |
 | [0008](decisions/0008-ui-component-framework-only.md) | UI is `NautobotUIViewSet` plus the UI Component Framework, no hand-written templates |
+| [0009](decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) | An agent run is a Nautobot Job that ends at the approval gate rather than waiting at it |
+| [0010](decisions/0010-ai-registry-lives-in-nautobot-ai-models.md) | The AI provider, model, MCP server and MCP tool registries live in `nautobot-ai-models` |

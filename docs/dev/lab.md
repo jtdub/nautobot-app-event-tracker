@@ -243,16 +243,21 @@ is the real one rather than a shortcut:
 - **Secret** — provider *Environment Variable*, variable `NETMIKO_MCP_TOKEN`.
 - **Secrets Group** — that secret, access type *Generic*, secret type *Token*.
 - **External Integration** — Remote URL `http://netmiko-mcp:8000/mcp`, that secrets group.
-- **MCP Server** (Apps → Event Tracker → MCP Servers) — pointing at the integration.
+- **MCP Server** (AI Tools → MCP Models → MCP Servers) — pointing at the integration, transport
+  *Streamable HTTP*.
 
-Then **Discover Tools** on the server's page. Seven tools appear, and every one of them arrives
-**disabled** and marked **mutating**, whatever the server says about itself. That is rule M5, and
-it is the point: registering a server grants nothing.
+Then **Run Discovery** on the server's page, which starts the AI Models app's **MCP Server
+Discovery** Job against it. Seven tools appear, and every one of them arrives **disabled** and
+marked **writable**, whatever the server says about itself. That is rule M5, and it is the point:
+registering a server grants nothing.
+
+The disabled part depends on `new_tools_enabled: False` being set for `nautobot_ai_models`, which
+the development stack sets for you. See [Registering MCP Servers](../admin/mcp.md).
 
 ### 3. Review them
 
 All seven are read-only — they run `show` commands and read saved output, and the whitelist denies
-anything else. Untick **Mutating** and tick **Enabled** on each; the tool list's bulk edit is there
+anything else. Untick **Writable** and tick **Enabled** on each; the tool list's bulk edit is there
 for exactly this.
 
 This is the step the design refuses to do for you. A read-only tool is still a decision about what

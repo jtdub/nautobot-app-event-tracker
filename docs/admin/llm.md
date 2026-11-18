@@ -1,10 +1,14 @@
 # Configuring LLM Providers
 
-The app calls language models through a registry you manage in the UI: an
-[LLM Provider](../models/llmprovider.md) is an endpoint you allow, an
-[LLM Model](../models/llmmodel.md) is a model available from one, and every call the app makes is
-priced and recorded as an [LLM Usage Record](../models/llmusagerecord.md). Nothing here is
-required: an installation that registers no provider simply makes no model calls.
+The app calls language models through a registry it does not own. **AI Provider** and **AI Model**
+belong to the [AI Models app](https://github.com/jtdub/nautobot-app-ai-models), which this app
+depends on (ADR 0010): a provider is an endpoint you allow, a model is one available from it, and
+both are managed under **AI Tools → AI Models**. What this app records is the other half — every
+call it makes is priced and written to an [LLM Usage Record](../models/llmusagerecord.md), under
+**AI Tools → Event Tracker AI**.
+
+Nothing here is required: an installation that registers no provider simply makes no model calls.
+The AI Models app is installed with this one and needs no settings of its own for the LLM half.
 
 All calls go through [litellm](https://docs.litellm.ai/), which is an optional dependency. Install
 the app with the `llm` extra to get it:
@@ -26,7 +30,7 @@ stored and rotated where every other credential in your deployment is.
 2. Create an **External Integration**: the *Remote URL* is the endpoint's base URL (for an
    OpenAI-compatible endpoint, the URL up to and including `/v1`; for Ollama, without it), and the
    *Secrets Group* is the one from step 1.
-3. Create an **LLM Provider** (Apps → Event Tracker → LLM Providers) pointing at that
+3. Create an **AI Provider** (AI Tools → AI Models → AI Providers) pointing at that
    integration, choosing the provider type:
     - **OpenAI-compatible** — any self-hosted or third-party endpoint speaking the OpenAI
       protocol: vLLM, llama.cpp, a gateway. The integration must carry a remote URL. This is the
@@ -43,15 +47,22 @@ stored and rotated where every other credential in your deployment is.
     - **OpenAI** / **Anthropic** — the hosted services. Nautobot requires a remote URL on every
       external integration, so give it the service's own base URL
       (`https://api.openai.com/v1`, `https://api.anthropic.com`).
-4. Create one or more **LLM Models** on the provider. The model name is what goes on the wire.
-   Enter the input and output costs so usage records carry real prices — they are your numbers,
-   and zero is a fine answer for a model you run yourself.
+4. Create one or more **AI Models** on the provider, or run the AI Models app's
+   **Discover AI Models** Job against it, which reads `GET /v1/models` from any OpenAI-compatible
+   endpoint and creates a row per model it offers.
+
+    Two fields need a person either way. **Kind** says whether a model is for chat or for
+    embeddings; discovery cannot tell, because `/v1/models` does not say, so every discovered row
+    arrives as one kind and the [retrieval](rag.md) settings will refuse a model of the wrong one.
+    **Input** and **output cost per million** are what make usage records carry real prices — they
+    are your numbers, and leaving them empty records the call with a cost of zero rather than
+    guessing.
 
 The integration decides more than the address. Four of its fields are read on every call:
 
 | Field | What it does |
 | --- | --- |
-| *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the LLM Provider |
+| *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the AI Provider |
 | *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
 | *Headers* | Sent with every request, templated the same way |
 | *SSL Verification* | **Not applied to LLM calls** — see below |
@@ -83,8 +94,15 @@ the hole that limiting a model's parameters closed.
     MCP servers are not affected: `services/mcp.py` builds its own HTTP client per call and does
     honour both fields.
 
-Disabling a provider or a model (the `enabled` flag on either) refuses every call through it
+Disabling a provider or a model (the *Enabled* flag on either) refuses every call through it
 before any network traffic, everywhere at once.
+
+A model's **Default parameters** and its *Temperature* and *num_predict* columns are passed on
+every chat call. The parameters field takes generation parameters only — the endpoint and the
+credentials come from the integration, and the model and the messages come from the call — and the
+AI Models app refuses anything else at save time. Where both are set, an entry in *Default
+parameters* wins over the column of the same name, and a model's own value wins over the
+provider's default.
 
 ## Settings
 
@@ -105,7 +123,8 @@ PLUGINS_CONFIG = {
 | `usage_retention_days` | `90` | Usage records older than this are deleted automatically, by the service itself, at most once per process per day. |
 
 Providers, models and credentials are deliberately **not** settings — they are the registry
-objects above, and the API key never appears in `PLUGINS_CONFIG` or in a log line.
+objects above, in the AI Models app, and the API key never appears in `PLUGINS_CONFIG` or in a
+log line.
 
 ## Enabling event triage
 
@@ -118,8 +137,8 @@ suppress it, or drop it. Configure it inside the `ingestion` block:
     ...,
     "triage": {
         "enabled": True,
-        "provider": "Local Lab",        # LLMProvider name
-        "model": "llama-3.1-70b",       # LLMModel name on that provider
+        "provider": "Local Lab",        # AI Provider name
+        "model": "llama-3.1-70b",       # AI Model name on that provider
         "timeout_seconds": 15,
         "max_output_tokens": 256,
         "max_context_chars": 4000,      # payload cap in the prompt
@@ -176,7 +195,7 @@ counters, and triage drops under `llm_triage` in the drop breakdown.
 ## Watching the spend
 
 Every call the app makes — including failed ones — writes a usage record with its token counts,
-computed cost and latency. Read them at Apps → Event Tracker → LLM Usage, filter by model,
+computed cost and latency. Read them at AI Tools → Event Tracker AI → LLM Usage, filter by model,
 purpose or success, or query the same rows over REST and GraphQL. A ticket's detail page shows
 the calls made about that ticket.
 

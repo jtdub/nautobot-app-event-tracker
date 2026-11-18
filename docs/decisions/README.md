@@ -13,5 +13,6 @@ Each record captures one decision, the pressure that forced it, and what it cost
 | [0007](0007-mcp-tools-streamable-http-and-default-deny.md) | MCP tools over streamable HTTP with a default-deny allowlist | Accepted |
 | [0008](0008-ui-component-framework-only.md) | UI Component Framework only | Accepted |
 | [0009](0009-agent-runs-are-jobs-that-end-at-the-gate.md) | Agent runs are Nautobot Jobs that end at the approval gate | Accepted |
+| [0010](0010-ai-registry-lives-in-nautobot-ai-models.md) | The AI registry lives in `nautobot-ai-models` | Accepted |
 
-ADRs 0004 through 0007 describe later phases. They are recorded now because Phase 1 has to leave room for them. ADR 0009 is different: it was written in Phase 4B, for Phase 4B, because ADR 0007 named an approval gate without saying what runs the agent — and the two turned out to be one question.
+ADRs 0004 through 0007 describe later phases. They are recorded now because Phase 1 has to leave room for them. ADR 0009 is different: it was written in Phase 4B, for Phase 4B, because ADR 0007 named an approval gate without saying what runs the agent — and the two turned out to be one question. ADR 0010 is different again: it does not supersede ADR 0006 or ADR 0007, it moves the four registry models both of them describe into another app. Each carries an amendment saying what that changed and what it did not.
