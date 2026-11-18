@@ -28,11 +28,7 @@ from nautobot_event_tracker.models import (
     EventTicket,
     EventType,
     IngestionStats,
-    LLMModel,
-    LLMProvider,
     LLMUsageRecord,
-    MCPServer,
-    MCPTool,
     TicketEmbedding,
     TicketUpdate,
 )
@@ -148,49 +144,12 @@ class IngestionStatsViewSet(RecordViewSet):  # pylint: disable=too-many-ancestor
     filterset_class = filters.IngestionStatsFilterSet
 
 
-class LLMProviderViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
-    """LLMProvider viewset."""
-
-    queryset = LLMProvider.objects.select_related("external_integration")
-    serializer_class = serializers.LLMProviderSerializer
-    filterset_class = filters.LLMProviderFilterSet
-
-
-class LLMModelViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
-    """LLMModel viewset."""
-
-    queryset = LLMModel.objects.select_related("provider")
-    serializer_class = serializers.LLMModelSerializer
-    filterset_class = filters.LLMModelFilterSet
-
-
 class LLMUsageRecordViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
     """LLMUsageRecord viewset. The rows are the service layer's accounting of calls it made."""
 
     queryset = LLMUsageRecord.objects.select_related("model__provider", "ticket")
     serializer_class = serializers.LLMUsageRecordSerializer
     filterset_class = filters.LLMUsageRecordFilterSet
-
-
-class MCPServerViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
-    """MCPServer viewset."""
-
-    queryset = MCPServer.objects.select_related("external_integration")
-    serializer_class = serializers.MCPServerSerializer
-    filterset_class = filters.MCPServerFilterSet
-
-
-class MCPToolViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
-    """MCPTool viewset.
-
-    Writable, because enabling a tool is an operator decision and an operator may reasonably make
-    it from a script. It is the same decision the UI offers and it needs the same permission; what
-    no route offers is a way to call one.
-    """
-
-    queryset = MCPTool.objects.select_related("server")
-    serializer_class = serializers.MCPToolSerializer
-    filterset_class = filters.MCPToolFilterSet
 
 
 class EventTicketViewSet(NautobotModelViewSet):  # pylint: disable=too-many-ancestors
@@ -425,7 +384,7 @@ class AgentToolCallViewSet(RecordViewSet):  # pylint: disable=too-many-ancestors
     directly - which is what makes the gate a gate rather than a field.
     """
 
-    queryset = AgentToolCall.objects.select_related("run__ticket", "tool__server", "decided_by")
+    queryset = AgentToolCall.objects.select_related("run__ticket", "tool__mcp_server", "decided_by")
     serializer_class = serializers.AgentToolCallSerializer
     filterset_class = filters.AgentToolCallFilterSet
     http_method_names = ["get", "head", "options", "post"]

@@ -14,11 +14,7 @@ router = NautobotUIViewSetRouter()
 router.register("event-types", views.EventTypeUIViewSet)
 router.register("tickets", views.EventTicketUIViewSet)
 router.register("ingestion-stats", views.IngestionStatsUIViewSet)
-router.register("llm-providers", views.LLMProviderUIViewSet)
-router.register("llm-models", views.LLMModelUIViewSet)
 router.register("llm-usage", views.LLMUsageRecordUIViewSet)
-router.register("mcp-servers", views.MCPServerUIViewSet)
-router.register("mcp-tools", views.MCPToolUIViewSet)
 router.register("agent-runs", views.AgentRunUIViewSet)
 router.register("agent-tool-calls", views.AgentToolCallUIViewSet)
 router.register("ticket-embeddings", views.TicketEmbeddingUIViewSet)
@@ -38,11 +34,6 @@ urlpatterns = [
         "tickets/<uuid:pk>/detach/",
         views.EventTicketDetachView.as_view(),
         name="eventticket_detach",
-    ),
-    path(
-        "mcp-servers/<uuid:pk>/discover/",
-        views.MCPServerDiscoverView.as_view(),
-        name="mcpserver_discover",
     ),
     # Two routes rather than one taking a parameter: which decision is being made is the thing
     # this whole phase exists to control, and it should not be a form field.

@@ -25,7 +25,7 @@ entry per model call would bury the change log under bookkeeping.
 | Field | Description |
 | --- | --- |
 | When | The moment the call was made. |
-| Model | The [LLM Model](llmmodel.md) that was called. |
+| Model | The AI Model that was called. Registered in the AI Models app (ADR 0010). |
 | Purpose | What the call was for — `triage` today; later phases add more. |
 | Ticket | The ticket the call was about, when there was one. Deleting the ticket keeps the record. |
 | Prompt / Completion Tokens | Token counts as the provider reported them. Zero when the provider reported nothing. |

@@ -34,10 +34,10 @@ from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 from nautobot.apps.utils import deepmerge
+from nautobot_ai_models.choices import AIModelKindChoices
 
 from nautobot_event_tracker.choices import (
     TERMINAL_STATUSES,
-    LLMModelKindChoices,
     LLMPurposeChoices,
     TicketSourceChoices,
     TicketStatusChoices,
@@ -226,7 +226,7 @@ def index_ticket(ticket, *, embed=None):
     fingerprint = document_fingerprint(document)
 
     existing = TicketEmbedding.objects.filter(ticket=ticket).first()
-    model = llm_service.get_model(settings.provider, settings.model, kind=LLMModelKindChoices.EMBEDDING)
+    model = llm_service.get_model(settings.provider, settings.model, kind=AIModelKindChoices.EMBEDDING)
     if existing is not None and existing.document_fingerprint == fingerprint and existing.model_id == model.pk:
         # Same words, same model, so the same vector. Re-closing a ticket nobody edited is free.
         return existing
@@ -351,7 +351,7 @@ def _query_vector(ticket, settings, *, embed=None):
     tickets, and an open ticket is never in the corpus.
     """
     try:
-        model = llm_service.get_model(settings.provider, settings.model, kind=LLMModelKindChoices.EMBEDDING)
+        model = llm_service.get_model(settings.provider, settings.model, kind=AIModelKindChoices.EMBEDDING)
     except (LLMError, ImproperlyConfigured) as error:
         logger.warning("Cannot search for similar tickets: %s", error)
         return None

@@ -31,6 +31,17 @@ include = [
 python = ">=3.10,<3.15"
 # Used for local development
 nautobot = ">=3.2.0,<4.0.0"
+# The shared registry of AI providers, AI models, MCP servers and MCP tools (ADR 0010). Required,
+# not optional: `services/llm.py` and `services/mcp.py` resolve their registry objects from it on
+# every call, and `models.py` holds foreign keys into it, so Django needs it at import time on
+# every start. The `discovery` extra brings its MCP client, which its discovery Job needs.
+#
+# 1.1 is the floor rather than 1.0, and every part of that floor is load-bearing: 1.1 is the
+# release that records a provider's dialect and whether it is enabled, a model's kind and its
+# generation parameters, and the two registry-policy settings ADR 0007 relies on. Against 1.0
+# this app cannot address an Ollama endpoint, tell a chat model from an embedding one, or stop a
+# newly discovered tool being handed out unreviewed.
+nautobot-ai-models = { version = ">=1.1.0,<2.0.0", extras = ["discovery"] }
 # The Kafka consumer's client, optional: a deployment consuming from Redis, or not consuming at
 # all, installs nothing it does not use. See the Phase 2 spec, section 13.1.
 confluent-kafka = { version = ">=2.0.0,<3.0.0", optional = true }

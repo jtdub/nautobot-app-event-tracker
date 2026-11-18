@@ -15,7 +15,7 @@ One tool call an agent asked for, and what became of it. Written by the service 
 
 A read-only call goes to `executed` or `failed` and never has a decider. That is the entire
 difference between a tool that reads and a tool that changes something, and it is the boolean on
-the [MCP Tool](mcptool.md) — nothing else.
+the MCP Tool it names, which lives in the AI Models app — nothing else.
 
 ## Fields
 

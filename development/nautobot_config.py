@@ -107,11 +107,18 @@ if not _TESTING:
 #
 
 # Enable installed Apps. Add the name of each App to the list.
-PLUGINS = ["nautobot_event_tracker"]
+PLUGINS = ["nautobot_ai_models", "nautobot_event_tracker"]
+
+AI_MODELS_REGISTRY_POLICY = {"new_tools_enabled": False, "disable_on_definition_change": True}
+"""The default-deny policy for MCP tools that ADR 0007 requires.
+
+The defaults of the AI Models app enable a new tool.
+"""
 
 # Apps configuration settings. These settings are used by various Apps that the user may have installed.
 # Each key in the dictionary is the name of an installed App and its value is a dictionary of settings.
 PLUGINS_CONFIG = {
+    "nautobot_ai_models": AI_MODELS_REGISTRY_POLICY,
     "nautobot_event_tracker": {},
 }
 
@@ -195,6 +202,12 @@ PLUGINS_CONFIG["nautobot_event_tracker"]["rag"] = {
     "timeout_seconds": 120,
 }
 
+LAB_AGENT_MAX_ITERATIONS = 15
+"""Raised from the default of 8.
+
+A small local model uses more calls to learn the tool set. The value stays below `max_tool_calls`.
+"""
+
 # The agent (Phase 4B). Off in a stock install, and on here: a development stack that cannot run
 # the thing being developed is not much of a development stack. Every value is overridable, because
 # which model you have pulled is a property of your laptop rather than of this repository.
@@ -210,4 +223,5 @@ PLUGINS_CONFIG["nautobot_event_tracker"]["agent"] = {
     # than a broken one. The tool timeout is raised for the same reason.
     "timeout_seconds": 180,
     "tool_timeout_seconds": 60,
+    "max_iterations": LAB_AGENT_MAX_ITERATIONS,
 }

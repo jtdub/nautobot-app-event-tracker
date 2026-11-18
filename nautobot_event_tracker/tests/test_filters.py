@@ -1,11 +1,11 @@
 """Test the Event Tracker filtersets."""
 
 from nautobot.apps.testing import FilterTestCases
+from nautobot_ai_models.models import MCPTool
 
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
-    LLMProviderTypeChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
@@ -15,11 +15,7 @@ from nautobot_event_tracker.filters import (
     AgentToolCallFilterSet,
     EventTicketFilterSet,
     EventTypeFilterSet,
-    LLMModelFilterSet,
-    LLMProviderFilterSet,
     LLMUsageRecordFilterSet,
-    MCPServerFilterSet,
-    MCPToolFilterSet,
     TicketEmbeddingFilterSet,
     TicketUpdateFilterSet,
 )
@@ -28,11 +24,7 @@ from nautobot_event_tracker.models import (
     AgentToolCall,
     EventTicket,
     EventType,
-    LLMModel,
-    LLMProvider,
     LLMUsageRecord,
-    MCPServer,
-    MCPTool,
     TicketEmbedding,
     TicketUpdate,
 )
@@ -253,80 +245,6 @@ class TicketUpdateFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable
         self.assertFalse(results.filter(source=TicketSourceChoices.AI).exists())
 
 
-class LLMProviderFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
-    """Filters for LLMProvider."""
-
-    queryset = LLMProvider.objects.all()
-    filterset = LLMProviderFilterSet
-    generic_filter_tests = (
-        ["name"],
-        ["description"],
-    )
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        fixtures.create_llmprovider(name="Local Lab", description="the on-prem endpoint")
-        fixtures.create_llmprovider(name="Disabled Provider", description="switched off", enabled=False)
-        fixtures.create_llmprovider(
-            name="Spare Provider",
-            description="a third, for the generic suite",
-            provider_type=LLMProviderTypeChoices.ANTHROPIC,
-        )
-
-    def test_q_matches_name_and_description(self):
-        """Search covers both text fields."""
-        self.assertEqual(self.filterset({"q": "Lab"}, self.queryset).qs.count(), 1)
-        self.assertEqual(self.filterset({"q": "on-prem"}, self.queryset).qs.count(), 1)
-
-    def test_enabled(self):
-        """Enabled flag filter, both ways."""
-        self.assertFalse(self.filterset({"enabled": False}, self.queryset).qs.filter(enabled=True).exists())
-        self.assertFalse(self.filterset({"enabled": True}, self.queryset).qs.filter(enabled=False).exists())
-
-    def test_provider_type(self):
-        """Type filter, asserted against a queryset that holds more than one type.
-
-        The counts have to differ from the unfiltered total, or the assertion passes just as well
-        when the filter matches everything.
-        """
-        params = {"provider_type": [LLMProviderTypeChoices.OPENAI_COMPATIBLE]}
-        self.assertEqual(self.filterset(params, self.queryset).qs.count(), 2)
-        params = {"provider_type": [LLMProviderTypeChoices.ANTHROPIC]}
-        self.assertEqual(self.filterset(params, self.queryset).qs.count(), 1)
-        self.assertEqual(self.queryset.count(), 3)
-
-
-class LLMModelFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
-    """Filters for LLMModel."""
-
-    queryset = LLMModel.objects.all()
-    filterset = LLMModelFilterSet
-    generic_filter_tests = (
-        ["name"],
-        ["provider", "provider__name"],
-    )
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        cls.provider = fixtures.create_llmprovider()
-        other = fixtures.create_llmprovider(name="Other Provider")
-        spare = fixtures.create_llmprovider(name="Spare Provider")
-        fixtures.create_llmmodel(name="fast-model", provider=cls.provider)
-        fixtures.create_llmmodel(name="smart-model", provider=other)
-        fixtures.create_llmmodel(name="spare-model", provider=spare)
-
-    def test_provider_by_name_or_pk(self):
-        """The provider filter takes the natural key or the ID."""
-        self.assertEqual(self.filterset({"provider": ["Test Provider"]}, self.queryset).qs.count(), 1)
-        self.assertEqual(self.filterset({"provider": [str(self.provider.pk)]}, self.queryset).qs.count(), 1)
-
-    def test_q_matches_the_provider_name_too(self):
-        """Searching by where a model lives is as natural as by what it is called."""
-        self.assertEqual(self.filterset({"q": "Other"}, self.queryset).qs.count(), 1)
-
-
 class LLMUsageRecordFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
     """Filters for LLMUsageRecord."""
 
@@ -359,75 +277,6 @@ class LLMUsageRecordFilterTest(FilterTestCases.FilterTestCase):  # pylint: disab
     def test_q_matches_the_error_text(self):
         """Finding a failure by its message is the point of recording it."""
         self.assertEqual(self.filterset({"q": "broke"}, self.queryset).qs.count(), 1)
-
-
-class MCPServerFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
-    """Filters for MCPServer."""
-
-    queryset = MCPServer.objects.all()
-    filterset = MCPServerFilterSet
-    generic_filter_tests = (
-        ["name"],
-        ["description"],
-    )
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        fixtures.create_mcpserver(name="Device Inventory", description="the read-only one")
-        fixtures.create_mcpserver(name="Change System", description="switched off", enabled=False)
-        fixtures.create_mcpserver(name="Spare Server", description="a third, for the generic suite")
-
-    def test_q_matches_name_and_description(self):
-        """Search covers both text fields."""
-        self.assertEqual(self.filterset({"q": "Inventory"}, self.queryset).qs.count(), 1)
-        self.assertEqual(self.filterset({"q": "read-only"}, self.queryset).qs.count(), 1)
-
-    def test_enabled(self):
-        """The server-level off switch has to be findable, or nobody audits it."""
-        self.assertEqual(self.filterset({"enabled": False}, self.queryset).qs.count(), 1)
-        self.assertEqual(self.filterset({"enabled": True}, self.queryset).qs.count(), 2)
-
-
-class MCPToolFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
-    """Filters for MCPTool.
-
-    `enabled` and `mutating` are the two an operator reviews a server by, so they are the two this
-    asserts on with counts that could not pass by accident.
-    """
-
-    queryset = MCPTool.objects.all()
-    filterset = MCPToolFilterSet
-    generic_filter_tests = (
-        ["name"],
-        ["server", "server__name"],
-    )
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        inventory = fixtures.create_mcpserver(name="Device Inventory")
-        changes = fixtures.create_mcpserver(name="Change System")
-        spare = fixtures.create_mcpserver(name="Spare Server")
-        fixtures.create_mcptool(server=inventory, name="get_device", mutating=False, enabled=True)
-        fixtures.create_mcptool(server=changes, name="open_change", mutating=True)
-        fixtures.create_mcptool(server=spare, name="spare_tool", mutating=True)
-
-    def test_q_matches_the_tool_and_its_server(self):
-        """Finding a tool by the server it is on is how a review starts."""
-        self.assertEqual(self.filterset({"q": "get_device"}, self.queryset).qs.count(), 1)
-        self.assertEqual(self.filterset({"q": "Inventory"}, self.queryset).qs.count(), 1)
-
-    def test_enabled(self):
-        """The allowlist has to be readable as a list, which means filterable."""
-        self.assertEqual(self.filterset({"enabled": True}, self.queryset).qs.count(), 1)
-        self.assertEqual(self.filterset({"enabled": False}, self.queryset).qs.count(), 2)
-
-    def test_mutating(self):
-        """The review question: which of these change something."""
-        self.assertEqual(self.filterset({"mutating": True}, self.queryset).qs.count(), 2)
-        self.assertEqual(self.filterset({"mutating": False}, self.queryset).qs.count(), 1)
-        self.assertEqual(self.queryset.count(), 3)
 
 
 class AgentRunFilterTest(FilterTestCases.FilterTestCase):  # pylint: disable=too-many-ancestors
@@ -487,17 +336,17 @@ class AgentToolCallFilterTest(FilterTestCases.FilterTestCase):  # pylint: disabl
         server = fixtures.create_mcpserver()
         fixtures.create_agenttoolcall(
             run=run,
-            tool=fixtures.create_mcptool(server=server, name="push_config", mutating=True),
+            tool=fixtures.create_mcptool(server=server, name="push_config", writable=True),
             status=AgentToolCallStatusChoices.PROPOSED,
         )
         fixtures.create_agenttoolcall(
             run=run,
-            tool=fixtures.create_mcptool(server=server, name="reload_device", mutating=True),
+            tool=fixtures.create_mcptool(server=server, name="reload_device", writable=True),
             status=AgentToolCallStatusChoices.APPROVED,
         )
         fixtures.create_agenttoolcall(
             run=fixtures.create_agentrun(),
-            tool=fixtures.create_mcptool(server=server, name="get_device", mutating=False),
+            tool=fixtures.create_mcptool(server=server, name="get_device", writable=False),
             status=AgentToolCallStatusChoices.EXECUTED,
         )
 

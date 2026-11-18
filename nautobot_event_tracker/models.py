@@ -2,6 +2,10 @@
 
 Every mutation of EventTicket and TicketUpdate goes through
 `nautobot_event_tracker.services.tickets`. Nothing else writes to them. See ADR 0001.
+
+The registry this app calls through - LLM providers, LLM models, MCP servers and MCP tools - is
+not here. It belongs to `nautobot_ai_models`, which this app depends on (ADR 0010). What is here
+is the record of what those calls did: usage, agent runs, tool calls and embeddings.
 """
 
 from django.conf import settings
@@ -16,12 +20,9 @@ from pgvector.django import VectorField
 from nautobot_event_tracker.choices import (
     AGENT_RUN_LIVE_STATUSES,
     ATTACHMENT_UPDATE_TYPES,
-    PROVIDER_TYPES_REQUIRING_A_URL,
     TERMINAL_STATUSES,
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
-    LLMModelKindChoices,
-    LLMProviderTypeChoices,
     LLMPurposeChoices,
     SeverityChoices,
     TicketSourceChoices,
@@ -405,202 +406,6 @@ class IngestionStats(BaseModel):
         return self.errored + self.dropped + self.tickets_opened + self.tickets_joined
 
 
-@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
-class LLMProvider(PrimaryModel):  # pylint: disable=too-many-ancestors
-    """An LLM endpoint the app may call, registered by an operator (ADR 0006).
-
-    Carries no credentials of its own: the ExternalIntegration it points at holds the endpoint URL,
-    and that integration's SecretsGroup holds the API key. Nothing key-shaped lives on this model,
-    in PLUGINS_CONFIG, or in a log line (rule L3 from the Phase 3 spec).
-    """
-
-    name = models.CharField(max_length=CHARFIELD_MAX_LENGTH, unique=True)
-    description = models.CharField(max_length=CHARFIELD_MAX_LENGTH, blank=True)
-    provider_type = models.CharField(
-        max_length=CHARFIELD_MAX_LENGTH,
-        choices=LLMProviderTypeChoices,
-        default=LLMProviderTypeChoices.OPENAI_COMPATIBLE,
-        help_text="Which API protocol the endpoint speaks. Selects how the service layer addresses it.",
-    )
-    external_integration = models.ForeignKey(
-        to="extras.ExternalIntegration",
-        on_delete=models.PROTECT,
-        related_name="llm_providers",
-        help_text="Carries the endpoint URL and, through its secrets group, the API key.",
-    )
-    enabled = models.BooleanField(
-        default=True,
-        help_text="A disabled provider refuses every call before any network traffic (rule L8).",
-    )
-
-    class Meta:
-        """Meta class."""
-
-        ordering = ["name"]
-        verbose_name = "LLM Provider"
-        verbose_name_plural = "LLM Providers"
-
-    def __str__(self):
-        """Stringify instance."""
-        return self.name
-
-    def clean(self):
-        """A self-hosted endpoint is unreachable without a URL to reach it at."""
-        super().clean()
-        if (
-            self.provider_type in PROVIDER_TYPES_REQUIRING_A_URL
-            and self.external_integration_id is not None
-            and not self.external_integration.remote_url
-        ):
-            raise ValidationError(
-                {
-                    "external_integration": (
-                        f"A '{self.get_provider_type_display()}' provider needs an external "
-                        "integration with a remote URL."
-                    )
-                }
-            )
-
-
-@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
-class LLMModel(PrimaryModel):  # pylint: disable=too-many-ancestors
-    """One model available from a provider, with its parameters and cost metadata (ADR 0006)."""
-
-    provider = models.ForeignKey(
-        to=LLMProvider,
-        on_delete=models.PROTECT,
-        related_name="models",
-    )
-    name = models.CharField(
-        max_length=CHARFIELD_MAX_LENGTH,
-        help_text="The model identifier sent on the wire, e.g. 'gpt-4o-mini' or 'llama-3.1-70b'.",
-    )
-    description = models.CharField(max_length=CHARFIELD_MAX_LENGTH, blank=True)
-    enabled = models.BooleanField(
-        default=True,
-        help_text="A disabled model refuses every call before any network traffic (rule L8).",
-    )
-    kind = models.CharField(
-        max_length=CHARFIELD_MAX_LENGTH,
-        choices=LLMModelKindChoices,
-        default=LLMModelKindChoices.CHAT,
-        db_index=True,
-        help_text=(
-            "What this model is for. An embedding model and a chat model are not interchangeable, "
-            "and the service layer refuses a mismatch in both directions before any network "
-            "traffic. Defaults to chat, which is what every model registered before Phase 5A is."
-        ),
-    )
-    input_cost_per_million = models.DecimalField(
-        max_digits=10,
-        decimal_places=4,
-        default=0,
-        help_text="USD per one million prompt tokens. Used to compute each call's recorded cost.",
-    )
-    output_cost_per_million = models.DecimalField(
-        max_digits=10,
-        decimal_places=4,
-        default=0,
-        help_text="USD per one million completion tokens.",
-    )
-    max_output_tokens = models.PositiveIntegerField(
-        null=True,
-        blank=True,
-        help_text="Default completion cap for calls that do not set their own.",
-    )
-    default_parameters = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=(
-            "Extra request parameters, passed through on every call. Generation parameters only: "
-            "extra_body, frequency_penalty, logit_bias, n, presence_penalty, reasoning_effort, "
-            "seed, stop, temperature, timeout, top_k, top_p."
-        ),
-    )
-
-    #: The only keys this field may carry: the parameters that shape an answer, and nothing that
-    #: decides who answers. An allowlist rather than a denylist because litellm's keyword surface
-    #: is wide, aliased and moves between releases - `base_url` alone overrides `api_base` inside
-    #: litellm, so a denylist naming `api_base` never saw it, and an operator holding only
-    #: `change_llmmodel` could redirect a call and send the provider's key with it, against rule
-    #: L3. `timeout` stays: it is the registry's own default, beaten by a call that states one.
-    #: The service layer filters against this tuple again immediately before the call, because a
-    #: fixture, a migration or a direct ORM write never runs `clean()`.
-    #:
-    #: The list covers the providers the registry offers, not one of them. `top_k` is Anthropic's
-    #: and every local model's; `extra_body` is how litellm carries a vLLM-specific parameter it
-    #: has no name for; `reasoning_effort` is how a reasoning model is told how hard to think.
-    #: Leaving them out did not make the field safer - none of them decides who answers - it made
-    #: a legitimate row unsavable, including the edit that unticks *Enabled*.
-    ALLOWED_PARAMETERS = (
-        "extra_body",
-        "frequency_penalty",
-        "logit_bias",
-        "n",
-        "presence_penalty",
-        "reasoning_effort",
-        "seed",
-        "stop",
-        "temperature",
-        "timeout",
-        "top_k",
-        "top_p",
-    )
-
-    natural_key_field_names = ["provider", "name"]
-
-    class Meta:
-        """Meta class."""
-
-        ordering = ["provider__name", "name"]
-        verbose_name = "LLM Model"
-        verbose_name_plural = "LLM Models"
-        constraints = [
-            models.UniqueConstraint(
-                fields=["provider", "name"],
-                name="event_tracker_llmmodel_provider_name_unique",
-            ),
-        ]
-
-    def __str__(self):
-        """Stringify instance."""
-        return f"{self.provider.name}: {self.name}"
-
-    def clean(self):
-        """Refuse every parameter the service layer owns, keeping the generation parameters alone.
-
-        Caught here rather than at call time: a credential or an endpoint in this field would
-        already have been written to a change-logged row and served over REST and GraphQL by the
-        time a call read it, which is what rule L3 exists to prevent. A duplicated call argument
-        would surface as a failed model call rather than as the configuration mistake it is.
-        """
-        super().clean()
-        parameters = self.default_parameters or {}
-
-        # The one allowed key whose *value* matters here. A stored `null` or `0` is not a request
-        # for no limit; it is a row that says nothing, and rule L6 promises every call carries a
-        # timeout. The service layer falls through such a value rather than trusting it, and this
-        # stops it being written in the first place.
-        timeout = parameters.get("timeout", 1)
-        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
-            raise ValidationError(
-                {"default_parameters": f"timeout must be a positive number of seconds, got {timeout!r}."}
-            )
-
-        offenders = sorted(key for key in parameters if key not in self.ALLOWED_PARAMETERS)
-        if offenders:
-            raise ValidationError(
-                {
-                    "default_parameters": (
-                        f"{', '.join(offenders)} cannot be set here. This field carries generation parameters "
-                        f"only ({', '.join(self.ALLOWED_PARAMETERS)}); the endpoint and the credentials come "
-                        "from the provider's external integration, and the model and messages come from the "
-                        "call itself."
-                    )
-                }
-            )
-
-
 class LLMUsageRecord(BaseModel):
     """The accounting row for one LLM call, successful or not.
 
@@ -609,12 +414,19 @@ class LLMUsageRecord(BaseModel):
     ObjectChange per model call and bury the change log under a record of bookkeeping.
 
     Written only by `services.llm` (rule L1). No UI or API route offers a write method.
+
+    The foreign key is `PROTECT` across an app boundary, and that is load-bearing rather than
+    incidental. `AIModel.provider` is `CASCADE` in the AI Models app, so deleting a provider would
+    otherwise take its models and their spend history with it. Protecting here turns that into a
+    refusal: a provider with recorded spend cannot be deleted until the records are, which is the
+    right way round for an accounting table.
     """
 
     model = models.ForeignKey(
-        to=LLMModel,
+        to="nautobot_ai_models.AIModel",
         on_delete=models.PROTECT,
-        related_name="usage_records",
+        related_name="event_tracker_usage_records",
+        help_text="The registered model that served the call. Lives in the AI Models app (ADR 0010).",
     )
     ticket = models.ForeignKey(
         to=EventTicket,
@@ -662,162 +474,6 @@ class LLMUsageRecord(BaseModel):
     def __str__(self):
         """Stringify instance."""
         return f"{self.purpose} call at {self.called_at:%Y-%m-%d %H:%M:%S}"
-
-
-@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
-class MCPServer(PrimaryModel):  # pylint: disable=too-many-ancestors
-    """An MCP server the app may reach, registered by an operator (ADR 0007).
-
-    Carries no credentials of its own: the ExternalIntegration it points at holds the endpoint URL,
-    its headers and its TLS settings, and that integration's secrets group holds whatever
-    authenticates to it. The same arrangement `LLMProvider` uses, read by the same code shape.
-
-    Registering a server makes it known. It does not make anything callable: every tool arrives
-    disabled and stays that way until somebody enables it (rule M4).
-    """
-
-    name = models.CharField(max_length=CHARFIELD_MAX_LENGTH, unique=True)
-    description = models.CharField(max_length=CHARFIELD_MAX_LENGTH, blank=True)
-    external_integration = models.ForeignKey(
-        to="extras.ExternalIntegration",
-        on_delete=models.PROTECT,
-        related_name="mcp_servers",
-        help_text="Carries the streamable HTTP endpoint, its headers and TLS settings, and its secrets group.",
-    )
-    enabled = models.BooleanField(
-        default=True,
-        help_text="A disabled server refuses every tool call before any network traffic (rule M4).",
-    )
-    last_discovered_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When this server's tool list was last read. Discovery never enables anything (rule M5).",
-    )
-
-    class Meta:
-        """Meta class."""
-
-        ordering = ["name"]
-        verbose_name = "MCP Server"
-        verbose_name_plural = "MCP Servers"
-
-    def __str__(self):
-        """Stringify instance."""
-        return self.name
-
-    def clean(self):
-        """A server with no URL is a server nothing can reach.
-
-        Checked here rather than left to the first call: an integration is a shared object, and the
-        one being pointed at may have been made for something that did not need a remote URL.
-        """
-        super().clean()
-        if self.external_integration_id is not None and not self.external_integration.remote_url:
-            raise ValidationError(
-                {"external_integration": "An MCP server needs an external integration with a remote URL."}
-            )
-
-
-@extras_features("custom_links", "custom_validators", "export_templates", "graphql", "webhooks")
-class MCPTool(PrimaryModel):  # pylint: disable=too-many-ancestors
-    """One tool a server advertises, and whether an operator has allowed it (ADR 0007).
-
-    Both booleans below default the unhelpful way on purpose, and that is the whole security
-    argument of this model: a server advertising forty tools grants access to none of them, and a
-    tool nobody has classified is treated as though it changes the network.
-    """
-
-    server = models.ForeignKey(
-        to=MCPServer,
-        on_delete=models.CASCADE,
-        related_name="tools",
-        help_text="A tool cannot outlive the server that offers it.",
-    )
-    name = models.CharField(
-        max_length=CHARFIELD_MAX_LENGTH,
-        help_text="The tool name sent on the wire.",
-    )
-    description = models.TextField(blank=True, help_text="As the server advertised it.")
-    input_schema = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="The JSON Schema the server advertised for this tool's arguments.",
-    )
-    mutating = models.BooleanField(
-        default=True,
-        help_text=(
-            "Whether calling this tool changes something. A mutating tool never runs without a "
-            "human approving that call (rule M6). True until a person says otherwise: guessing "
-            "wrong this way costs a click, and guessing wrong the other way changes the network. "
-            "Only a person sets this. Discovery never does, whatever the server claims."
-        ),
-    )
-    advertised_read_only = models.BooleanField(
-        null=True,
-        blank=True,
-        help_text=(
-            "What the server's own readOnlyHint annotation claims, or unset when it claims "
-            "nothing. Shown so a reviewer can see it; never used to decide anything. The MCP "
-            "specification says in as many words that a client must not make tool-use decisions "
-            "from annotations it received from the server they describe."
-        ),
-    )
-    enabled = models.BooleanField(
-        default=False,
-        help_text="Disabled means uncallable, whatever a model asks for (rule M4). Discovery never enables.",
-    )
-    definition_fingerprint = models.CharField(
-        max_length=CHARFIELD_MAX_LENGTH,
-        blank=True,
-        help_text=(
-            "Digest of everything the server advertised about this tool - its description as well "
-            "as its argument schema - as of the last discovery. A change under an enabled tool "
-            "disables it (rule M5). The description is in the digest because it is half of what a "
-            "reviewer read, and because it becomes the tool's semantics in an agent's prompt."
-        ),
-    )
-    last_seen_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When discovery last saw this tool advertised. An older time means the server stopped offering it.",
-    )
-
-    natural_key_field_names = ["server", "name"]
-
-    class Meta:
-        """Meta class."""
-
-        ordering = ["server__name", "name"]
-        verbose_name = "MCP Tool"
-        verbose_name_plural = "MCP Tools"
-        constraints = [
-            models.UniqueConstraint(
-                fields=["server", "name"],
-                name="event_tracker_mcptool_server_name_unique",
-            ),
-        ]
-
-    def __str__(self):
-        """Stringify instance."""
-        return f"{self.server.name}: {self.name}"
-
-    @property
-    def is_callable(self):
-        """Whether a call to this tool could reach the server at all (rule M4).
-
-        Read by the service layer before any network traffic, and by the UI to explain why a tool
-        an operator enabled is still not being offered to a model.
-        """
-        return self.enabled and self.server.enabled
-
-    @property
-    def claims_read_only(self):
-        """Whether the server says this tool only reads, and this deployment disagrees.
-
-        The pair worth showing a reviewer: a tool the server calls read-only which nobody has
-        classified that way. It is a prompt to look, never an argument to believe.
-        """
-        return self.advertised_read_only is True and self.mutating
 
 
 class AgentRun(BaseModel):
@@ -918,9 +574,9 @@ class AgentToolCall(BaseModel):
         related_name="tool_calls",
     )
     tool = models.ForeignKey(
-        to=MCPTool,
+        to="nautobot_ai_models.MCPTool",
         on_delete=models.PROTECT,
-        related_name="calls",
+        related_name="event_tracker_calls",
         help_text="PROTECT, so the record of a call outlives a tidy-up of the registry.",
     )
     arguments = models.JSONField(
@@ -1024,9 +680,9 @@ class TicketEmbedding(BaseModel):
         ),
     )
     model = models.ForeignKey(
-        to=LLMModel,
+        to="nautobot_ai_models.AIModel",
         on_delete=models.PROTECT,
-        related_name="embeddings",
+        related_name="event_tracker_embeddings",
         help_text="Which model produced it. A vector is comparable only with its own model's (R2).",
     )
     dimensions = models.PositiveIntegerField(

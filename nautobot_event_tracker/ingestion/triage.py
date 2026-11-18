@@ -165,7 +165,7 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
         )
 
     def _get_model(self):
-        """The configured LLMModel, re-read on a TTL rather than held for the life of the process.
+        """The configured AIModel, re-read on a TTL rather than held for the life of the process.
 
         Cached at all because the alternative is a join in front of every triaged event; re-read
         because rule L8 promises the operator's off switch "works everywhere at once", and a model

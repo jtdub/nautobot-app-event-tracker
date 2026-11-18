@@ -1,0 +1,3 @@
+Changed the install. Add `nautobot_ai_models` to `PLUGINS`, or Nautobot does not start.
+Removed the local registry with no data copy. Upgrade only a database with no LLM Usage, Agent Tool Call or Ticket Embedding records.
+Changed the base URL of the registry REST routes to `/api/plugins/ai-models/`. The route `llm-providers` is now `ai-providers`, and `llm-models` is now `ai-models`.

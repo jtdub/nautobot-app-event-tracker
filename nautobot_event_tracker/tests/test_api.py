@@ -2,8 +2,6 @@
 
 # pylint: disable=too-many-ancestors,duplicate-code
 
-from decimal import Decimal
-
 from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 from nautobot.apps.choices import CustomFieldTypeChoices
@@ -13,7 +11,6 @@ from nautobot.extras.models import CustomField
 from nautobot_event_tracker.choices import (
     AgentRunStatusChoices,
     AgentToolCallStatusChoices,
-    LLMProviderTypeChoices,
     SeverityChoices,
     TicketStatusChoices,
     UpdateTypeChoices,
@@ -21,10 +18,6 @@ from nautobot_event_tracker.choices import (
 from nautobot_event_tracker.models import (
     EventTicket,
     EventType,
-    LLMModel,
-    LLMProvider,
-    MCPServer,
-    MCPTool,
 )
 from nautobot_event_tracker.tests import fixtures
 
@@ -427,54 +420,6 @@ class TicketUpdateAPITest(APITestCase):
         self.assertHttpStatus(response, 405)
 
 
-class LLMProviderAPITest(APIViewTestCases.APIViewTestCase):
-    """Standard API test cases for LLMProvider."""
-
-    model = LLMProvider
-    bulk_update_data = {"description": "Bulk updated"}
-    choices_fields = ["provider_type"]
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        fixtures.create_llmprovider(name="Provider One")
-        fixtures.create_llmprovider(name="Provider Two")
-        fixtures.create_llmprovider(name="Provider Three")
-        integration = fixtures.create_external_integration()
-        cls.create_data = [
-            {
-                "name": f"API Provider {suffix}",
-                "provider_type": LLMProviderTypeChoices.OPENAI_COMPATIBLE,
-                # The pk itself, not str(pk): the generic tests compare this dict against the
-                # saved instance, which holds a UUID.
-                "external_integration": integration.pk,
-            }
-            for suffix in ("One", "Two", "Three")
-        ]
-
-
-class LLMModelAPITest(APIViewTestCases.APIViewTestCase):
-    """Standard API test cases for LLMModel."""
-
-    model = LLMModel
-    bulk_update_data = {"description": "Bulk updated"}
-    # Nautobot's generic OPTIONS test wants every choice field named, so that a field gaining
-    # choices without the API advertising them is a failure rather than a quiet omission.
-    choices_fields = ["kind"]
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        provider = fixtures.create_llmprovider()
-        fixtures.create_llmmodel(name="model-one", provider=provider)
-        fixtures.create_llmmodel(name="model-two", provider=provider)
-        fixtures.create_llmmodel(name="model-three", provider=provider)
-        cls.create_data = [
-            {"provider": provider.pk, "name": f"api-model-{suffix}", "input_cost_per_million": Decimal("0.5000")}
-            for suffix in ("one", "two", "three")
-        ]
-
-
 class LLMUsageRecordAPITest(APITestCase):
     """The llm-usage endpoint must be read-only, like the ticket updates and for the same reason."""
 
@@ -551,62 +496,6 @@ class TestCreateRejectsADisabledEventType(APITestCase):
         self.assertFalse(EventTicket.objects.filter(title="Should not open").exists())
 
 
-class MCPServerAPITest(APIViewTestCases.APIViewTestCase):
-    """Standard API test cases for MCPServer."""
-
-    model = MCPServer
-    bulk_update_data = {"description": "Bulk updated"}
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        fixtures.create_mcpserver(name="Server One")
-        fixtures.create_mcpserver(name="Server Two")
-        fixtures.create_mcpserver(name="Server Three")
-        integration = fixtures.create_external_integration(
-            name="API MCP Endpoint", remote_url="https://api.example.test/mcp"
-        )
-        cls.create_data = [
-            {"name": f"API Server {suffix}", "external_integration": integration.pk}
-            for suffix in ("One", "Two", "Three")
-        ]
-
-
-class MCPToolAPITest(APIViewTestCases.APIViewTestCase):
-    """Standard API test cases for MCPTool."""
-
-    model = MCPTool
-    bulk_update_data = {"enabled": True}
-
-    @classmethod
-    def setUpTestData(cls):
-        """Create test data."""
-        server = fixtures.create_mcpserver()
-        fixtures.create_mcptool(server=server, name="tool_one")
-        fixtures.create_mcptool(server=server, name="tool_two")
-        fixtures.create_mcptool(server=server, name="tool_three")
-        cls.create_data = [{"server": server.pk, "name": f"api_tool_{suffix}"} for suffix in ("one", "two", "three")]
-
-    def test_a_tool_created_through_the_api_is_not_callable(self):
-        """The default-deny rule is the model's, so it holds on every route into it."""
-        # Both permissions: the serializer resolves the related server through a queryset
-        # restricted to what this user may view, so `add_mcptool` alone cannot find it.
-        self.add_permissions("nautobot_event_tracker.add_mcptool", "nautobot_event_tracker.view_mcpserver")
-        server = fixtures.create_mcpserver(name="Created Through The API")
-
-        response = self.client.post(
-            self._get_list_url(),
-            {"server": str(server.pk), "name": "sneaky_tool"},
-            format="json",
-            **self.header,
-        )
-
-        self.assertHttpStatus(response, 201)
-        tool = MCPTool.objects.get(name="sneaky_tool")
-        self.assertFalse(tool.enabled)
-        self.assertTrue(tool.mutating)
-
-
 class AgentRunAPITest(APITestCase):
     """The agent-runs endpoint is read-only: a run is what the service did, not a client's to edit."""
 
@@ -659,7 +548,7 @@ class AgentToolCallAPITest(APITestCase):
         fixtures.create_event_types()
         self.ticket = fixtures.create_ticket()
         self.run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.WAITING_APPROVAL)
-        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        self.tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
         self.call = fixtures.create_agenttoolcall(run=self.run, tool=self.tool, arguments={"device": "leaf-01"})
         self.list_url = reverse("plugins-api:nautobot_event_tracker-api:agenttoolcall-list")
         self.detail_url = reverse("plugins-api:nautobot_event_tracker-api:agenttoolcall-detail", args=[self.call.pk])

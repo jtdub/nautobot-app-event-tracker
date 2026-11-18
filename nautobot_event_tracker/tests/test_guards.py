@@ -7,6 +7,7 @@ asserted rather than trusted.
 """
 
 import ast
+import importlib
 import tokenize
 from pathlib import Path
 
@@ -408,6 +409,9 @@ def _write_call_offenders(paths, methods):
 #: one; the model suite constructs them to exercise the model itself.
 RECORD_WRITE_EXEMPT = frozenset({"tests/fixtures.py", "tests/test_models.py"})
 
+FIXTURES_MODULE = "tests/fixtures.py"
+"""The one module that `AIRegistryGuardTest` exempts."""
+
 
 def _record_writer_paths():
     """Every app module outside `services/`, minus the test modules those guards exempt.
@@ -751,3 +755,88 @@ class AnalyticsGuardTest(SimpleTestCase):
             "The panel functions must take `user` keyword-only and without a default. "
             "Offending lines: " + ", ".join(offenders),
         )
+
+
+class AIRegistryGuardTest(SimpleTestCase):
+    """ADR 0010: the AI registry belongs to another app, and this one does not grow a second copy.
+
+    Both halves of the decision are the kind that erodes quietly. A registry model reappears here
+    the first time somebody needs one field the other app does not have - which is exactly how
+    this app came to have four of them - and the dependency drifts to optional the first time
+    somebody wants a lighter install. The second would be worse than untidy: `models.py` holds
+    foreign keys into that app, so a deployment without it does not degrade, it fails to start.
+    """
+
+    DELETED_MODELS = frozenset({"LLMProvider", "LLMModel", "MCPServer", "MCPTool"})
+    """The four models that this app deleted (ADR 0010)."""
+
+    REGISTRY_MODELS = frozenset({"AIProvider", "AIModel", "MCPServer", "MCPTool"})
+    """The four models that the AI Models app owns."""
+
+    REGISTRY_DISTRIBUTION = "nautobot-ai-models"
+    REGISTRY_MODULE = "nautobot_ai_models"
+
+    def test_the_app_defines_no_registry_model(self):
+        """No class in `models.py` takes a deleted name or a registry name."""
+        tree = ast.parse((APP_ROOT / "models.py").read_text(encoding="utf-8"), filename="models.py")
+        offenders = [
+            f"models.py:{node.lineno} defines {node.name}"
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name in self.DELETED_MODELS | self.REGISTRY_MODELS
+        ]
+
+        self.assertEqual(
+            offenders,
+            [],
+            "These names are deleted or belong to the AI Models app (ADR 0010). Do not define them here. "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_registry_app_is_a_required_dependency(self):
+        """Not an extra, and not optional.
+
+        litellm and the MCP client are lazy because they are only ever called, and a deployment
+        that calls neither installs neither. This one is not comparable: `models.py` declares
+        foreign keys into it, so Django resolves them at import time on every start.
+        """
+        poetry = IngestionGuardTest._poetry()  # pylint: disable=protected-access
+        declared = poetry["dependencies"].get(self.REGISTRY_DISTRIBUTION)
+
+        self.assertIsNotNone(declared, f"{self.REGISTRY_DISTRIBUTION} must be a runtime dependency")
+        self.assertIsNot(
+            declared.get("optional") if isinstance(declared, dict) else False,
+            True,
+            f"{self.REGISTRY_DISTRIBUTION} must not be optional: this app cannot start without it",
+        )
+        for extra, members in poetry.get("extras", {}).items():
+            self.assertNotIn(
+                self.REGISTRY_DISTRIBUTION,
+                members,
+                f"{self.REGISTRY_DISTRIBUTION} must not sit behind the '{extra}' extra",
+            )
+
+    def test_the_registry_app_is_not_written_by_this_one(self):
+        """This app reads the registry. Writing it is the other app's job, and its Jobs' job.
+
+        A tool this app enabled, or a model it created, is a row an operator did not review and
+        cannot find the provenance of. The one thing that may write those tables is the discovery
+        the AI Models app ships. `tests/fixtures.py` is exempt, because no discovery Job runs in a
+        test database.
+        """
+        paths = [path for path in sorted(APP_ROOT.rglob("*.py")) if str(path.relative_to(APP_ROOT)) != FIXTURES_MODULE]
+        offenders = list(_manager_call_offenders(paths, self.REGISTRY_MODELS))
+        offenders += list(_constructor_call_offenders(paths, self.REGISTRY_MODELS))
+
+        self.assertEqual(
+            offenders,
+            [],
+            "Registry rows are written by the AI Models app, never by this one (ADR 0010). "
+            "Offending lines: " + ", ".join(offenders),
+        )
+
+    def test_the_write_guard_names_each_registry_model(self):
+        """Each name that the write guard sweeps for is a class of the AI Models app."""
+        registry_models = importlib.import_module(f"{self.REGISTRY_MODULE}.models")
+
+        for name in sorted(self.REGISTRY_MODELS):
+            self.assertTrue(isinstance(getattr(registry_models, name, None), type), f"{name} is not a registry class")

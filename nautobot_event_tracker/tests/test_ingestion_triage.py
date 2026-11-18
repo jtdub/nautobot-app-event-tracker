@@ -7,6 +7,7 @@ mocks litellm internals or opens a network connection.
 
 from django.test import TestCase
 from django.utils import timezone
+from nautobot_ai_models.models import AIModel, AIProvider
 
 from nautobot_event_tracker.choices import TicketSourceChoices, TicketStatusChoices
 from nautobot_event_tracker.ingestion import config
@@ -14,7 +15,7 @@ from nautobot_event_tracker.ingestion.constants import ACTION_ACCEPT, ACTION_ATT
 from nautobot_event_tracker.ingestion.normalize import NormalizedEvent
 from nautobot_event_tracker.ingestion.prefilter import ACCEPT, Decision, FilterResult
 from nautobot_event_tracker.ingestion.triage import TriageFilter
-from nautobot_event_tracker.models import EventType, LLMModel, LLMProvider, LLMUsageRecord
+from nautobot_event_tracker.models import EventType, LLMUsageRecord
 from nautobot_event_tracker.services.exceptions import LLMConfigurationError
 from nautobot_event_tracker.tests import fixtures
 from nautobot_event_tracker.tests.fixtures import TRIAGE_SETTINGS, FakeComplete
@@ -341,7 +342,7 @@ class TestTheModelCache(TriageTestCase):
         self.decide(triage, identity="first")
         self.assertEqual(len(self.fake.calls), 1)
 
-        LLMModel.objects.filter(name="test-model").update(enabled=False)
+        AIModel.objects.filter(name="test-model").update(enabled=False)
         clock.now = 61.0
 
         result = self.decide(triage, identity="second")
@@ -370,7 +371,7 @@ class TestTheModelCache(TriageTestCase):
         triage = self.build(clock=clock)
         self.decide(triage, identity="first")
 
-        LLMModel.objects.filter(name="test-model").update(enabled=False)
+        AIModel.objects.filter(name="test-model").update(enabled=False)
         clock.now = 61.0
         self.decide(triage, identity="second")
 
@@ -384,7 +385,7 @@ class TestTheModelCache(TriageTestCase):
         triage = self.build(clock=clock)
         self.decide(triage, identity="first")
 
-        LLMModel.objects.filter(name="test-model").update(enabled=False)
+        AIModel.objects.filter(name="test-model").update(enabled=False)
         clock.now = 61.0
         result = self.decide(triage, identity="second")
 
@@ -398,7 +399,7 @@ class TestTheModelCache(TriageTestCase):
         triage = self.build(clock=clock)
         self.decide(triage, identity="first")
 
-        LLMProvider.objects.filter(name="Test Provider").update(enabled=False)
+        AIProvider.objects.filter(name="Test Provider").update(enabled=False)
         clock.now = 61.0
 
         result = self.decide(triage, identity="second")

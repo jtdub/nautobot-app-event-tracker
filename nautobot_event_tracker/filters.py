@@ -13,6 +13,7 @@ from nautobot.apps.filters import (
     RelatedMembershipBooleanFilter,
     SearchFilter,
 )
+from nautobot_ai_models.models import AIModel, MCPTool
 
 from nautobot_event_tracker.choices import TERMINAL_STATUSES
 from nautobot_event_tracker.models import (
@@ -21,11 +22,7 @@ from nautobot_event_tracker.models import (
     EventTicket,
     EventType,
     IngestionStats,
-    LLMModel,
-    LLMProvider,
     LLMUsageRecord,
-    MCPServer,
-    MCPTool,
     TicketEmbedding,
     TicketUpdate,
 )
@@ -188,39 +185,6 @@ class IngestionStatsFilterSet(NautobotFilterSet):
         fields = ["consumer_name", "topic", "bucket_start"]  # pylint: disable=nb-use-fields-all
 
 
-class LLMProviderFilterSet(NautobotFilterSet):
-    """Filter for LLMProvider."""
-
-    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains"})
-    provider_type = MultiValueCharFilter(label="Provider type")
-
-    class Meta:
-        """Meta attributes for filter."""
-
-        # Explicit rather than "__all__": the filter surface is specified deliberately.
-        model = LLMProvider
-        # `tags` because a PrimaryModel is taggable and Nautobot's generic filter suite expects
-        # the filter to exist, as EventTicket's does.
-        fields = ["name", "description", "provider_type", "enabled", "tags"]  # pylint: disable=nb-use-fields-all
-
-
-class LLMModelFilterSet(NautobotFilterSet):
-    """Filter for LLMModel."""
-
-    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains", "provider__name": "icontains"})
-    provider = NaturalKeyOrPKMultipleChoiceFilter(
-        queryset=LLMProvider.objects.all(),
-        to_field_name="name",
-        label="Provider (name or ID)",
-    )
-
-    class Meta:
-        """Meta attributes for filter."""
-
-        model = LLMModel
-        fields = ["provider", "name", "description", "enabled", "kind", "tags"]  # pylint: disable=nb-use-fields-all
-
-
 class LLMUsageRecordFilterSet(NautobotFilterSet):
     """Filter for LLMUsageRecord.
 
@@ -229,7 +193,7 @@ class LLMUsageRecordFilterSet(NautobotFilterSet):
 
     q = SearchFilter(filter_predicates={"model__name": "icontains", "purpose": "icontains", "error": "icontains"})
     model = django_filters.ModelMultipleChoiceFilter(
-        queryset=LLMModel.objects.all(),
+        queryset=AIModel.objects.all(),
         label="Model",
     )
     ticket = django_filters.ModelMultipleChoiceFilter(
@@ -244,47 +208,6 @@ class LLMUsageRecordFilterSet(NautobotFilterSet):
 
         model = LLMUsageRecord
         fields = ["model", "ticket", "purpose", "success"]  # pylint: disable=nb-use-fields-all
-
-
-class MCPServerFilterSet(NautobotFilterSet):
-    """Filter for MCPServer."""
-
-    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains"})
-
-    class Meta:
-        """Meta attributes for filter."""
-
-        model = MCPServer
-        fields = ["name", "description", "enabled", "tags"]  # pylint: disable=nb-use-fields-all
-
-
-class MCPToolFilterSet(NautobotFilterSet):
-    """Filter for MCPTool.
-
-    The questions the page exists to answer: what is enabled, what is mutating, and what a
-    particular server offers. `enabled` and `mutating` are the two an operator reviews by.
-    """
-
-    q = SearchFilter(filter_predicates={"name": "icontains", "description": "icontains", "server__name": "icontains"})
-    server = NaturalKeyOrPKMultipleChoiceFilter(
-        queryset=MCPServer.objects.all(),
-        to_field_name="name",
-        label="Server (name or ID)",
-    )
-
-    class Meta:
-        """Meta attributes for filter."""
-
-        model = MCPTool
-        fields = [  # pylint: disable=nb-use-fields-all
-            "server",
-            "name",
-            "description",
-            "enabled",
-            "mutating",
-            "advertised_read_only",
-            "tags",
-        ]
 
 
 class AgentRunFilterSet(NautobotFilterSet):
@@ -355,7 +278,7 @@ class TicketEmbeddingFilterSet(NautobotFilterSet):
     # matched. Search tickets to search ticket text; this page answers "what is indexed".
     q = SearchFilter(filter_predicates={"ticket__title": "icontains"})
     ticket = django_filters.ModelMultipleChoiceFilter(queryset=EventTicket.objects.all(), label="Ticket")
-    model = django_filters.ModelMultipleChoiceFilter(queryset=LLMModel.objects.all(), label="Model")
+    model = django_filters.ModelMultipleChoiceFilter(queryset=AIModel.objects.all(), label="Model")
 
     class Meta:
         """Meta attributes for filter."""

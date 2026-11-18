@@ -76,7 +76,11 @@ class EventTrackerGraphQLTest(TestCase):
 
 
 class LLMGraphQLTest(TestCase):
-    """The Phase 3 registry and accounting models must be queryable through GraphQL."""
+    """The accounting model must be queryable through GraphQL.
+
+    Only the accounting model. The registry that names the provider and the model belongs to the
+    AI Models app (ADR 0010), and its GraphQL surface is that app's to expose and to test.
+    """
 
     def setUp(self):
         """One provider, one model, one usage record."""
@@ -90,12 +94,6 @@ class LLMGraphQLTest(TestCase):
         result = execute_query(query, user=self.user)
         self.assertIsNone(result.errors, f"GraphQL errors: {result.errors}")
         return result.data
-
-    def test_providers_and_models_are_queryable(self):
-        """Both registry models are exposed through extras_features."""
-        data = self._query("{ llm_providers { name provider_type enabled models { name } } }")
-        provider = next(entry for entry in data["llm_providers"] if entry["name"] == "Test Provider")
-        self.assertEqual(provider["models"][0]["name"], "test-model")
 
     def test_usage_records_are_queryable(self):
         """LLMUsageRecord needs its own type because it is not a PrimaryModel."""

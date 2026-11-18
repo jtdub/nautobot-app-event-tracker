@@ -17,9 +17,11 @@ from django.utils import timezone
 from nautobot.apps.choices import SecretsGroupAccessTypeChoices, SecretsGroupSecretTypeChoices
 from nautobot.apps.testing import TestCase
 from nautobot.extras.models import Secret, SecretsGroup, SecretsGroupAssociation
+from nautobot_ai_models.choices import AIProviderTypeChoices
+from nautobot_ai_models.models import AIModel
 
-from nautobot_event_tracker.choices import LLMProviderTypeChoices, LLMPurposeChoices
-from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
+from nautobot_event_tracker.choices import LLMPurposeChoices
+from nautobot_event_tracker.models import LLMUsageRecord
 from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
 from nautobot_event_tracker.tests import fixtures
@@ -199,7 +201,7 @@ class TestCredentials(TestCase):
         nothing may act on it. Its native API does, and litellm reaches that through `ollama/`.
         On the compatible path an Ollama-backed agent cannot call a tool at all.
         """
-        provider = fixtures.create_llmprovider(name="Local Ollama", provider_type=LLMProviderTypeChoices.OLLAMA)
+        provider = fixtures.create_llmprovider(name="Local Ollama", provider_type=AIProviderTypeChoices.OLLAMA)
         model = fixtures.create_llmmodel(provider=provider, name="qwen2.5-coder:7b")
 
         client = FakeLLMClient()
@@ -209,7 +211,7 @@ class TestCredentials(TestCase):
 
     def test_ollama_needs_no_placeholder_key(self):
         """Its litellm path builds no OpenAI client, so there is no constructor to get past."""
-        provider = fixtures.create_llmprovider(name="Keyless Ollama", provider_type=LLMProviderTypeChoices.OLLAMA)
+        provider = fixtures.create_llmprovider(name="Keyless Ollama", provider_type=AIProviderTypeChoices.OLLAMA)
         model = fixtures.create_llmmodel(provider=provider)
 
         client = FakeLLMClient()
@@ -225,7 +227,7 @@ class TestCredentials(TestCase):
         container. `clean()` demands the URL at save time, and an integration is a shared object
         that can be blanked afterwards without revalidating what points at it.
         """
-        for provider_type in (LLMProviderTypeChoices.OPENAI_COMPATIBLE, LLMProviderTypeChoices.OLLAMA):
+        for provider_type in (AIProviderTypeChoices.OPENAI_COMPATIBLE, AIProviderTypeChoices.OLLAMA):
             with self.subTest(provider_type=provider_type):
                 integration = fixtures.create_external_integration(name=f"Blank {provider_type}", remote_url="")
                 provider = fixtures.create_llmprovider(
@@ -247,7 +249,7 @@ class TestCredentials(TestCase):
         should fail with the provider's own message on the record - not with a placeholder this app
         invented, which would read as a rejected credential rather than as a missing one.
         """
-        provider = fixtures.create_llmprovider(name="First Party", provider_type=LLMProviderTypeChoices.ANTHROPIC)
+        provider = fixtures.create_llmprovider(name="First Party", provider_type=AIProviderTypeChoices.ANTHROPIC)
         model = fixtures.create_llmmodel(provider=provider)
 
         client = FakeLLMClient()
@@ -377,7 +379,7 @@ class TestCredentials(TestCase):
         integration = fixtures.create_external_integration(name="Anthropic Endpoint", remote_url="")
         provider = fixtures.create_llmprovider(
             name="Anthropic Test",
-            provider_type=LLMProviderTypeChoices.ANTHROPIC,
+            provider_type=AIProviderTypeChoices.ANTHROPIC,
             external_integration=integration,
         )
         model = fixtures.create_llmmodel(name="claude-test", provider=provider)
@@ -408,7 +410,7 @@ class TestCallParameters(TestCase):
 
     def test_max_tokens_falls_back_to_the_models_cap(self):
         """The registry's cap applies when the caller sets none, and the caller's wins when set."""
-        model = fixtures.create_llmmodel(name="capped-model", max_output_tokens=128)
+        model = fixtures.create_llmmodel(name="capped-model", num_predict=128)
         client = FakeLLMClient()
         call(model, client)
         self.assertEqual(client.calls[0]["max_tokens"], 128)
@@ -451,7 +453,7 @@ class TestCallParameters(TestCase):
         whatever address the row named.
         """
         model = fixtures.create_llmmodel(name="smuggled-model")
-        LLMModel.objects.filter(pk=model.pk).update(
+        AIModel.objects.filter(pk=model.pk).update(
             default_parameters={"base_url": "https://somewhere.example/v1", "temperature": 0.2}
         )
         model.refresh_from_db()
@@ -466,7 +468,7 @@ class TestCallParameters(TestCase):
     def test_a_dropped_parameter_is_logged(self):
         """Silently dropping it is how an operator's parameter stops applying with no signal."""
         model = fixtures.create_llmmodel(name="noisy-model")
-        LLMModel.objects.filter(pk=model.pk).update(default_parameters={"base_url": "https://elsewhere.example"})
+        AIModel.objects.filter(pk=model.pk).update(default_parameters={"base_url": "https://elsewhere.example"})
         model.refresh_from_db()
 
         with self.assertLogs("nautobot_event_tracker.services.llm", level="WARNING") as logged:
@@ -502,7 +504,7 @@ class TestCallParameters(TestCase):
         Written with `update()`, the way `clean()`'s new positive-number check cannot be reached.
         """
         model = fixtures.create_llmmodel(name="null-timeout-model")
-        LLMModel.objects.filter(pk=model.pk).update(default_parameters={"timeout": None})
+        AIModel.objects.filter(pk=model.pk).update(default_parameters={"timeout": None})
         model.refresh_from_db()
 
         client = FakeLLMClient()

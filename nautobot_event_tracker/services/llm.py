@@ -17,8 +17,15 @@ Rules implemented here, referenced by number from the Phase 3 spec:
 * **L6** - every call passes a timeout to litellm.
 * **L7** - usage records older than the retention window are pruned by the service itself, at
   most once per process per day.
-* **L8** - a disabled provider or model is refused before any network traffic, with no usage
-  record: rule L1 covers calls, and a refused call never left the process.
+* **L8** - a disabled provider or model, or one registered for the other job, is refused before
+  any network traffic, with no usage record: rule L1 covers calls, and a refused call never left
+  the process.
+
+The registry this reads - providers and models - belongs to the AI Models app (ADR 0010). Every
+field this module reads off it is one that app records: the provider's type and whether it is
+enabled, the model's kind, its costs, its generation parameters and its completion cap. Nothing
+about the registry is carried in settings here, which is the whole point of ADR 0006 and the
+reason the floor is 1.1 rather than 1.0.
 """
 
 import json
@@ -34,15 +41,16 @@ from django.utils import timezone
 from nautobot.apps.choices import SecretsGroupSecretTypeChoices
 from nautobot.apps.constants import CHARFIELD_MAX_LENGTH
 from nautobot.apps.utils import deepmerge
+from nautobot_ai_models.choices import AIModelKindChoices, AIProviderTypeChoices
+from nautobot_ai_models.constants import ALLOWED_MODEL_PARAMETERS
+from nautobot_ai_models.models import AIModel
 
 from nautobot_event_tracker.choices import (
     LITELLM_PROVIDER_PREFIXES,
     PROVIDER_TYPES_REQUIRING_A_URL,
-    LLMModelKindChoices,
-    LLMProviderTypeChoices,
     LLMPurposeChoices,
 )
-from nautobot_event_tracker.models import LLMModel, LLMUsageRecord
+from nautobot_event_tracker.models import LLMUsageRecord
 from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
 
@@ -178,20 +186,28 @@ def get_settings():
         raise ImproperlyConfigured(
             f"nautobot_event_tracker: llm 'usage_retention_days' must be a positive integer, got {retention_days!r}"
         )
+
     return settings
 
 
-def get_model(provider_name, model_name, *, kind=LLMModelKindChoices.CHAT):
-    """Resolve an enabled model of this kind on an enabled provider, or say what is wrong (L8).
+def get_model(provider_name, model_name, *, kind=AIModelKindChoices.CHAT):
+    """Resolve an enabled model of this kind on a registered provider, or say what is wrong (L8).
 
     `kind` defaults to chat, so every caller written before Phase 5A means what it always meant.
+
+    The row is an `AIModel` from the AI Models app (ADR 0010). What is resolved here has not
+    changed - a model, its provider, that provider's integration and its secrets group in one
+    query - only which app the table belongs to.
     """
     try:
-        model = LLMModel.objects.select_related("provider__external_integration__secrets_group").get(
+        model = AIModel.objects.select_related("provider__external_integration__secrets_group").get(
             provider__name=provider_name, name=model_name
         )
     except ObjectDoesNotExist as error:
-        raise LLMConfigurationError(f"No LLM model '{model_name}' exists on a provider '{provider_name}'.") from error
+        raise LLMConfigurationError(
+            f"No AI model '{model_name}' exists on a provider '{provider_name}'. Register it in "
+            "the AI Models app, or run its 'Discover AI Models' Job against that provider."
+        ) from error
     _check_enabled(model)
     _check_kind(model, kind)
     return model
@@ -230,35 +246,19 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     not a failed call, and not on the record (section 5.2 of the spec).
 
     `tools` is a list of OpenAI-shaped tool definitions, which litellm translates per provider.
-    The app builds them from `MCPTool.input_schema` and never from anything a model said (Phase 4B
-    section 8). A call that asked for tools and one that did not are priced identically: L1 through
-    L8 are untouched by this argument.
+    The app builds them from the registry's `MCPTool.input_schema` and never from anything a model
+    said (Phase 4B section 8). A call that asked for tools and one that did not are priced
+    identically: L1 through L8 are untouched by this argument.
 
     Returns an `LLMResponse`. Raises `LLMConfigurationError` before any network traffic,
     `LLMCallError` when the call fails, and `LLMResponseError` when what came back is unusable -
     the latter two carrying the usage record already written for the attempt (L4).
     """
     _check_enabled(model)
-    _check_kind(model, LLMModelKindChoices.CHAT)
+    _check_kind(model, AIModelKindChoices.CHAT)
     call = client if client is not None else _litellm_completion()
 
-    # Filtered, not trusted. `LLMModel.clean()` already refuses everything outside the allowlist,
-    # but a fixture, a migration or a direct ORM write never runs it, and one wrong key here sends
-    # the call - and the credential with it - to an address the registry chose. The same tuple
-    # backs both layers, so the two cannot drift apart.
-    registry_parameters = model.default_parameters or {}
-    call_kwargs = {key: value for key, value in registry_parameters.items() if key in LLMModel.ALLOWED_PARAMETERS}
-    dropped = sorted(set(registry_parameters) - set(call_kwargs))
-    if dropped:
-        # `clean()` refuses these at save time, so a row carrying one arrived by fixture, migration
-        # or direct ORM write. Dropping it silently is how an operator's parameter stops applying
-        # with nothing to read; this is that missing line.
-        logger.warning(
-            "LLM model %s carries %s in default_parameters, which this app does not pass. Allowed: %s.",
-            model,
-            ", ".join(dropped),
-            ", ".join(LLMModel.ALLOWED_PARAMETERS),
-        )
+    call_kwargs = _registry_call_kwargs(model)
 
     # L6 - a call always has a timeout, and it comes from the most specific place that named one:
     # this call, then the registry entry, then the integration, then the constant. `or` rather
@@ -267,7 +267,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     call_kwargs["timeout"] = (
         timeout or call_kwargs.get("timeout") or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS
     )
-    effective_max_tokens = max_tokens if max_tokens is not None else model.max_output_tokens
+
+    registry_cap = _registry_completion_cap(model)
+    effective_max_tokens = max_tokens if max_tokens is not None else registry_cap
     if effective_max_tokens is not None:
         call_kwargs["max_tokens"] = effective_max_tokens
     if response_format is not None:
@@ -342,15 +344,14 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     litellm-shaped embedding response. No test reaches a provider.
 
     Returns an `LLMEmbedding`. The vector is a list of floats, and its length is whatever the model
-    produces - the caller records it rather than assuming (rule R2's other half).
+    produces - the caller records it rather than assuming (rule R2's other half). An embedding call reads no
+    generation parameter of the registry.
     """
     _check_enabled(model)
-    _check_kind(model, LLMModelKindChoices.EMBEDDING)
+    _check_kind(model, AIModelKindChoices.EMBEDDING)
     call = client if client is not None else _litellm_embedding()
 
     call_kwargs = {
-        # An embedding model takes none of the generation parameters, so `default_parameters` is
-        # deliberately not read here - it is `ALLOWED_PARAMETERS`, which is a chat vocabulary.
         "timeout": timeout or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
     }
     model_string = _model_string(model)
@@ -436,9 +437,9 @@ def link_usage_records(record_ids, ticket):
 def _check_enabled(model):
     """L8 - the operator's off switch works everywhere at once, before any network traffic."""
     if not model.provider.enabled:
-        raise LLMConfigurationError(f"LLM provider '{model.provider}' is disabled.")
+        raise LLMConfigurationError(f"AI provider '{model.provider}' is disabled.")
     if not model.enabled:
-        raise LLMConfigurationError(f"LLM model '{model}' is disabled.")
+        raise LLMConfigurationError(f"AI model '{model}' is disabled.")
 
 
 def _check_kind(model, expected):
@@ -448,11 +449,17 @@ def _check_kind(model, expected):
     it is an operator configuring triage with an embedding model, or the indexer with a chat one,
     and then reading a provider's error about token limits at three in the morning. The registry
     knows which is which because a person said so; this is that answer being used.
+
+    Worth knowing where that answer comes from: the AI Models app's discovery Job reads
+    `GET /v1/models`, which returns both kinds mixed together and says which is which about
+    neither, so a discovered row arrives as whatever that app defaults to until somebody corrects
+    it. This refusal is the thing that makes an uncorrected row visible.
     """
     if model.kind != expected:
         raise LLMConfigurationError(
-            f"LLM model '{model}' is registered for '{model.kind}' and cannot serve a '{expected}' "
-            "call. Point this setting at a model of the right kind, or correct the model's Kind."
+            f"AI model '{model}' is registered for '{model.kind}' and cannot serve a '{expected}' "
+            "call. Point this setting at a model of the right kind, or correct the model's Kind "
+            "in the AI Models app."
         )
 
 
@@ -492,7 +499,7 @@ def _connection_kwargs(provider):
     behind an authenticating proxy.
 
     `extra_config` is deliberately not passed. It is untyped operator JSON, and splatting it into
-    the call would reopen, one door along, exactly the hole `ALLOWED_PARAMETERS` closed. If a
+    the call would reopen, one door along, exactly the hole `ALLOWED_MODEL_PARAMETERS` closed. If a
     provider ever needs something from it, it gets a named field here rather than a free splat.
     """
     integration = provider.external_integration
@@ -508,7 +515,7 @@ def _connection_kwargs(provider):
         # prefix would send this deployment's key and its event payload to api.openai.com, and its
         # `ollama/` prefix would quietly try a loopback address that means nothing in a container.
         raise LLMConfigurationError(
-            f"LLM provider '{provider}' is '{provider.get_provider_type_display()}' but its "
+            f"AI provider '{provider}' is '{provider.get_provider_type_display()}' but its "
             "external integration has no remote URL."
         )
 
@@ -530,7 +537,7 @@ def _connection_kwargs(provider):
                 provider,
                 integration.secrets_group,
             )
-        if provider.provider_type == LLMProviderTypeChoices.OPENAI_COMPATIBLE:
+        if provider.provider_type == AIProviderTypeChoices.OPENAI_COMPATIBLE:
             # ADR 0006 makes an unauthenticated on-premises endpoint a first-class case, and this
             # is what it takes to actually be one: litellm builds an OpenAI client for the
             # `openai/` prefix, and that client raises "Missing credentials" locally, before any
@@ -594,6 +601,36 @@ def _warn_about_unappliable_tls(provider, integration):
     )
 
 
+def _registry_call_kwargs(model):
+    """Return the registry parameters that this app passes to litellm.
+
+    Drop and log each key outside `ALLOWED_MODEL_PARAMETERS`, because a direct write can skip the check of the AI
+    Models app. Use the temperature of the model or the provider when the parameters give none, as a float.
+    """
+    registry_parameters = model.default_parameters or {}
+    call_kwargs = {key: value for key, value in registry_parameters.items() if key in ALLOWED_MODEL_PARAMETERS}
+    dropped = sorted(set(registry_parameters) - set(call_kwargs))
+    if dropped:
+        logger.warning(
+            "AI model %s carries %s in default_parameters, which this app does not pass. Allowed: %s.",
+            model,
+            ", ".join(dropped),
+            ", ".join(ALLOWED_MODEL_PARAMETERS),
+        )
+
+    if "temperature" not in call_kwargs and model.resolved_temperature is not None:
+        call_kwargs["temperature"] = float(model.resolved_temperature)
+    return call_kwargs
+
+
+def _registry_completion_cap(model):
+    """Return the completion cap of the registry, or None. A value below 1 or no value means no cap."""
+    registry_cap = model.resolved_num_predict
+    if registry_cap is not None and registry_cap < 1:
+        registry_cap = None
+    return registry_cap
+
+
 def _integration_timeout(provider):
     """The integration's Timeout, in seconds, or None when it has nothing useful to say.
 
@@ -646,10 +683,16 @@ def _token_usage(raw):
 
 
 def _cost(model, prompt_tokens, completion_tokens):
-    """L5 - price the call from the registry's numbers, not litellm's price tables."""
-    return (
-        prompt_tokens * model.input_cost_per_million + completion_tokens * model.output_cost_per_million
-    ) / TOKENS_PER_MILLION
+    """L5 - price the call from the registry's numbers, not litellm's price tables.
+
+    An unpriced side counts as zero. `AIModel` makes both prices nullable and its own help text is
+    careful to say that empty means nobody recorded a price, which is not the same as free - so a
+    zero here is "not priced" rather than a claim. The recorded cost is still written, because a
+    row of zeros beside a real token count is legible as unpriced, and a missing row is not.
+    """
+    input_price = model.input_cost_per_million or 0
+    output_price = model.output_cost_per_million or 0
+    return (prompt_tokens * input_price + completion_tokens * output_price) / TOKENS_PER_MILLION
 
 
 def _response_text(raw):

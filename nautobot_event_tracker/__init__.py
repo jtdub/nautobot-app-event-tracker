@@ -9,7 +9,11 @@ __version__ = metadata.version(__name__)
 
 
 class EventTrackerConfig(NautobotAppConfig):
-    """App configuration for the nautobot_event_tracker app."""
+    """App configuration for the nautobot_event_tracker app.
+
+    `services.llm` applies the defaults of the `llm` block; providers, models and credentials are registry objects
+    of the AI Models app (ADR 0006, ADR 0010; Phase 3 spec, section 3).
+    """
 
     name = "nautobot_event_tracker"
     verbose_name = "Event Tracker"
@@ -43,10 +47,6 @@ class EventTrackerConfig(NautobotAppConfig):
         # for the keys inside this one are applied by `ingestion.config`, not here. See the Phase 2
         # spec, section 3.
         "ingestion": {},
-        # LLM service settings. Defaults for the keys inside this one are applied by
-        # `services.llm`, not here, for the same merge reason as `ingestion`. Providers, models,
-        # and credentials are registry objects, never settings (ADR 0006). See the Phase 3 spec,
-        # section 3.
         "llm": {},
         # The agent (Phase 4B, spec section 3). Empty for the same merge reason as the two above:
         # the defaults for the keys inside it are applied by `services.agent`. Agents are off until

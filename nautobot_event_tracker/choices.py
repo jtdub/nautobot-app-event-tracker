@@ -1,6 +1,7 @@
 """Choice sets and the ticket status workflow graph for nautobot_event_tracker."""
 
 from nautobot.apps.choices import ChoiceSet
+from nautobot_ai_models.choices import AIProviderTypeChoices
 
 
 class TicketStatusChoices(ChoiceSet):
@@ -94,74 +95,23 @@ class UpdateTypeChoices(ChoiceSet):
     )
 
 
-class LLMProviderTypeChoices(ChoiceSet):
-    """The kind of API an LLMProvider speaks.
-
-    This selects how the service layer builds the litellm model string and which credentials it
-    expects, nothing more. An on-premises endpoint speaking the OpenAI protocol is a first-class
-    citizen here (ADR 0006): many network operators cannot send configuration to a third party.
-
-    Ollama has a type of its own rather than being one more OpenAI-compatible endpoint, and it is
-    worth saying why, because "it speaks the OpenAI protocol" is true and not sufficient. Ollama's
-    OpenAI-compatibility layer does not return tool calls in the `tool_calls` field: a model asked
-    for a tool answers with the JSON call written into the message content, where nothing may act
-    on it. Its native API does return them, and litellm reaches that through the `ollama/` prefix.
-    So on the OpenAI-compatible path an Ollama-backed agent cannot call a tool at all - which is
-    most of Phase 4B - and on this one it can. Measured against Ollama 0.x with qwen2.5-coder and
-    llama3.2; if the compatibility layer ever grows the field, this type still costs nothing.
-    """
-
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    OPENAI_COMPATIBLE = "openai_compatible"
-    OLLAMA = "ollama"
-
-    CHOICES = (
-        (OPENAI, "OpenAI"),
-        (ANTHROPIC, "Anthropic"),
-        (OPENAI_COMPATIBLE, "OpenAI-compatible"),
-        (OLLAMA, "Ollama"),
-    )
-
-
-#: The litellm routing prefix for each provider type, kept beside the ChoiceSet the same way
-#: SEVERITY_WEIGHTS sits beside SeverityChoices: a new provider type is one edit in one file, not
-#: a choices entry that compiles everywhere and KeyErrors at call time. An OpenAI-compatible
-#: endpoint uses the `openai` prefix with its own `api_base`.
 LITELLM_PROVIDER_PREFIXES = {
-    LLMProviderTypeChoices.OPENAI: "openai",
-    LLMProviderTypeChoices.ANTHROPIC: "anthropic",
-    LLMProviderTypeChoices.OPENAI_COMPATIBLE: "openai",
-    # `ollama`, not `ollama_chat`. litellm offers both and the second is the one usually
-    # recommended; it was the first that returned native tool calls when this was measured, and
-    # the second that did not.
-    LLMProviderTypeChoices.OLLAMA: "ollama",
+    AIProviderTypeChoices.OPENAI: "openai",
+    AIProviderTypeChoices.ANTHROPIC: "anthropic",
+    AIProviderTypeChoices.OPENAI_COMPATIBLE: "openai",
+    AIProviderTypeChoices.OLLAMA: "ollama",
 }
+"""The litellm routing prefix for each provider type of the AI Models app (ADR 0010).
 
-#: Provider types that are an address rather than a service: litellm would otherwise fall back to a
-#: default endpoint, which for `openai` is somebody else's API and for `ollama` is a loopback
-#: address that means nothing inside a container. Both are refused without a URL, at save time and
-#: again at call time.
-PROVIDER_TYPES_REQUIRING_A_URL = frozenset({LLMProviderTypeChoices.OPENAI_COMPATIBLE, LLMProviderTypeChoices.OLLAMA})
+An OpenAI-compatible endpoint uses the `openai` prefix with its own `api_base`. Ollama uses `ollama`, not
+`ollama_chat` and not the OpenAI-compatible path, because only `ollama` returned native tool calls when measured.
+"""
 
+PROVIDER_TYPES_REQUIRING_A_URL = frozenset({AIProviderTypeChoices.OPENAI_COMPATIBLE, AIProviderTypeChoices.OLLAMA})
+"""Provider types that litellm cannot call without a URL.
 
-class LLMModelKindChoices(ChoiceSet):
-    """What a registered model is for.
-
-    An embedding model and a chat model are not interchangeable, and the mistake is not usually
-    calling the wrong endpoint - it is *configuring* triage with an embedding model and getting a
-    baffling error at three in the morning. The kind is the operator saying which it is, and
-    `services.llm` refuses a mismatch in both directions before any network traffic (rule L8's
-    posture, on a new axis).
-    """
-
-    CHAT = "chat"
-    EMBEDDING = "embedding"
-
-    CHOICES = (
-        (CHAT, "Chat"),
-        (EMBEDDING, "Embedding"),
-    )
+This app refuses them at call time. The AI Models app refuses them at save time.
+"""
 
 
 class LLMPurposeChoices(ChoiceSet):

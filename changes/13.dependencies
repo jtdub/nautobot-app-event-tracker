@@ -1,0 +1,1 @@
+Added `nautobot-ai-models` (>=1.1.0,<2.0.0) with its `discovery` extra as a required dependency.

@@ -825,7 +825,7 @@ class ToolTrailTest(TestCase):
         self.user = fixtures.create_user()
         self.ticket = fixtures.create_ticket(user=self.user)
         self.run = fixtures.create_agentrun(ticket=self.ticket)
-        self.tool = fixtures.create_mcptool(name="push_config", mutating=True)
+        self.tool = fixtures.create_mcptool(name="push_config", writable=True)
         self.call = fixtures.create_agenttoolcall(
             run=self.run, tool=self.tool, arguments={"device": "leaf-01", "config": "shutdown"}
         )
@@ -836,7 +836,7 @@ class ToolTrailTest(TestCase):
 
         self.assertEqual(update.update_type, UpdateTypeChoices.TOOL_PROPOSED)
         self.assertIn("push_config", update.message)
-        self.assertIn(self.tool.server.name, update.message)
+        self.assertIn(self.tool.mcp_server.name, update.message)
         self.assertIn("leaf-01", update.message)
         self.assertIn("shutdown", update.message)
 

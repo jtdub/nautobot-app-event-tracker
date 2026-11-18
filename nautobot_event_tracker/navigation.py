@@ -1,8 +1,24 @@
-"""Menu items."""
+"""Menu items.
+
+Two tabs rather than one. Tickets, event types, ingestion statistics and the analytics dashboard
+are what this app is for, and they stay under **Apps** where they have always been. The records of
+what the AI layer did - usage, agent runs, tool calls, embeddings - go under **AI Tools**, beside
+the registry they read (ADR 0010), because that is where an operator who is looking at a provider
+or a tool is already standing.
+
+The AI Tools tab is shared, and Nautobot merges two `NavMenuTab` declarations only when the name,
+weight and icon all match exactly - one character of difference makes a second tab. So the three
+values are imported from the app that publishes them rather than copied, which is what its
+`docs/dev/extending.md` asks a sibling app that already depends on it to do. Group weight 300:
+that app claims 100 and 200 for its own two groups.
+"""
 
 from nautobot.apps.ui import NavMenuAddButton, NavMenuGroup, NavMenuItem, NavMenuTab
+from nautobot_ai_models.constants import AI_TOOLS_TAB_ICON, AI_TOOLS_TAB_NAME, AI_TOOLS_TAB_WEIGHT
 
 from nautobot_event_tracker.services import analytics as analytics_service
+
+AI_TOOLS_GROUP_WEIGHT = 300
 
 #: The dashboard's menu item, present only when the dashboard is. Turning the block off removes
 #: the route as well, so a menu item left behind would reverse a name that no longer exists.
@@ -52,48 +68,13 @@ items = DASHBOARD_ITEMS + (
             ),
         ),
     ),
-    NavMenuItem(
-        link="plugins:nautobot_event_tracker:llmprovider_list",
-        name="LLM Providers",
-        permissions=["nautobot_event_tracker.view_llmprovider"],
-        buttons=(
-            NavMenuAddButton(
-                link="plugins:nautobot_event_tracker:llmprovider_add",
-                permissions=["nautobot_event_tracker.add_llmprovider"],
-            ),
-        ),
-    ),
-    NavMenuItem(
-        link="plugins:nautobot_event_tracker:llmmodel_list",
-        name="LLM Models",
-        permissions=["nautobot_event_tracker.view_llmmodel"],
-        buttons=(
-            NavMenuAddButton(
-                link="plugins:nautobot_event_tracker:llmmodel_add",
-                permissions=["nautobot_event_tracker.add_llmmodel"],
-            ),
-        ),
-    ),
+)
+
+ai_items = (
     NavMenuItem(
         link="plugins:nautobot_event_tracker:llmusagerecord_list",
         name="LLM Usage",
         permissions=["nautobot_event_tracker.view_llmusagerecord"],
-    ),
-    NavMenuItem(
-        link="plugins:nautobot_event_tracker:mcpserver_list",
-        name="MCP Servers",
-        permissions=["nautobot_event_tracker.view_mcpserver"],
-        buttons=(
-            NavMenuAddButton(
-                link="plugins:nautobot_event_tracker:mcpserver_add",
-                permissions=["nautobot_event_tracker.add_mcpserver"],
-            ),
-        ),
-    ),
-    NavMenuItem(
-        link="plugins:nautobot_event_tracker:mcptool_list",
-        name="MCP Tools",
-        permissions=["nautobot_event_tracker.view_mcptool"],
     ),
     NavMenuItem(
         link="plugins:nautobot_event_tracker:agentrun_list",
@@ -111,10 +92,23 @@ items = DASHBOARD_ITEMS + (
         permissions=["nautobot_event_tracker.view_ticketembedding"],
     ),
 )
+"""Records that the services write. No item has an add button."""
 
 menu_items = (
     NavMenuTab(
         name="Apps",
         groups=(NavMenuGroup(name="Event Tracker", items=items),),
+    ),
+    NavMenuTab(
+        name=AI_TOOLS_TAB_NAME,
+        weight=AI_TOOLS_TAB_WEIGHT,
+        icon=AI_TOOLS_TAB_ICON,
+        groups=(
+            NavMenuGroup(
+                name="Event Tracker AI",
+                weight=AI_TOOLS_GROUP_WEIGHT,
+                items=ai_items,
+            ),
+        ),
     ),
 )

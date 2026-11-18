@@ -6,6 +6,8 @@ Here you will find detailed instructions on how to **install** and **configure**
 
 - The app is compatible with Nautobot 3.2.0 and higher.
 - **Databases supported: PostgreSQL only.**
+- It requires the [AI Models app](https://pypi.org/project/nautobot-ai-models/), version 1.1 or
+  higher, which `pip` installs with it.
 
 !!! warning "PostgreSQL is required"
     Unlike most Nautobot apps, Event Tracker does not support MySQL. Later phases index closed
@@ -17,13 +19,24 @@ Here you will find detailed instructions on how to **install** and **configure**
     `pgvector` itself is **not** required by this release and is not checked for. It becomes a
     requirement when retrieval features land.
 
+!!! warning "The AI Models app is a hard dependency"
+    `nautobot-ai-models` owns the AI provider, AI model, MCP server and MCP tool registries this
+    app reads, and this app declares foreign keys into them
+    ([ADR 0010](../decisions/0010-ai-registry-lives-in-nautobot-ai-models.md)). It is not optional
+    and is not behind an extra: a Nautobot that enables this app without also enabling
+    `nautobot_ai_models` will not start.
+
+    `pip` installs it automatically. Enabling it in `PLUGINS` is a manual step, shown below.
+
 !!! note
     Please check the [dedicated page](compatibility_matrix.md) for a full compatibility matrix and the deprecation policy.
 
 ### Access Requirements
 
-This release needs no access to anything outside Nautobot. It makes no outbound network calls,
-requires no API credentials, and has no external service dependencies.
+Nothing in this app reaches outside Nautobot until you configure it to. When you do, every
+endpoint and every credential comes from a Nautobot **External Integration** and its secrets group,
+named by a registry object in the AI Models app — never from `PLUGINS_CONFIG`. See
+[Configuring LLM Providers](llm.md) and [Registering MCP Servers](mcp.md).
 
 ## Install Guide
 
@@ -44,14 +57,21 @@ echo nautobot-event-tracker >> local_requirements.txt
 
 Once installed, the app needs to be enabled in your Nautobot configuration. The following block of code below shows the additional configuration required to be added to your `nautobot_config.py` file:
 
-- Append `"nautobot_event_tracker"` to the `PLUGINS` list.
+- Append both `"nautobot_ai_models"` and `"nautobot_event_tracker"` to the `PLUGINS` list.
 - Append the `"nautobot_event_tracker"` dictionary to the `PLUGINS_CONFIG` dictionary and override any defaults.
 
 ```python
 # In your nautobot_config.py
-PLUGINS = ["nautobot_event_tracker"]
+PLUGINS = ["nautobot_ai_models", "nautobot_event_tracker"]
 
 PLUGINS_CONFIG = {
+    # The registry app needs no settings for the LLM half. These two are its MCP policy, and
+    # they matter: without them a newly discovered tool is offered to an agent before anyone has
+    # reviewed it. See "Registering MCP Servers and Tools".
+    "nautobot_ai_models": {
+        "new_tools_enabled": False,
+        "disable_on_definition_change": True,
+    },
     "nautobot_event_tracker": {
         # Object types that may be attached to a ticket. Anything not listed here is rejected.
         # Defaults to the list below; override it to widen or narrow what operators can attach.
@@ -73,7 +93,7 @@ PLUGINS_CONFIG = {
 | Setting | Default | Description |
 | --- | --- | --- |
 | `attachable_object_types` | The seven DCIM/IPAM/Circuits models above | `app_label.model` strings naming the object types that may be attached to a ticket. Attaching anything else is refused, and the object picker only offers types on this list. |
-| `llm` | `{}` | Settings for the LLM service layer — currently only `usage_retention_days`. Providers, models and credentials are registry objects, not settings; see [Configuring LLM Providers](llm.md). |
+| `llm` | `{}` | Settings for the LLM service layer — currently only `usage_retention_days`. Providers, models and credentials are registry objects in the AI Models app, not settings; see [Configuring LLM Providers](llm.md). |
 
 Widening the list is a deliberate act: it decides what a ticket — and, in later phases, an AI
 triage step — is allowed to point at. Adding `extras.secret` would be a poor idea.

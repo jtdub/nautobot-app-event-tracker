@@ -517,7 +517,7 @@ def record_tool_proposal(*, ticket, tool_call):
             source=TicketSourceChoices.AI,
             message=(
                 f"Agent proposes calling '{tool_call.tool.name}' on MCP server "
-                f"'{tool_call.tool.server.name}' with arguments {_rendered_arguments(tool_call)}. "
+                f"'{tool_call.tool.mcp_server.name}' with arguments {_rendered_arguments(tool_call)}. "
                 "Nothing has been called; this needs a human decision."
             ),
         )
@@ -541,7 +541,7 @@ def record_tool_decision(*, ticket, tool_call, approved, user):
             user=user,
             message=(
                 f"{user} {verb} calling '{tool_call.tool.name}' on MCP server "
-                f"'{tool_call.tool.server.name}' with arguments {_rendered_arguments(tool_call)}."
+                f"'{tool_call.tool.mcp_server.name}' with arguments {_rendered_arguments(tool_call)}."
             ),
         )
 
@@ -566,7 +566,7 @@ def record_tool_result(*, ticket, tool_call):
             update_type=UpdateTypeChoices.TOOL_EXECUTED,
             source=TicketSourceChoices.AI,
             message=(
-                f"Called '{tool_call.tool.name}' on MCP server '{tool_call.tool.server.name}' "
+                f"Called '{tool_call.tool.name}' on MCP server '{tool_call.tool.mcp_server.name}' "
                 f"({tool_call.status}, {tool_call.latency_ms} ms): {outcome}"
             ),
         )

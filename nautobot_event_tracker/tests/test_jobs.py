@@ -86,7 +86,7 @@ class TestRunningTheJob(JobRunTestCase):
 
     def test_a_run_that_stopped_at_the_gate_is_a_successful_job(self):
         """It did what it was asked and ended; the thing waiting is a person, not the Job."""
-        fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
 
         job_result = self.run_job(
             complete=fixtures.FakeAgentComplete([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
@@ -98,7 +98,7 @@ class TestRunningTheJob(JobRunTestCase):
 
     def test_the_proposal_is_named_in_the_job_s_log(self):
         """A run that ends waiting is not a run that ended; the log has to say which it was."""
-        fixtures.create_mcptool(name="push_config", enabled=True, mutating=True)
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
 
         job_result = self.run_job(
             complete=fixtures.FakeAgentComplete([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])

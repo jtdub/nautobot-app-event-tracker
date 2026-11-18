@@ -1,0 +1,2 @@
+Removed the local AI providers, AI models, MCP servers and MCP tools. Register them again in the AI Models app.
+Removed the `discovermcptools` command and the Discover Tools button. Use the MCP Server Discovery Job of the AI Models app.

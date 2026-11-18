@@ -1,0 +1,2 @@
+Changed the default: a new MCP tool is now enabled. In `PLUGINS_CONFIG` for `nautobot_ai_models`, set `new_tools_enabled` to `False`. Also set `disable_on_definition_change` to `True`.
+Changed the registry permissions. Give each role that had a permission on a removed model the same permission in `nautobot_ai_models`.

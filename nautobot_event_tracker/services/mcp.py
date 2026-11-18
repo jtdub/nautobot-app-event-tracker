@@ -8,16 +8,22 @@ Rules implemented here, referenced by number from the Phase 4B spec:
 * **M1** - the MCP client library is imported only in this module, lazily, behind the optional
   `mcp` extra. A deployment without it gets a plain `ImproperlyConfigured` naming the extra.
 * **M2** - streamable HTTP and no other transport. There is no setting for this, because a setting
-  is how stdio comes back; nothing in this app imports `subprocess`, and a guard says so.
+  is how stdio comes back; nothing in this app imports `subprocess`, and a guard says so. The AI
+  Models app records `sse` and `stdio` as transports a server may be registered with; a call
+  against either is refused here rather than attempted.
 * **M3** - the endpoint, its headers, its TLS settings and its timeout come from the server's
   ExternalIntegration at call time, and the credential from that integration's secrets group.
   Nothing key-shaped lives in settings, on a model, or in a log line.
 * **M4** - a tool that is not enabled, on a server that is not enabled, is refused before any
   network I/O, whatever the prompt, the model or the caller said.
-* **M5** - discovery never grants. New tools arrive disabled and mutating, whatever the server
-  claims about them; anything the server advertises differently under an enabled tool disables it
-  and reports it.
-* **M6** - a mutating tool runs only from an approved `AgentToolCall`, only against the tool
+* **M5** - discovery never grants, and discovery is no longer this app's (ADR 0010). The rule now
+  has two halves in two places. The registry half is configuration on the AI Models app:
+  `new_tools_enabled: False` so a newly advertised tool arrives disabled, and
+  `disable_on_definition_change: True` so one whose definition moved is taken back out of service.
+  Both are documented in `docs/admin/mcp.md` and neither is this app's to enforce. The call half
+  is here and is unconditional: a tool whose definition, name or endpoint has moved since a call
+  was proposed against it is refused, whatever the registry currently says.
+* **M6** - a writable tool runs only from an approved `AgentToolCall`, only against the tool
   definition that call was approved against, and only once: the row is claimed atomically before
   the call, so two callers cannot both make it.
 * **M7** - every call is on the record - arguments, result, latency, error - before its caller
@@ -33,30 +39,32 @@ import logging
 import time
 from dataclasses import dataclass, field, replace
 
-from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.db import IntegrityError, transaction
+from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 from nautobot.apps.choices import SecretsGroupSecretTypeChoices
+from nautobot_ai_models.choices import MCPTransportChoices
+from nautobot_ai_models.models import MCPTool
 
 from nautobot_event_tracker.choices import AgentToolCallStatusChoices
-from nautobot_event_tracker.models import AgentToolCall, MCPTool
+from nautobot_event_tracker.models import AgentToolCall
 from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError, MCPError
 
 logger = logging.getLogger(__name__)
 
-#: Applied when the integration says nothing. Discovery and tool calls both want a bound; this is
-#: the one they get when nobody chose (M8).
 DEFAULT_TIMEOUT_SECONDS = 30
+"""The timeout of a call when the integration gives none (M8)."""
 
 #: How long the read side of a session may wait. The transport keeps a server-sent-event stream
 #: open, so the read deadline is not the request deadline and must not be set from it. Matches what
 #: the SDK's own HTTP client factory uses.
 SSE_READ_TIMEOUT_SECONDS = 300
 
-#: A ceiling on tool-list pages, so a server offering a cursor that never ends cannot hold a web
-#: request open forever. Far above any real tool list.
-MAX_TOOL_PAGES = 50
+CALLABLE_TRANSPORTS = (MCPTransportChoices.TYPE_STREAMABLE_HTTP,)
+"""The transports that this app calls (M2).
+
+The AI Models app also records `sse` and `stdio`; this app refuses a call to them.
+"""
 
 #: How the credential is presented when the integration's own headers do not present it. Bearer is
 #: what MCP servers over HTTP overwhelmingly expect; an operator who needs something else writes
@@ -96,42 +104,6 @@ class MCPConnection:
         """
         headers = ", ".join(sorted(self.headers))
         return f"MCPConnection(url={self.url!r}, headers=[{headers}], verify={self.verify!r}, timeout={self.timeout!r})"
-
-
-@dataclass(frozen=True)
-class ToolDefinition:
-    """One tool as a server advertised it, before this app has any opinion about it."""
-
-    name: str
-    description: str = ""
-    input_schema: dict = field(default_factory=dict)
-    #: The server's own claim that this tool only reads. Recorded and shown; never acted on.
-    #: The MCP specification says a client must not make tool-use decisions from annotations it
-    #: received from the very server they describe, and the approval gate is such a decision.
-    read_only_hint: bool = None
-
-
-@dataclass(frozen=True)
-class DiscoveryReport:
-    """What one discovery pass changed, in the terms an operator needs to act on."""
-
-    added: tuple = ()
-    updated: tuple = ()
-    definition_changed: tuple = ()
-    missing: tuple = ()
-
-    @property
-    def needs_attention(self):
-        """The tools somebody has to look at: newly offered, or changed under an approval."""
-        return tuple(self.added) + tuple(self.definition_changed)
-
-    def summary(self):
-        """One line for a log, a Job result or a UI message."""
-        return (
-            f"{len(self.added)} new, {len(self.updated)} updated, "
-            f"{len(self.definition_changed)} disabled by a changed definition, "
-            f"{len(self.missing)} no longer offered"
-        )
 
 
 def require_client():
@@ -184,38 +156,6 @@ def connection_for(server):
     return MCPConnection(url=url, headers=headers, verify=verify, timeout=timeout)
 
 
-def discover(server, *, client=None):
-    """Read a server's tool list and reconcile the registry with it, granting nothing (M5).
-
-    `client` is the test seam - an object with `list_tools(connection)` - and nothing outside a
-    test supplies one. No test opens a socket.
-
-    Returns a `DiscoveryReport`. Raises `MCPConfigurationError` when the server is disabled or
-    unreachable by configuration, and `MCPCallError` when the server was reached and would not
-    answer.
-    """
-    if not server.enabled:
-        # Reading a disabled server's tool list is harmless, and refusing it is still right: the
-        # only thing discovery does is write rows about tools nothing may call, and an operator
-        # who disabled a server should not find its registry quietly changing underneath them.
-        raise MCPConfigurationError(f"MCP server '{server}' is disabled.")
-
-    connection = connection_for(server)
-    caller = client if client is not None else _default_client()
-
-    try:
-        advertised = tuple(caller.list_tools(connection))
-    except Exception as error:  # pylint: disable=broad-except
-        # Whatever the client raised, the caller sees one family (the L4 rule, applied here).
-        raise MCPCallError(f"Could not list the tools on '{server}': {error}") from error
-
-    report = _reconcile(server, advertised)
-    server.last_discovered_at = timezone.now()
-    server.validated_save()
-    logger.info("Discovered tools on MCP server %s: %s", server, report.summary())
-    return report
-
-
 def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     """Call one tool for one `AgentToolCall`, refusing everything the allowlist and the gate refuse.
 
@@ -239,7 +179,7 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     # execution a person disables the tool, an operator switches the server off, or discovery
     # rewrites the definition - and those three are precisely the events the checks below exist to
     # notice. A cached row would notice none of them.
-    tool = MCPTool.objects.select_related("server__external_integration__secrets_group").get(pk=tool_call.tool_id)
+    tool = MCPTool.objects.select_related("mcp_server__external_integration__secrets_group").get(pk=tool_call.tool_id)
     _check_callable(tool_call, tool)
     _claim(tool_call, tool)
 
@@ -251,7 +191,7 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
         # returned to the caller with nothing written on the row: M7 broken, the row stranded in
         # whatever state the claim left it, and the agent told "the call returned nothing" when
         # the truth was "this server is misconfigured".
-        connection = connection_for(tool.server)
+        connection = connection_for(tool.mcp_server)
         if timeout:
             connection = replace(connection, timeout=float(timeout))
         caller = client if client is not None else _default_client()
@@ -282,7 +222,7 @@ def _claim(tool_call, tool):
 
     `_check_callable` reads; this writes, and the two have to be one step. Checking and then
     calling leaves a window in which two callers both pass the check and both reach the server -
-    and for a mutating tool that means a change a person approved once being applied twice, which
+    and for a writable tool that means a change a person approved once being applied twice, which
     is not the same thing as applying it once. `services/agent.py` serializes launches per ticket
     as well; this is the check in the layer that owns the rule, and it is the one that holds if
     anything ever calls `call_tool()` from somewhere else.
@@ -308,34 +248,35 @@ def _check_callable(tool_call, tool):
     """M4 and M6, in that order, before any network I/O and whatever anything else said.
 
     The order matters to the message an operator reads: a disabled tool is the answer even when
-    the call is also unapproved, because enabling it is what they have to do first.
+    the call is also unapproved, because enabling it is what they have to do first. A writable tool runs from an
+    approved call only, and a call that has a decision does not run again (13.4). The fingerprint check of M6 has no
+    condition, because the registry policy that disables a changed tool is an optional setting of another app.
     """
     if not tool.enabled:
         _refuse(tool_call, f"Tool '{tool}' is not enabled.")
-    if not tool.server.enabled:
-        _refuse(tool_call, f"MCP server '{tool.server}' is disabled.")
+    if not tool.mcp_server.enabled:
+        _refuse(tool_call, f"MCP server '{tool.mcp_server}' is disabled.")
 
-    # A mutating tool runs from an approved row and from nothing else. A read-only one runs from
-    # its own proposal - it needs no decision (13.4) - and neither runs twice: an executed, failed
-    # or denied row is a decision that has already happened, and re-running it would be a second
-    # call nobody asked for.
+    if tool.mcp_server.transport not in CALLABLE_TRANSPORTS:
+        _refuse(
+            tool_call,
+            f"MCP server '{tool.mcp_server}' uses the '{tool.mcp_server.transport}' transport. "
+            "This app calls over streamable HTTP only (ADR 0007).",
+        )
+
     allowed = (
         (AgentToolCallStatusChoices.APPROVED,)
-        if tool.mutating
+        if tool.writable
         else (AgentToolCallStatusChoices.PROPOSED, AgentToolCallStatusChoices.APPROVED)
     )
     if tool_call.status not in allowed:
         _refuse(
             tool_call,
-            f"Tool '{tool}' is mutating and this call is '{tool_call.status}', not approved."
-            if tool.mutating
+            f"Tool '{tool}' is writable and this call is '{tool_call.status}', not approved."
+            if tool.writable
             else f"This call is '{tool_call.status}' and has already been decided.",
         )
 
-    # M6's second half. M5 disables a tool whose definition changed, which covers most of this and
-    # not all of it: an operator may review the new definition and re-enable the tool while a
-    # proposal written against the old one is still waiting. What was approved was a call on the
-    # tool as it read then.
     # Compared unconditionally. Guarding on `tool_call.tool_fingerprint` being truthy skipped the
     # check entirely for a tool created by hand through the form or the API, which carries no
     # fingerprint - and kept skipping it after discovery later wrote a real one, which is exactly
@@ -408,102 +349,6 @@ def _elapsed_ms(started):
     return int((time.monotonic() - started) * 1000)
 
 
-def _reconcile(server, advertised):
-    """Write what was advertised onto the registry, and say what changed.
-
-    One transaction: a server that advertises the same tool twice, or a name longer than the
-    column, must not leave half a registry behind and half a discovery reported. Model validation
-    is what catches both, and it raises `ValidationError`, which is outside the family every caller
-    of this module handles - so it is translated here rather than escaping as a 500.
-    """
-    added, updated, definition_changed = [], [], []
-    now = timezone.now()
-
-    try:
-        with transaction.atomic():
-            existing = {tool.name: tool for tool in server.tools.all()}
-
-            for definition in advertised:
-                fingerprint = definition_fingerprint(definition)
-                tool = existing.get(definition.name)
-
-                if tool is None:
-                    tool = _create(server, definition, fingerprint, now)
-                    # Recorded immediately, so a server advertising one name twice updates its own
-                    # first row rather than colliding with it on the unique constraint.
-                    existing[tool.name] = tool
-                    added.append(tool)
-                    continue
-
-                withdrawn = _update(tool, definition, fingerprint, now)
-                (definition_changed if withdrawn else updated).append(tool)
-    except (ValidationError, IntegrityError) as error:
-        raise MCPCallError(f"'{server}' advertised a tool this registry cannot hold: {error}") from error
-
-    advertised_names = {definition.name for definition in advertised}
-    missing = tuple(tool for name, tool in sorted(existing.items()) if name not in advertised_names)
-
-    return DiscoveryReport(
-        added=tuple(added),
-        updated=tuple(updated),
-        definition_changed=tuple(definition_changed),
-        # Reported, never disabled: a server having a bad minute must not silently undo an
-        # operator's decisions, and a tool that is really gone fails its next call anyway.
-        missing=missing,
-    )
-
-
-def _create(server, definition, fingerprint, now):
-    """Write a newly advertised tool: disabled, mutating, and believed about nothing else.
-
-    `mutating=True` unconditionally. The server's `readOnlyHint` is recorded beside it and decides
-    nothing: it is written by the party the gate exists to constrain, and a client that let it
-    through would let a hostile server file `push_config` under "safe to enable in bulk". The MCP
-    specification states this directly, and rule M5 says the same thing in this app's own words.
-    """
-    tool = MCPTool(
-        server=server,
-        name=definition.name,
-        description=definition.description or "",
-        input_schema=definition.input_schema or {},
-        mutating=True,
-        advertised_read_only=definition.read_only_hint,
-        enabled=False,
-        definition_fingerprint=fingerprint,
-        last_seen_at=now,
-    )
-    tool.validated_save()
-    return tool
-
-
-def _update(tool, definition, fingerprint, now):
-    """Refresh what the server says about an existing tool. True when an approval was withdrawn.
-
-    `mutating` and `enabled` are the operator's two columns and are never written from a server's
-    answer - except to take `enabled` away, which is M5's whole point: what was allowed is not
-    what is now being offered.
-    """
-    changed = tool.definition_fingerprint != fingerprint
-    withdraw = changed and tool.enabled
-
-    if not changed and tool.last_seen_at is not None:
-        # Nothing to write but the timestamp, and this is a change-logged model: a nightly run
-        # against a forty-tool server would otherwise file forty ObjectChange rows a night
-        # recording that nothing happened. The stamp is worth less than the change log is.
-        return False
-
-    if withdraw:
-        tool.enabled = False
-
-    tool.description = definition.description or ""
-    tool.input_schema = definition.input_schema or {}
-    tool.advertised_read_only = definition.read_only_hint
-    tool.definition_fingerprint = fingerprint
-    tool.last_seen_at = now
-    tool.validated_save()
-    return withdraw
-
-
 def call_binding(tool):
     """What an approval is bound to: the definition, the name, and the endpoint.
 
@@ -511,11 +356,12 @@ def call_binding(tool):
     question. This answers the approver's: "will the call I approved go where I thought it would".
     Three things decide that, and the digest alone covers one.
 
-    The name is the string put on the wire, and `MCPToolForm` lets anyone with `change_mcptool`
-    edit it - a lower bar than `approve_agenttoolcall`. Rename the row between approval and
-    execution and the approved arguments go to a different command with the digest untouched,
-    because a rename does not re-run discovery. The server's integration decides which host is
-    dialled, and repointing it sends an approved call somewhere else entirely.
+    The name is the string put on the wire, and the AI Models app's own form lets anyone with
+    `nautobot_ai_models.change_mcptool` edit it - a lower bar than `approve_agenttoolcall`, and now
+    in a different app's permission set. Rename the row between approval and execution and the
+    approved arguments go to a different command with the digest untouched, because a rename does
+    not re-run discovery. The server's integration decides which host is dialled, and repointing it
+    sends an approved call somewhere else entirely.
 
     Recomputed from the tool's current state at execution and compared with what was stored at
     proposal, so any of the three changing is a refusal.
@@ -524,30 +370,7 @@ def call_binding(tool):
         {
             "definition": tool.definition_fingerprint,
             "name": tool.name,
-            "integration": str(tool.server.external_integration_id),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def definition_fingerprint(definition):
-    """A stable digest of everything a server said about one tool, so "did this change" is one test.
-
-    The description is in it as well as the schema. It is half of what a reviewer read when they
-    decided whether the tool mutates - a schema rarely says that on its own - and in an agent's
-    prompt it *is* the tool's semantics, which makes it the sentence a compromised server would
-    rewrite while leaving the arguments alone.
-
-    Sorted keys, because two servers - or two versions of one - may serialize the same schema in
-    different orders, and a tool disabled for a key ordering is a tool an operator stops trusting
-    the alarm on.
-    """
-    canonical = json.dumps(
-        {
-            "description": definition.description or "",
-            "input_schema": definition.input_schema or {},
+            "integration": str(tool.mcp_server.external_integration_id),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -566,11 +389,11 @@ def _rendered(integration, method_name, server):
 
 
 class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
-    """The real client: one MCP session per operation, over streamable HTTP and nothing else (M2).
+    """The real client: one MCP session per call, over streamable HTTP and nothing else (M2).
 
-    A session per operation rather than a pooled one. Discovery happens from a web request and a
-    tool call from a Job, neither of which outlives its own operation, and a cached session would
-    have to be invalidated on every registry edit to keep rule M4 honest.
+    A session per call rather than a pooled one. A tool call happens from a Job that does not
+    outlive its own run, and a cached session would have to be invalidated on every registry edit
+    to keep rule M4 honest.
 
     The SDK is asynchronous and every caller here is not, so each operation is one `asyncio.run`.
     That is correct in a WSGI request and in a Celery worker, and it is wrong inside a running
@@ -584,27 +407,6 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
         self._http_client_class = http_client_class
         self._timeout_class = timeout_class
 
-    def list_tools(self, connection):
-        """Every tool the server advertises, following the pagination it uses.
-
-        `tools/list` is a paginated request: a server may answer with a page and a cursor. Reading
-        one page would leave the rest unregistered - so unreviewable, so uncallable - and would
-        also report every tool from page two onwards as "no longer offered" on each run, which is
-        the one signal an operator is meant to act on.
-        """
-        definitions = []
-        for page in self._run(connection, self._pages):
-            definitions.extend(
-                ToolDefinition(
-                    name=tool.name,
-                    description=tool.description or "",
-                    input_schema=tool.input_schema or {},
-                    read_only_hint=getattr(getattr(tool, "annotations", None), "read_only_hint", None),
-                )
-                for tool in page.tools
-            )
-        return tuple(definitions)
-
     def call_tool(self, connection, name, arguments):
         """Call one tool and hand back what the server said, unread.
 
@@ -616,26 +418,6 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
             return await session.call_tool(name, arguments, read_timeout_seconds=connection.timeout)
 
         return self._run(connection, _call)
-
-    async def _pages(self, session):
-        """Every page of the tool list, in order.
-
-        Bounded: a server that answered with a cursor pointing at itself would otherwise be an
-        infinite loop inside a web request. The cap is far above any real tool list.
-        """
-        from mcp import types  # pylint: disable=import-outside-toplevel
-
-        pages = []
-        cursor = None
-        for _ in range(MAX_TOOL_PAGES):
-            params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
-            page = await session.list_tools(params=params)
-            pages.append(page)
-            cursor = getattr(page, "next_cursor", None)
-            if not cursor:
-                return pages
-        logger.warning("Stopped reading tool pages after %s; the server kept offering a cursor", MAX_TOOL_PAGES)
-        return pages
 
     def _run(self, connection, operation):
         """Open a session, do one thing, close it."""
