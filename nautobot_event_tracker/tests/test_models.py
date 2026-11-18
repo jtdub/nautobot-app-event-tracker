@@ -467,10 +467,10 @@ class TestLLMUsageRecord(ModelTestCases.BaseModelTestCase):
         self.assertIsNone(record.ticket)
 
     def test_the_model_is_protected_while_records_exist(self):
-        """Deleting a registry entry must not silently delete its accounting."""
+        """Deleting a registry entry must not silently delete its accounting. The `no-member` directive is needed because pylint-django cannot resolve the cross-app foreign key."""
         record = self._record(model=fixtures.create_llmmodel(name="Protected Model"))
         with self.assertRaises(ProtectedError):
-            record.model.delete()  # pylint: disable=no-member  # pylint-django cannot resolve the cross-app ForeignKey.
+            record.model.delete()  # pylint: disable=no-member
 
     def test_records_are_not_change_logged(self):
         """One ObjectChange per model call would bury the change log, as for IngestionStats."""
@@ -586,11 +586,11 @@ class TestAgentToolCall(ModelTestCases.BaseModelTestCase):
         self.assertTrue(call.is_decided)
 
     def test_the_tool_is_protected_while_calls_exist(self):
-        """The record of a call outlives a tidy-up of the registry."""
+        """The record of a call outlives a tidy-up of the registry. The `no-member` directive is needed because pylint-django cannot resolve the cross-app foreign key."""
         call = fixtures.create_agenttoolcall(tool=fixtures.create_mcptool(name="protected_tool"))
 
         with self.assertRaises(ProtectedError):
-            call.tool.delete()  # pylint: disable=no-member  # pylint-django cannot resolve the cross-app ForeignKey.
+            call.tool.delete()  # pylint: disable=no-member
 
     def test_a_deleted_run_takes_its_calls_with_it(self):
         """A call means nothing without the run that asked for it."""
@@ -644,11 +644,11 @@ class TestTicketEmbedding(ModelTestCases.BaseModelTestCase):
         self.assertFalse(models.TicketEmbedding.objects.filter(pk=row.pk).exists())
 
     def test_the_model_is_protected_while_embeddings_exist(self):
-        """Tidying the registry must not silently orphan the corpus."""
+        """Tidying the registry must not silently orphan the corpus. The `no-member` directive is needed because pylint-django cannot resolve the cross-app foreign key."""
         row = fixtures.create_ticketembedding(model=fixtures.create_embedding_model(name="protected-embed"))
 
         with self.assertRaises(ProtectedError):
-            row.model.delete()  # pylint: disable=no-member  # pylint-django cannot resolve the cross-app ForeignKey.
+            row.model.delete()  # pylint: disable=no-member
 
     def test_the_vector_round_trips(self):
         """pgvector is doing real work here, not storing a string."""
