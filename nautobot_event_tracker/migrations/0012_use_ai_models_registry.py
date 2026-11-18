@@ -9,6 +9,11 @@ would be lost, and nothing here is worth the cross-app data migration it would t
 app records the same fields under different names, and its two discovery Jobs rebuild the model
 and tool halves from the endpoints themselves. Register the providers and servers again, and run
 them.
+
+The migration depends on `nautobot_ai_models.0002`, which adds the fields that the 1.1 floor needs. It changes
+the three foreign keys first, then removes constraints, child tables and parent tables. The migration needs empty
+`LLMUsageRecord`, `TicketEmbedding` and `AgentToolCall` tables, because PostgreSQL checks each row against the new
+foreign key.
 """
 
 import django.db.models.deletion
@@ -17,20 +22,11 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        # The tables this migration points at have to exist first. Naming the other app's
-        # migration is what orders the two graphs against each other; without it Django is free to
-        # run this one first and the AlterField fails on a missing table. `0002` rather than
-        # `0001`, because that is the migration that adds the provider dialect, the model kind and
-        # the two enabled flags - the fields the 1.1 floor is a floor for.
         ("nautobot_ai_models", "0002_registry_fields_for_consuming_apps"),
         ("nautobot_event_tracker", "0011_analytics_indexes"),
     ]
 
     operations = [
-        # The three foreign keys, before anything is dropped. `AlterField` across apps rewrites the
-        # constraint in place; the columns keep their names and every row keeps its value, which is
-        # a value that no longer resolves - and does not have to, since the tables it referenced go
-        # in the same transaction.
         migrations.AlterField(
             model_name="llmusagerecord",
             name="model",
@@ -61,7 +57,6 @@ class Migration(migrations.Migration):
                 to="nautobot_ai_models.mcptool",
             ),
         ),
-        # Constraints before their tables, and children before parents.
         migrations.RemoveConstraint(
             model_name="llmmodel",
             name="event_tracker_llmmodel_provider_name_unique",

@@ -258,32 +258,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     _check_kind(model, AIModelKindChoices.CHAT)
     call = client if client is not None else _litellm_completion()
 
-    # Filtered, not trusted. The AI Models app's own `clean()` already refuses everything outside
-    # its allowlist, but a fixture, a migration or a direct ORM write never runs it, and one wrong
-    # key here sends the call - and the credential with it - to an address the registry chose. The
-    # same tuple backs both layers, so the two cannot drift apart, and it is imported from that app
-    # rather than copied so that a key added upstream needs no edit here.
-    registry_parameters = model.default_parameters or {}
-    call_kwargs = {key: value for key, value in registry_parameters.items() if key in ALLOWED_MODEL_PARAMETERS}
-    dropped = sorted(set(registry_parameters) - set(call_kwargs))
-    if dropped:
-        # Refused at save time, so a row carrying one arrived by fixture, migration or direct ORM
-        # write. Dropping it silently is how an operator's parameter stops applying with nothing
-        # to read; this is that missing line.
-        logger.warning(
-            "AI model %s carries %s in default_parameters, which this app does not pass. Allowed: %s.",
-            model,
-            ", ".join(dropped),
-            ", ".join(ALLOWED_MODEL_PARAMETERS),
-        )
-
-    # The provider-level default, applied only when neither the model's parameters nor the model's
-    # own column said anything. `resolved_temperature` already walks model-then-provider; the
-    # `default_parameters` entry above beats both, because it is the most specific thing an
-    # operator wrote. A Decimal reaches litellm as a float: json.dumps refuses a Decimal, and the
-    # failure would surface from inside the client looking like a provider fault.
-    if "temperature" not in call_kwargs and model.resolved_temperature is not None:
-        call_kwargs["temperature"] = float(model.resolved_temperature)
+    call_kwargs = _registry_call_kwargs(model)
 
     # L6 - a call always has a timeout, and it comes from the most specific place that named one:
     # this call, then the registry entry, then the integration, then the constant. `or` rather
@@ -293,11 +268,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         timeout or call_kwargs.get("timeout") or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS
     )
 
-    # `num_predict` is the registry's completion cap, and -1 is its documented "unlimited". Both
-    # that and an unset value mean "send no cap", which is not the same as sending zero.
-    registry_cap = model.resolved_num_predict
-    if registry_cap is not None and registry_cap < 1:
-        registry_cap = None
+    registry_cap = _registry_completion_cap(model)
     effective_max_tokens = max_tokens if max_tokens is not None else registry_cap
     if effective_max_tokens is not None:
         call_kwargs["max_tokens"] = effective_max_tokens
@@ -373,16 +344,14 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     litellm-shaped embedding response. No test reaches a provider.
 
     Returns an `LLMEmbedding`. The vector is a list of floats, and its length is whatever the model
-    produces - the caller records it rather than assuming (rule R2's other half).
+    produces - the caller records it rather than assuming (rule R2's other half). An embedding call reads no
+    generation parameter of the registry.
     """
     _check_enabled(model)
     _check_kind(model, AIModelKindChoices.EMBEDDING)
     call = client if client is not None else _litellm_embedding()
 
     call_kwargs = {
-        # An embedding model takes none of the generation parameters, so `default_parameters`,
-        # `temperature` and the completion cap are all deliberately unread here: that vocabulary
-        # belongs to a chat call, and an embedding endpoint refuses it.
         "timeout": timeout or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
     }
     model_string = _model_string(model)
@@ -630,6 +599,36 @@ def _warn_about_unappliable_tls(provider, integration):
         provider,
         " and ".join(unappliable),
     )
+
+
+def _registry_call_kwargs(model):
+    """Return the registry parameters that this app passes to litellm.
+
+    Drop and log each key outside `ALLOWED_MODEL_PARAMETERS`, because a direct write can skip the check of the AI
+    Models app. Use the temperature of the model or the provider when the parameters give none, as a float.
+    """
+    registry_parameters = model.default_parameters or {}
+    call_kwargs = {key: value for key, value in registry_parameters.items() if key in ALLOWED_MODEL_PARAMETERS}
+    dropped = sorted(set(registry_parameters) - set(call_kwargs))
+    if dropped:
+        logger.warning(
+            "AI model %s carries %s in default_parameters, which this app does not pass. Allowed: %s.",
+            model,
+            ", ".join(dropped),
+            ", ".join(ALLOWED_MODEL_PARAMETERS),
+        )
+
+    if "temperature" not in call_kwargs and model.resolved_temperature is not None:
+        call_kwargs["temperature"] = float(model.resolved_temperature)
+    return call_kwargs
+
+
+def _registry_completion_cap(model):
+    """Return the completion cap of the registry, or None. A value below 1 or no value means no cap."""
+    registry_cap = model.resolved_num_predict
+    if registry_cap is not None and registry_cap < 1:
+        registry_cap = None
+    return registry_cap
 
 
 def _integration_timeout(provider):

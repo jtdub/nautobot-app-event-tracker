@@ -107,24 +107,15 @@ if not _TESTING:
 #
 
 # Enable installed Apps. Add the name of each App to the list.
-#
-# `nautobot_ai_models` is a dependency rather than a companion (ADR 0010): it owns the AI provider,
-# AI model, MCP server and MCP tool registries this app reads, and `models.py` holds foreign keys
-# into it. A Nautobot that loads this app without that one does not start.
 PLUGINS = ["nautobot_ai_models", "nautobot_event_tracker"]
+
+AI_MODELS_REGISTRY_POLICY = {"new_tools_enabled": False, "disable_on_definition_change": True}
+"""The default-deny policy for MCP tools that ADR 0007 requires. The defaults of the AI Models app enable a new tool."""
 
 # Apps configuration settings. These settings are used by various Apps that the user may have installed.
 # Each key in the dictionary is the name of an installed App and its value is a dictionary of settings.
 PLUGINS_CONFIG = {
-    # The registry app's own two policy settings, and the reason ADR 0007 survives the move. Its
-    # defaults are the other way round - a newly discovered tool arrives enabled, and one whose
-    # definition moved stays enabled - which is a defensible choice for a catalogue and the wrong
-    # one for a registry an agent calls from. Set here so the development stack behaves the way
-    # `docs/admin/mcp.md` tells a deployment to.
-    "nautobot_ai_models": {
-        "new_tools_enabled": False,
-        "disable_on_definition_change": True,
-    },
+    "nautobot_ai_models": AI_MODELS_REGISTRY_POLICY,
     "nautobot_event_tracker": {},
 }
 
@@ -208,6 +199,9 @@ PLUGINS_CONFIG["nautobot_event_tracker"]["rag"] = {
     "timeout_seconds": 120,
 }
 
+LAB_AGENT_MAX_ITERATIONS = 15
+"""Raised from the default of 8. A small local model uses more calls to learn the tool set. The value stays below `max_tool_calls`."""
+
 # The agent (Phase 4B). Off in a stock install, and on here: a development stack that cannot run
 # the thing being developed is not much of a development stack. Every value is overridable, because
 # which model you have pulled is a property of your laptop rather than of this repository.
@@ -223,9 +217,5 @@ PLUGINS_CONFIG["nautobot_event_tracker"]["agent"] = {
     # than a broken one. The tool timeout is raised for the same reason.
     "timeout_seconds": 180,
     "tool_timeout_seconds": 60,
-    # Raised from the stock 8. A small local model spends calls learning the tool set - it picked
-    # the wrong one of two similarly named tools four times in a row against the lab - and 8 was
-    # exhausted before it reached a conclusion, so the run ended at the bound with its one good
-    # command result unsummarised. Still well under `max_tool_calls`, which stays at 20.
-    "max_iterations": 15,
+    "max_iterations": LAB_AGENT_MAX_ITERATIONS,
 }

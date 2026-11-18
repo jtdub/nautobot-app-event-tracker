@@ -18,7 +18,6 @@ from nautobot_ai_models.constants import AI_TOOLS_TAB_ICON, AI_TOOLS_TAB_NAME, A
 
 from nautobot_event_tracker.services import analytics as analytics_service
 
-#: The group weight this app claims under the AI Tools tab. See the module docstring.
 AI_TOOLS_GROUP_WEIGHT = 300
 
 #: The dashboard's menu item, present only when the dashboard is. Turning the block off removes
@@ -71,9 +70,6 @@ items = DASHBOARD_ITEMS + (
     ),
 )
 
-#: The AI half. Every one of these is a record of something that happened rather than something an
-#: operator configures, which is why not one of them carries an add button: they are written by
-#: `services.llm`, `services.agent` and `services.rag`, and by nothing else.
 ai_items = (
     NavMenuItem(
         link="plugins:nautobot_event_tracker:llmusagerecord_list",
@@ -96,6 +92,7 @@ ai_items = (
         permissions=["nautobot_event_tracker.view_ticketembedding"],
     ),
 )
+"""Records that the services write. No item has an add button."""
 
 menu_items = (
     NavMenuTab(

@@ -52,19 +52,16 @@ from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigur
 
 logger = logging.getLogger(__name__)
 
-#: Applied when the integration says nothing. Every call wants a bound; this is the one it gets
-#: when nobody chose (M8).
 DEFAULT_TIMEOUT_SECONDS = 30
+"""The timeout of a call when the integration gives none (M8)."""
 
 #: How long the read side of a session may wait. The transport keeps a server-sent-event stream
 #: open, so the read deadline is not the request deadline and must not be set from it. Matches what
 #: the SDK's own HTTP client factory uses.
 SSE_READ_TIMEOUT_SECONDS = 300
 
-#: The one transport this app will call over (M2). The AI Models app records two others so an
-#: existing server can be registered; neither can be reached from here, and a call against one is
-#: refused with a sentence rather than attempted and failed opaquely.
 CALLABLE_TRANSPORTS = (MCPTransportChoices.TYPE_STREAMABLE_HTTP,)
+"""The transports that this app calls (M2). The AI Models app also records `sse` and `stdio`; this app refuses a call to them."""
 
 #: How the credential is presented when the integration's own headers do not present it. Bearer is
 #: what MCP servers over HTTP overwhelmingly expect; an operator who needs something else writes
@@ -248,17 +245,15 @@ def _check_callable(tool_call, tool):
     """M4 and M6, in that order, before any network I/O and whatever anything else said.
 
     The order matters to the message an operator reads: a disabled tool is the answer even when
-    the call is also unapproved, because enabling it is what they have to do first.
+    the call is also unapproved, because enabling it is what they have to do first. A writable tool runs from an
+    approved call only, and a call that has a decision does not run again (13.4). The fingerprint check of M6 has no
+    condition, because the registry policy that disables a changed tool is an optional setting of another app.
     """
     if not tool.enabled:
         _refuse(tool_call, f"Tool '{tool}' is not enabled.")
     if not tool.mcp_server.enabled:
         _refuse(tool_call, f"MCP server '{tool.mcp_server}' is disabled.")
 
-    # M2, read off the registry rather than assumed. The AI Models app records `sse` and `stdio`
-    # as transports a server may be registered with, so that a server this app cannot reach is
-    # still catalogued. Attempting one would fail inside the transport with a message about the
-    # protocol; this says which field to look at.
     if tool.mcp_server.transport not in CALLABLE_TRANSPORTS:
         _refuse(
             tool_call,
@@ -266,10 +261,6 @@ def _check_callable(tool_call, tool):
             "This app calls over streamable HTTP only (ADR 0007).",
         )
 
-    # A writable tool runs from an approved row and from nothing else. A read-only one runs from
-    # its own proposal - it needs no decision (13.4) - and neither runs twice: an executed, failed
-    # or denied row is a decision that has already happened, and re-running it would be a second
-    # call nobody asked for.
     allowed = (
         (AgentToolCallStatusChoices.APPROVED,)
         if tool.writable
@@ -283,11 +274,6 @@ def _check_callable(tool_call, tool):
             else f"This call is '{tool_call.status}' and has already been decided.",
         )
 
-    # M6's second half. M5's registry half disables a tool whose definition changed, which covers
-    # most of this and not all of it: an operator may review the new definition and re-enable the
-    # tool while a proposal written against the old one is still waiting - and that registry half
-    # is a setting on another app, which a deployment may not have turned on. Unconditional here
-    # for both reasons. What was approved was a call on the tool as it read then.
     # Compared unconditionally. Guarding on `tool_call.tool_fingerprint` being truthy skipped the
     # check entirely for a tool created by hand through the form or the API, which carries no
     # fingerprint - and kept skipping it after discovery later wrote a real one, which is exactly

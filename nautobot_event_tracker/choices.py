@@ -95,32 +95,20 @@ class UpdateTypeChoices(ChoiceSet):
     )
 
 
-#: The litellm routing prefix for each provider type, kept beside the choices it keys on the same
-#: way SEVERITY_WEIGHTS sits beside SeverityChoices: a new provider type is one edit in one file,
-#: not a choices entry that compiles everywhere and KeyErrors at call time.
-#:
-#: The types themselves belong to the AI Models app (ADR 0010), which is the right place for them -
-#: a provider's dialect is a fact about the provider, not about this app. What is this app's own
-#: concern is how litellm is told to route to each one, which is what this maps. An OpenAI-
-#: compatible endpoint uses the `openai` prefix with its own `api_base`.
 LITELLM_PROVIDER_PREFIXES = {
     AIProviderTypeChoices.OPENAI: "openai",
     AIProviderTypeChoices.ANTHROPIC: "anthropic",
     AIProviderTypeChoices.OPENAI_COMPATIBLE: "openai",
-    # `ollama`, not `ollama_chat`. litellm offers both and the second is the one usually
-    # recommended; it was the first that returned native tool calls when this was measured, and
-    # the second that did not. This is also why Ollama is a provider type of its own rather than
-    # one more OpenAI-compatible endpoint: Ollama's OpenAI-compatibility layer does not return
-    # tool calls in the `tool_calls` field, so on that path an Ollama-backed agent cannot call a
-    # tool at all - which is most of Phase 4B - and on this one it can.
     AIProviderTypeChoices.OLLAMA: "ollama",
 }
+"""The litellm routing prefix for each provider type of the AI Models app (ADR 0010).
 
-#: Provider types that are an address rather than a service: litellm would otherwise fall back to a
-#: default endpoint, which for `openai` is somebody else's API and for `ollama` is a loopback
-#: address that means nothing inside a container. Both are refused without a URL at call time; the
-#: AI Models app refuses them at save time.
+An OpenAI-compatible endpoint uses the `openai` prefix with its own `api_base`. Ollama uses `ollama`, not
+`ollama_chat` and not the OpenAI-compatible path, because only `ollama` returned native tool calls when measured.
+"""
+
 PROVIDER_TYPES_REQUIRING_A_URL = frozenset({AIProviderTypeChoices.OPENAI_COMPATIBLE, AIProviderTypeChoices.OLLAMA})
+"""Provider types that litellm cannot call without a URL. This app refuses them at call time. The AI Models app refuses them at save time."""
 
 
 class LLMPurposeChoices(ChoiceSet):
