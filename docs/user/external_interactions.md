@@ -74,8 +74,9 @@ can call those tools. Nothing else in the app calls one, and the agent is off by
 
 Two things bound what this connection can do, and neither is a prompt:
 
-- **Nothing is callable until somebody enables it.** Registering a server grants access to none of
-  its tools; discovery creates them disabled.
+- **Nothing is callable until somebody enables it**, when `new_tools_enabled` is `False` for
+  `nautobot_ai_models`. Discovery then creates each tool disabled. See
+  [Registering MCP Servers](../admin/mcp.md) for the two policy settings.
 - **The transport cannot execute anything locally.** There is no stdio option to turn on.
 
 No other outbound connection exists. The app makes no telemetry, licensing or update calls.
@@ -109,12 +110,12 @@ curl -H "Authorization: Token $NAUTOBOT_TOKEN" \
 | `tickets/<id>/comment/`, `attach/`, `detach/` | `POST` | Comment on a ticket, and attach or detach a Nautobot object |
 | `ticket-updates/` | `GET`, `HEAD`, `OPTIONS` | Append-only history; writes are 405 |
 | `ingestion-stats/` | `GET`, `HEAD`, `OPTIONS` | Written by the consumer |
-| `llm-providers/`, `llm-models/` | Full CRUD | The registry |
-| `mcp-servers/`, `mcp-tools/` | Full CRUD | The MCP registry. Enabling a tool is an operator decision an operator may script; no route calls one |
 | `llm-usage/` | `GET`, `HEAD`, `OPTIONS` | Written by the service layer alone; writes are 405 |
 | `agent-runs/` | `GET`, `HEAD`, `OPTIONS` | Written by the agent service; writes are 405 |
 | `agent-tool-calls/` | `GET`, `HEAD`, `OPTIONS`, plus actions | Read-only apart from the two decisions below |
 | `agent-tool-calls/<id>/approve/`, `deny/` | `POST` | Decide a proposed tool call. Needs `approve_agenttoolcall`, which `change` does not imply |
+
+The registry routes `ai-providers`, `ai-models`, `mcp-servers` and `mcp-tools` are at `/api/plugins/ai-models/`, in the AI Models app.
 
 To move a ticket through the workflow, post to the transition action rather than patching `status`:
 

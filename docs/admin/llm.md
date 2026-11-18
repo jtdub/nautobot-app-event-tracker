@@ -170,7 +170,7 @@ What to know before you turn it on:
   controls, so an event can try to argue for its own verdict. The app constrains the *shape* of
   the answer — four actions, and a ticket the app itself shortlisted — but not its reasoning.
   Read a triage `drop` as "the model judged this noise", never as evidence the event was harmless.
-- **A model's parameters are limited on purpose.** `Default parameters` on an LLM Model takes
+- **A model's parameters are limited on purpose.** `Default parameters` on an AI Model takes
   generation parameters only — `temperature`, `top_p`, `top_k`, `frequency_penalty`,
   `presence_penalty`, `logit_bias`, `n`, `reasoning_effort`, `seed`, `stop`, `extra_body`,
   `timeout`. Anything that would choose *who* answers, an endpoint or a key or a header above

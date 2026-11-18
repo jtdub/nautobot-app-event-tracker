@@ -21,8 +21,8 @@ PLUGINS_CONFIG = {
     "nautobot_event_tracker": {
         "agent": {
             "enabled": True,
-            "provider": "Production OpenAI",   # LLMProvider name
-            "model": "gpt-4o-mini",            # LLMModel name on it
+            "provider": "Production OpenAI",   # AI Provider name
+            "model": "gpt-4o-mini",            # AI Model name on it
         },
     },
 }

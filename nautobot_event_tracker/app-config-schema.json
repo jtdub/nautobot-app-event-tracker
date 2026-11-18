@@ -48,12 +48,12 @@
                 },
                 "provider": {
                     "type": "string",
-                    "description": "LLMProvider name the agent calls. Required when the agent is enabled.",
+                    "description": "AI Provider name the agent calls. Required when the agent is enabled.",
                     "default": ""
                 },
                 "model": {
                     "type": "string",
-                    "description": "LLMModel name on that provider. Required when the agent is enabled.",
+                    "description": "AI Model name on that provider. Required when the agent is enabled.",
                     "default": ""
                 },
                 "max_iterations": {
@@ -113,12 +113,12 @@
                 },
                 "provider": {
                     "type": "string",
-                    "description": "LLMProvider name the embedding calls go to. Required when RAG is enabled.",
+                    "description": "AI Provider name the embedding calls go to. Required when RAG is enabled.",
                     "default": ""
                 },
                 "model": {
                     "type": "string",
-                    "description": "LLMModel name on that provider, registered with kind `embedding`. A chat model is refused rather than used - rule L8's posture, on a new axis. Required when RAG is enabled.",
+                    "description": "AI Model name on that provider, registered with kind `embedding`. A chat model is refused rather than used - rule L8's posture, on a new axis. Required when RAG is enabled.",
                     "default": ""
                 },
                 "max_document_chars": {
@@ -294,12 +294,12 @@
                         },
                         "provider": {
                             "type": "string",
-                            "description": "Name of the LLMProvider to call. Required when enabled.",
+                            "description": "Name of the AI Provider to call. Required when enabled.",
                             "default": ""
                         },
                         "model": {
                             "type": "string",
-                            "description": "Name of the LLMModel on that provider. Required when enabled.",
+                            "description": "Name of the AI Model on that provider. Required when enabled.",
                             "default": ""
                         },
                         "timeout_seconds": {
@@ -328,7 +328,7 @@
                         },
                         "model_cache_seconds": {
                             "type": "integer",
-                            "description": "How long a running consumer holds the resolved LLMModel before re-reading it. Bounds how long disabling a provider or model, or correcting its prices, takes to reach a consumer already running.",
+                            "description": "How long a running consumer holds the resolved AI Model before re-reading it. Bounds how long disabling a provider or model, or correcting its prices, takes to reach a consumer already running.",
                             "minimum": 1,
                             "default": 60
                         }

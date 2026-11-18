@@ -47,8 +47,8 @@ telling you this — which is better than the alternative, but it stops mid-upgr
 
 Register it like any other, with **Kind** set to *Embedding*:
 
-- **LLM Provider** — an existing one is fine; embeddings and chat can share a provider.
-- **LLM Model** — the model name, Kind *Embedding*. Set the input cost; leave the output cost at
+- **AI Provider** — an existing one is fine; embeddings and chat can share a provider.
+- **AI Model** — the model name, Kind *Embedding*. Set the input cost; leave the output cost at
   zero, since an embedding has no output side to price.
 
 Kind is enforced in both directions. Point triage at an embedding model and it refuses before any
@@ -62,8 +62,8 @@ PLUGINS_CONFIG = {
     "nautobot_event_tracker": {
         "rag": {
             "enabled": True,
-            "provider": "Local Ollama",      # LLMProvider name
-            "model": "nomic-embed-text",     # an LLMModel of Kind = Embedding on it
+            "provider": "Local Ollama",      # AI Provider name
+            "model": "nomic-embed-text",     # an AI Model of Kind = Embedding on it
         },
     },
 }
