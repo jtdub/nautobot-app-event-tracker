@@ -467,7 +467,10 @@ class TestLLMUsageRecord(ModelTestCases.BaseModelTestCase):
         self.assertIsNone(record.ticket)
 
     def test_the_model_is_protected_while_records_exist(self):
-        """Deleting a registry entry must not silently delete its accounting. The `no-member` directive is needed because pylint-django cannot resolve the cross-app foreign key."""
+        """Deleting a registry entry must not silently delete its accounting.
+
+        pylint-django cannot resolve the cross-app foreign key, so the line keeps the `no-member` directive.
+        """
         record = self._record(model=fixtures.create_llmmodel(name="Protected Model"))
         with self.assertRaises(ProtectedError):
             record.model.delete()  # pylint: disable=no-member
@@ -586,7 +589,10 @@ class TestAgentToolCall(ModelTestCases.BaseModelTestCase):
         self.assertTrue(call.is_decided)
 
     def test_the_tool_is_protected_while_calls_exist(self):
-        """The record of a call outlives a tidy-up of the registry. The `no-member` directive is needed because pylint-django cannot resolve the cross-app foreign key."""
+        """The record of a call outlives a tidy-up of the registry.
+
+        pylint-django cannot resolve the cross-app foreign key, so the line keeps the `no-member` directive.
+        """
         call = fixtures.create_agenttoolcall(tool=fixtures.create_mcptool(name="protected_tool"))
 
         with self.assertRaises(ProtectedError):
@@ -644,7 +650,10 @@ class TestTicketEmbedding(ModelTestCases.BaseModelTestCase):
         self.assertFalse(models.TicketEmbedding.objects.filter(pk=row.pk).exists())
 
     def test_the_model_is_protected_while_embeddings_exist(self):
-        """Tidying the registry must not silently orphan the corpus. The `no-member` directive is needed because pylint-django cannot resolve the cross-app foreign key."""
+        """Tidying the registry must not silently orphan the corpus.
+
+        pylint-django cannot resolve the cross-app foreign key, so the line keeps the `no-member` directive.
+        """
         row = fixtures.create_ticketembedding(model=fixtures.create_embedding_model(name="protected-embed"))
 
         with self.assertRaises(ProtectedError):

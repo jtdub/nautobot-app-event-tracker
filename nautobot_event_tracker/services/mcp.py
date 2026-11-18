@@ -61,7 +61,10 @@ DEFAULT_TIMEOUT_SECONDS = 30
 SSE_READ_TIMEOUT_SECONDS = 300
 
 CALLABLE_TRANSPORTS = (MCPTransportChoices.TYPE_STREAMABLE_HTTP,)
-"""The transports that this app calls (M2). The AI Models app also records `sse` and `stdio`; this app refuses a call to them."""
+"""The transports that this app calls (M2).
+
+The AI Models app also records `sse` and `stdio`; this app refuses a call to them.
+"""
 
 #: How the credential is presented when the integration's own headers do not present it. Bearer is
 #: what MCP servers over HTTP overwhelmingly expect; an operator who needs something else writes

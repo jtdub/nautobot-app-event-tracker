@@ -108,7 +108,10 @@ An OpenAI-compatible endpoint uses the `openai` prefix with its own `api_base`. 
 """
 
 PROVIDER_TYPES_REQUIRING_A_URL = frozenset({AIProviderTypeChoices.OPENAI_COMPATIBLE, AIProviderTypeChoices.OLLAMA})
-"""Provider types that litellm cannot call without a URL. This app refuses them at call time. The AI Models app refuses them at save time."""
+"""Provider types that litellm cannot call without a URL.
+
+This app refuses them at call time. The AI Models app refuses them at save time.
+"""
 
 
 class LLMPurposeChoices(ChoiceSet):
