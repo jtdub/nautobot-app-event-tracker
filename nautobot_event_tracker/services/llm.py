@@ -11,7 +11,9 @@ Rules implemented here, referenced by number from the Phase 3 spec:
 * **L3** - credentials resolve at call time from the provider's ExternalIntegration and its
   secrets group; nothing key-shaped lives in settings, on a model, or in a log line.
 * **L4** - failures raise the LLMError family from `services.exceptions`, carrying the usage
-  record; no litellm or provider exception escapes.
+  record; no litellm or provider exception escapes. An answer with no text and no tool call is
+  an unusable response. `complete()` returns a cut-off answer that has content, with its finish
+  reason.
 * **L5** - cost is computed here from the model's registered prices and the provider's reported
   token usage. A response with no usage block records zeros, never a guess.
 * **L6** - every call passes a timeout to litellm.
@@ -77,6 +79,9 @@ NO_CREDENTIAL_PLACEHOLDER = "not-required"
 
 TOKENS_PER_MILLION = 1_000_000
 
+FINISH_REASON_LENGTH = "length"
+"""The finish reason of an answer that reached the limit of output tokens."""
+
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
 #: rather than one per call. The same shape as `StatsRecorder._prune`'s bookkeeping.
 _last_pruned_on = None  # pylint: disable=invalid-name
@@ -128,7 +133,7 @@ class LLMEmbedding:
 
 @dataclass(frozen=True)
 class LLMResponse:
-    """What a successful call returns: the text, the tool calls, and the row that priced it.
+    """What a successful call returns: the text, the tool calls, the finish reason, and the row that priced it.
 
     The numbers live on the record alone; the properties are conveniences, not copies, so a new
     accounting field is added in one place.
@@ -139,6 +144,8 @@ class LLMResponse:
     #: The tools the model asked for, in the order it asked. Empty for a plain completion, and
     #: empty for every call made without `tools`.
     tool_calls: tuple = ()
+    finish_reason: str = ""
+    """Why the model stopped, in the words of litellm. Empty when the response gave none."""
 
     @property
     def prompt_tokens(self):
@@ -250,6 +257,11 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     said (Phase 4B section 8). A call that asked for tools and one that did not are priced
     identically: L1 through L8 are untouched by this argument.
 
+    An answer with no text and no tool call is a failed call. A tool call with no text is a
+    complete answer. A tool call problem keeps its own error text, so that the operator looks in
+    the correct place. Logs one warning for an empty answer and for an answer that reached the
+    limit of output tokens (`finish_reason: length`).
+
     Returns an `LLMResponse`. Raises `LLMConfigurationError` before any network traffic,
     `LLMCallError` when the call fails, and `LLMResponseError` when what came back is unusable -
     the latter two carrying the usage record already written for the attempt (L4).
@@ -304,13 +316,14 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     text = _response_text(raw)
     tool_calls, tool_call_problem = _response_tool_calls(raw)
 
-    # A model that asked for a tool sends no message content, and that is a complete answer rather
-    # than an empty one. The "nothing came back" error therefore fires only when neither half is
-    # there - and an unparsable set of arguments is its own fault, reported as itself, because
-    # "the model returned no content" would send an operator looking in the wrong place.
+    finish_reason = _finish_reason(raw)
+    detail = _stop_detail(finish_reason, prompt_tokens, completion_tokens, _reasoning_tokens(raw))
+    is_empty = tool_call_problem is None and not (text or "").strip() and not tool_calls
+    is_cut_off = not is_empty and finish_reason == FINISH_REASON_LENGTH
+
     problem = tool_call_problem
-    if problem is None and text is None and not tool_calls:
-        problem = "The response carried no message content."
+    if is_empty:
+        problem = f"The response carried no message content ({detail})."
 
     record = _record_usage(
         model=model,
@@ -323,10 +336,18 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         request_id=str(getattr(raw, "id", "") or ""),
         error=problem,
     )
+    if is_empty or is_cut_off:
+        logger.warning(
+            "LLM call to %s for %s returned %s answer (%s).",
+            model,
+            purpose,
+            "an empty" if is_empty else "a cut-off",
+            detail,
+        )
     if problem is not None:
         raise LLMResponseError(f"LLM call to {model} returned no usable content: {problem}", record=record)
 
-    return LLMResponse(text=text or "", record=record, tool_calls=tool_calls)
+    return LLMResponse(text=text or "", record=record, tool_calls=tool_calls, finish_reason=finish_reason)
 
 
 def embed(  # pylint: disable=too-many-arguments,too-many-locals
@@ -705,6 +726,33 @@ def _response_text(raw):
     if content is None:
         return None
     return str(content)
+
+
+def _finish_reason(raw):
+    """Return the finish reason of the first choice, or an empty string."""
+    choices = getattr(raw, "choices", None)
+    if not choices:
+        return ""
+    return str(getattr(choices[0], "finish_reason", "") or "")
+
+
+def _reasoning_tokens(raw):
+    """Return the reasoning token count that the provider reported, or None."""
+    details = getattr(getattr(raw, "usage", None), "completion_tokens_details", None)
+    if isinstance(details, dict):
+        count = details.get("reasoning_tokens")
+    else:
+        count = getattr(details, "reasoning_tokens", None)
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+def _stop_detail(finish_reason, prompt_tokens, completion_tokens, reasoning_tokens):
+    """Return the finish reason and the token counts as one clause, for a log line or an error."""
+    reason = f"finish reason '{finish_reason}'" if finish_reason else "finish reason not reported"
+    detail = f"{reason}; {prompt_tokens} prompt tokens, {completion_tokens} completion tokens"
+    if reasoning_tokens is not None:
+        detail += f", {reasoning_tokens} of them reasoning"
+    return detail
 
 
 def _response_tool_calls(raw):

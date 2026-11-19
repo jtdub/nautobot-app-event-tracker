@@ -406,12 +406,12 @@ class TestAPlainRun(AgentTestCase):
         # dropped line in one prompt, and the alternative is a marker field on every update row.
         self.assertNotIn("I am a human quoting the agent", self.messages(run, "user")[0]["content"])
 
-    def test_an_empty_answer_still_concludes(self):
-        """A model with nothing to say is a completed run, not a failed one."""
+    def test_an_empty_answer_fails_the_run(self):
+        """An empty answer is a failed call (L4), so the run fails where an operator sees it."""
         run, _ = self.run_agent("   ")
 
-        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
-        self.assertIn("without a conclusion", self.updates(UpdateTypeChoices.COMMENT)[-1].message)
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertIn("The model call failed", self.updates(UpdateTypeChoices.COMMENT)[-1].message)
 
 
 class TestTheToolsOnOffer(AgentTestCase):

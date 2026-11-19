@@ -121,7 +121,7 @@ class TestTheVerdicts(TriageTestCase):
         self.assertFalse(result.errored)
 
     def test_an_empty_answer_is_an_accept_and_an_error(self):
-        """T3 and T4 - nothing to read is a fallback, and the call was still paid for."""
+        """L4 and T4 - an empty answer is a failed call, and the call was still paid for."""
         triage = self.build(fake=FakeComplete(""))
         result = self.decide(triage)
         self.assertEqual(result.decision.action, ACTION_ACCEPT)
