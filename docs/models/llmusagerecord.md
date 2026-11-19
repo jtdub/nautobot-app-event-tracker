@@ -31,9 +31,9 @@ entry per model call would bury the change log under bookkeeping.
 | Prompt / Completion Tokens | Token counts as the provider reported them. Zero when the provider reported nothing. |
 | Cost | USD, computed from the model's registered prices and the reported tokens. |
 | Latency | How long the call took, in milliseconds. |
-| Success | Whether the call returned a usable response. |
+| Success | Whether the call returned a usable response. An answer with no text and no tool call is not usable. |
 | Request ID | The provider's own identifier for the call, for finding it in provider-side logs. |
-| Error | Why the call failed, when it did. |
+| Error | Why the call failed, when it did. For an empty answer, the finish reason and the token counts. |
 
 ## Elsewhere
 
