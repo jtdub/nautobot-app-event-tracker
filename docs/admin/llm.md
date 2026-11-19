@@ -182,7 +182,8 @@ What to know before you turn it on:
   empty, when it is not JSON, when its action is unknown, or when an `attach` does not name a
   ticket from the list that the app offered. Each such event adds 1 to the `triage_errors`
   counter. A failed call shows as failed on its usage record, and an empty answer is a failed call.
-  Other unusable answers show there as a successful call. The consumer never exits because a model misbehaved.
+  Other unusable answers show there as a successful call.
+  The consumer never exits because a model misbehaved.
 - **Latency.** The consumer handles one message at a time, so a slow model bounds throughput.
   The pre-filter and the dedup short-circuit keep the call volume to genuinely new events.
 - **Attribution.** Actions the model decided — a suppression, an attach — appear in the ticket

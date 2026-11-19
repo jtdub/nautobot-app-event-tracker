@@ -445,7 +445,7 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):  # pylint: disable=too-m
         self.assertEqual(counts.received, counts.accounted_for)
 
     def test_an_empty_answer_accepts_and_counts_the_error(self):
-        """T3 and T4 - an empty answer is not a healthy model."""
+        """L4 and T4 - an empty answer is a failed call, and triage still counts it."""
         from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
 
         self.assert_unusable_answer_is_counted("")

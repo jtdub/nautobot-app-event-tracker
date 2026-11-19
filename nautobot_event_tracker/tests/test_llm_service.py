@@ -858,13 +858,13 @@ class TestFinishReason(TestCase):
         return raised.exception, logs.records[0].getMessage()
 
     def test_the_finish_reason_is_on_the_result(self):
-        """AC-1 - the result carries the finish reason of the first choice."""
+        """L4 - the result carries the finish reason of the first choice."""
         self.assertEqual(self.complete(FakeLLMResponse("ok")).finish_reason, "stop")
         raw = FakeLLMResponse(None, tool_calls=[fixtures.fake_tool_call()], finish_reason="tool_calls")
         self.assertEqual(self.complete(raw).finish_reason, "tool_calls")
 
     def test_an_empty_answer_is_a_failed_call(self):
-        """AC-5 - the record shows the failure, the cause and the cost."""
+        """L4 - the record shows the failure, the cause and the cost."""
         raw = FakeLLMResponse("", finish_reason="length", prompt_tokens=88, completion_tokens=256)
 
         raised, _ = self.empty_answer(raw)
@@ -879,13 +879,13 @@ class TestFinishReason(TestCase):
         self.assertEqual(raised.record, record)
 
     def test_a_whitespace_answer_is_a_failed_call(self):
-        """AC-5 - only white space is no answer."""
+        """L4 - only white space is no answer."""
         self.empty_answer(FakeLLMResponse("  \n"))
 
         self.assertFalse(LLMUsageRecord.objects.get().success)
 
     def test_an_empty_answer_is_logged_with_the_cause(self):
-        """AC-2 - one warning names the model, the purpose, the cause and the counts."""
+        """L4 - one warning names the model, the purpose, the cause and the counts."""
         raw = FakeLLMResponse("", finish_reason="length", prompt_tokens=88, completion_tokens=256)
 
         _, message = self.empty_answer(raw)
@@ -896,7 +896,7 @@ class TestFinishReason(TestCase):
         self.assertIn(LLMPurposeChoices.TRIAGE, message)
 
     def test_a_cut_off_answer_is_returned_and_logged(self):
-        """AC-3 and AC-6 - the caller gets the partial text, and the operator gets the warning."""
+        """L4 - the caller gets the partial text, and the operator gets the warning."""
         raw = FakeLLMResponse('{"action": "cre', finish_reason="length", completion_tokens=256)
 
         with self.assertLogs(self.LOGGER, level="WARNING") as logs:
@@ -911,7 +911,7 @@ class TestFinishReason(TestCase):
         self.assertIn("finish reason 'length'", logs.records[0].getMessage())
 
     def test_the_log_gives_the_reasoning_tokens_when_reported(self):
-        """AC-4 - the reasoning count shows when the provider reports it, and not otherwise."""
+        """L4 - the reasoning count shows when the provider reports it, and not otherwise."""
         with self.assertLogs(self.LOGGER, level="WARNING") as logs:
             self.complete(FakeLLMResponse("cut", finish_reason="length", reasoning_tokens=238))
         self.assertIn("238 of them reasoning", logs.records[0].getMessage())
@@ -921,7 +921,7 @@ class TestFinishReason(TestCase):
         self.assertNotIn("reasoning", logs.records[0].getMessage())
 
     def test_a_usable_answer_is_not_logged(self):
-        """AC-8 - a normal answer makes no noise."""
+        """L4 - a normal answer makes no noise."""
         with self.assertNoLogs(self.LOGGER, level="WARNING"):
             self.complete(FakeLLMResponse("ok"))
 
@@ -939,17 +939,18 @@ class TestFinishReason(TestCase):
                 self.assertIn(expected, message)
 
     def test_a_cut_off_tool_call_that_does_not_parse_fails_and_is_logged(self):
-        """AC-3 - the tool call problem keeps its text, and the cut-off is logged."""
+        """L4 - the tool call problem keeps its text, and the cut-off is logged."""
         broken = [fixtures.fake_tool_call(arguments="{not json")]
 
         with self.assertLogs(self.LOGGER, level="WARNING") as logs:
             with self.assertRaises(LLMResponseError) as raised:
                 self.complete(FakeLLMResponse(None, tool_calls=broken, finish_reason="length"))
         self.assertIn("not valid JSON", raised.exception.record.error)
+        self.assertEqual(len(logs.records), 1)
         self.assertIn("a cut-off answer", logs.records[0].getMessage())
 
     def test_a_tool_call_problem_with_another_finish_reason_is_not_logged(self):
-        """AC-8 - only an empty or cut-off answer gets the new warning."""
+        """L4 - only an empty or cut-off answer gets the new warning."""
         broken = [fixtures.fake_tool_call(arguments="{not json")]
 
         with self.assertNoLogs(self.LOGGER, level="WARNING"):
@@ -964,7 +965,7 @@ class TestFinishReason(TestCase):
         self.assertNotIn("reasoning", message)
 
     def test_the_reasoning_count_is_read_defensively(self):
-        """AC-4 - a dict, an object, a boolean, a string and a missing block are all handled."""
+        """L4 - a dict, an object, a boolean, a string and a missing block are all handled."""
 
         def raw(details):
             return SimpleNamespace(usage=SimpleNamespace(completion_tokens_details=details))
