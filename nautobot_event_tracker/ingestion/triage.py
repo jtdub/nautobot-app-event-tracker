@@ -11,7 +11,7 @@ Rules implemented here, referenced by number from the Phase 3 spec:
   dispatch, and rule-decided suppressions pass through untouched).
 * **T2** - an event whose dedup key matches an open ticket skips the model; S5 will join it.
 * **T3** - the model's answer is constrained to the four actions and the app-built shortlist;
-  anything else reads as accept.
+  anything else reads as accept and counts as a T4 fallback.
 * **T4** - any failure yields accept and is counted; the consumer never crashes on a model.
 * **T5** - the model runs outside any transaction, and a database retry of the same message
   reuses the memoized decision rather than paying twice. The memo is keyed on
@@ -144,24 +144,33 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
                 # The cached refusal has been logged once for this TTL already; anything else is
                 # this event's own failure and is worth a line.
                 logger.warning("LLM triage failed (%s); accepting the event", error)
-            return TriageResult(
-                decision=filter_result.decision,
-                event_type=filter_result.event_type,
-                usage_record_ids=(record.pk,) if record is not None else (),
-                # T8 - `triaged` counts events the model judged, and the usage record is the
-                # evidence that a call was attempted at all (L1). A refusal before any network
-                # traffic carries none, and counting it would price calls nobody made.
-                triaged=record is not None,
-                errored=True,
-            )
+            return self._fallback(filter_result, record)
 
-        action, reason, target = self._parse(response.text, shortlist)
+        verdict = self._parse(response.text, shortlist)
+        if verdict is None:
+            return self._fallback(filter_result, response.record)
+        action, reason, target = verdict
         return TriageResult(
             decision=Decision(action, reason),
             event_type=filter_result.event_type,
             target_ticket_id=target,
             usage_record_ids=(response.record.pk,),
             triaged=True,
+        )
+
+    @staticmethod
+    def _fallback(filter_result, record):
+        """Return the T4 result: the decision of the pre-filter, counted as a triage error.
+
+        `triaged` is true only when a usage record exists (T8). The record is the evidence
+        that a call reached a provider.
+        """
+        return TriageResult(
+            decision=filter_result.decision,
+            event_type=filter_result.event_type,
+            usage_record_ids=(record.pk,) if record is not None else (),
+            triaged=record is not None,
+            errored=True,
         )
 
     def _get_model(self):
@@ -262,22 +271,23 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
 
     @staticmethod
     def _parse(text, shortlist):
-        """T3 - read the model's answer; anything out of bounds is an accept.
+        """Read the answer of the model (T3).
 
-        Returns `(action, reason, target_ticket_id)`. The reason is capped: it becomes a ticket
-        message, not an essay.
+        Returns:
+            `(action, reason, target_ticket_id)`, or None when the answer is out of bounds.
+            The reason has a limit of 200 characters.
         """
         try:
             start = text.index("{")
             answer, _ = json.JSONDecoder().raw_decode(text[start:])
         except (ValueError, TypeError):
             logger.warning("LLM triage answered unparsably (%.120r); accepting the event", text)
-            return ACTION_ACCEPT, "", None
+            return None
 
         action = answer.get("action") if isinstance(answer, dict) else None
         if action not in TRIAGE_ACTIONS:
             logger.warning("LLM triage chose an unknown action (%r); accepting the event", action)
-            return ACTION_ACCEPT, "", None
+            return None
 
         reason = str(answer.get("reason", ""))[:200]
 
@@ -285,7 +295,7 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
             index = answer.get("ticket")
             if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(shortlist):
                 logger.warning("LLM triage attached outside the shortlist (%r); accepting the event", index)
-                return ACTION_ACCEPT, "", None
+                return None
             return ACTION_ATTACH, reason, shortlist[index][0]
 
         return action, reason, None

@@ -1,0 +1,1 @@
+Fixed the Triage Errors column on the Ingestion Stats page. It did not count an empty or unusable triage answer.
