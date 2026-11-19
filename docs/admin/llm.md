@@ -108,12 +108,12 @@ provider's default.
 
 [OpenCode Go](https://opencode.ai/docs/en/go/) is a hosted service with an OpenAI-compatible API.
 It needs two settings that other endpoints do not need. The values in this section worked in a
-test on 2026-11-18 with the model `deepseek-v4.1-flash`. No other Go model was tested.
+test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other Go model.
 
 !!! warning "Read the Go usage policy before you enable triage"
     Unattended triage can use all of the allowance of your subscription. OpenCode says that Go
-    is for coding agents, and that Go monitors traffic for abuse. Go has a 5-hour limit and a
-    weekly limit. Read the [usage limits of Go](https://opencode.ai/docs/en/go/#usage-limits)
+    is for agents that write code, and that Go monitors traffic for abuse. Go has a 5-hour limit
+    and a weekly limit. Read the [usage limits of Go](https://opencode.ai/docs/en/go/#usage-limits)
     before you continue.
 
     The LLM Usage list does not show the Go allowance. It shows the cost from the prices on the
@@ -124,7 +124,7 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. No other Go model was t
     When Go stops a call, triage accepts the event. See "Failure is safe" in
     [Enabling event triage](#enabling-event-triage).
 
-    The facts in this warning come from the vendor page on 2026-11-19. They can change.
+    The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
 
 Follow the steps in [Registering a provider](#registering-a-provider) with these values:
 
@@ -148,9 +148,9 @@ curl https://opencode.ai/inference/go/v1/models
 
 The answer is a JSON list of the models that Go offers.
 
-**The session header is required.** Go refuses a call that does not have the
+**Go needs the session header.** Go refuses a call that does not have the
 `x-opencode-session` header. The error is `MissingSessionID`. Use a text that names this
-installation, and do not change it. The app sends the same value with every triage call and
+installation. Do not change that text. The app sends the same value with every triage call and
 every agent call.
 
 **Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
