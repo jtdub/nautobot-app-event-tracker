@@ -359,7 +359,9 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         ticket = EventTicket.objects.get()
         record = LLMUsageRecord.objects.get()
         self.assertEqual(record.ticket, ticket)
-        self.assertEqual(self.counts().triaged, 1)
+        counts = self.counts()
+        self.assertEqual(counts.triaged, 1)
+        self.assertEqual(counts.triage_errors, 0)
 
     def test_an_attach_joins_the_chosen_ticket_as_the_ai(self):
         """T6 - the model decided, the trail says so, the counters agree."""
@@ -424,6 +426,35 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         counts = self.counts()
         self.assertEqual(counts.triaged, 1)
         self.assertEqual(counts.triage_errors, 1)
+
+    def assert_unusable_answer_is_counted(self, answer):
+        """An answer triage cannot use still opens the ticket, and shows as one error."""
+        from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
+
+        decision = self.handle_triaged(answer=answer)
+        self.assertEqual(decision.action, ACTION_ACCEPT)
+        ticket = EventTicket.objects.get()
+        self.assertEqual(LLMUsageRecord.objects.get().ticket, ticket)
+        counts = self.counts()
+        self.assertEqual(counts.triaged, 1)
+        self.assertEqual(counts.triage_errors, 1)
+        self.assertEqual(counts.received, counts.accounted_for)
+
+    def test_an_empty_answer_accepts_and_counts_the_error(self):
+        """T3 and T4 - an empty answer is not a healthy model."""
+        self.assert_unusable_answer_is_counted("")
+
+    def test_an_unparsable_answer_accepts_and_counts_the_error(self):
+        """T3 and T4 - prose is not an answer."""
+        self.assert_unusable_answer_is_counted("not json")
+
+    def test_an_unknown_action_accepts_and_counts_the_error(self):
+        """T3 and T4 - the vocabulary is closed."""
+        self.assert_unusable_answer_is_counted('{"action": "escalate"}')
+
+    def test_an_attach_outside_the_shortlist_accepts_and_counts_the_error(self):
+        """T3 and T4 - there is no open ticket, so no index is valid."""
+        self.assert_unusable_answer_is_counted('{"action": "attach", "ticket": 99}')
 
     def test_a_recurrence_never_pays_for_a_second_opinion(self):
         """T2 at the pipeline level: the second event joins by key with zero model calls."""
@@ -529,6 +560,32 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         counts = self.counts()
         self.assertEqual(counts.triaged, 1)
         self.assertEqual(counts.received, counts.accounted_for)
+
+    def test_a_database_retry_of_an_unusable_answer_counts_one_error(self):
+        """The memo keeps the fallback, and the retry does not count the error again."""
+        from nautobot_event_tracker.ingestion.triage import TriageFilter  # pylint: disable=import-outside-toplevel
+
+        with fixtures.ingestion_settings(triage=self.TRIAGE, topics={"network.events": TOPIC}):
+            loaded = config.load()
+        rules = prefilter.PreFilter(loaded, clock=self.clock)
+        fake = fixtures.FakeComplete("")
+        triage = TriageFilter(loaded, complete=fake)
+        message = fixtures.broker_message(self.payload(), partition=0, offset=11)
+        handle = {"rules": rules, "recorder": self.recorder, "config": loaded, "triage": triage}
+
+        self.recorder.record(message.topic, received=1, message_time=message.timestamp)
+        with mock.patch(
+            "nautobot_event_tracker.services.tickets.create_ticket",
+            side_effect=DatabaseError("connection lost"),
+        ):
+            with self.assertRaises(DatabaseError):
+                pipeline.handle_message(message, **handle)
+        pipeline.handle_message(message, **handle)
+
+        self.assertEqual(len(fake.calls), 1)
+        counts = self.counts()
+        self.assertEqual(counts.triaged, 1)
+        self.assertEqual(counts.triage_errors, 1)
 
     def test_a_failed_usage_link_does_not_cost_the_ticket(self):
         """The ticket has committed by then; raising would retry the message and open a second."""

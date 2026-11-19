@@ -177,9 +177,12 @@ What to know before you turn it on:
   all, is refused: those come from the provider's external integration and from nowhere else.
   A parameter outside the list that reached the row another way — a fixture, a data migration —
   is dropped before the call and named in a log line rather than silently ignored.
-- **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event — a
-  ticket too many, never an event lost — and shows up in the `triage_errors` counter and on the
-  failed call's usage record. The consumer never exits because a model misbehaved.
+- **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event, so
+  the result can be one ticket too many and never a lost event. An answer is unusable when it is
+  empty, when it is not JSON, when its action is unknown, or when an `attach` does not name a
+  ticket from the list that the app offered. Each such event adds 1 to the `triage_errors`
+  counter. A failed call also shows as failed on its usage record. An unusable answer shows there
+  as a successful call. The consumer never exits because a model misbehaved.
 - **Latency.** The consumer handles one message at a time, so a slow model bounds throughput.
   The pre-filter and the dedup short-circuit keep the call volume to genuinely new events.
 - **Attribution.** Actions the model decided — a suppression, an attach — appear in the ticket

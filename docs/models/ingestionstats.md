@@ -29,7 +29,7 @@ so an entry in the change log per write would bury it under a record of arithmet
 | Errored | Messages that could not be read — not JSON, or not a JSON object. |
 | Triaged | Messages LLM triage actually judged. Recurrences and opted-out topics are not judged, so this is also the model-call count. |
 | Triage Attached | Messages triage attached to an existing ticket. Counted under Tickets Joined as well. |
-| Triage Errors | Triage calls that failed and fell back to accepting the event. |
+| Triage Errors | Triage calls that failed, or that gave an unusable answer. The app accepted the event. |
 | Enriched | Messages that attached at least one object the enrichment resolver found. Counted under opened or joined as well. |
 | Enrichment Misses | Enrichment rules that found nothing they should have found. Counts rule evaluations, not messages. |
 | Drops by Reason | Drop counts broken down by the rule or filter that refused each message. Triage drops appear under `llm_triage`. |

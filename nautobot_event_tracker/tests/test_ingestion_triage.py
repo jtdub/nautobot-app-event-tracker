@@ -104,6 +104,7 @@ class TestTheVerdicts(TriageTestCase):
         result = self.decide(triage)
         self.assertEqual(result.decision.action, ACTION_SUPPRESS)
         self.assertEqual(result.decision.reason, "known flapping optic")
+        self.assertFalse(result.errored)
 
     def test_drop(self):
         """Pure noise, on the model's say-so."""
@@ -117,31 +118,60 @@ class TestTheVerdicts(TriageTestCase):
         result = self.decide(triage)
         self.assertEqual(result.decision.action, ACTION_ATTACH)
         self.assertEqual(result.target_ticket_id, ticket.pk)
+        self.assertFalse(result.errored)
 
-    def test_an_unparsable_answer_is_an_accept(self):
-        """T3 - garbage in, accept out."""
+    def test_an_empty_answer_is_an_accept_and_an_error(self):
+        """T3 and T4 - nothing to read is a fallback, and the call was still paid for."""
+        triage = self.build(fake=FakeComplete(""))
+        result = self.decide(triage)
+        self.assertEqual(result.decision.action, ACTION_ACCEPT)
+        self.assertTrue(result.errored)
+        self.assertTrue(result.triaged)
+        self.assertEqual(result.usage_record_ids, (LLMUsageRecord.objects.get().pk,))
+
+    def test_an_unparsable_answer_is_an_accept_and_an_error(self):
+        """T3 - garbage in, accept out, counted."""
         triage = self.build(fake=FakeComplete("I think this event is quite serious."))
         result = self.decide(triage)
         self.assertEqual(result.decision.action, ACTION_ACCEPT)
+        self.assertTrue(result.errored)
+        self.assertTrue(result.triaged)
 
-    def test_an_unknown_action_is_an_accept(self):
+    def test_an_unknown_action_is_an_accept_and_an_error(self):
         """The vocabulary is closed."""
         triage = self.build(fake=FakeComplete('{"action": "escalate", "reason": "hmm"}'))
-        self.assertEqual(self.decide(triage).decision.action, ACTION_ACCEPT)
+        result = self.decide(triage)
+        self.assertEqual(result.decision.action, ACTION_ACCEPT)
+        self.assertTrue(result.errored)
+        self.assertTrue(result.triaged)
 
-    def test_an_attach_outside_the_shortlist_is_an_accept(self):
+    def test_an_attach_outside_the_shortlist_is_an_accept_and_an_error(self):
         """The model cannot point at a ticket it was not shown."""
         fixtures.create_ticket()
         triage = self.build(fake=FakeComplete('{"action": "attach", "reason": "sure", "ticket": 99}'))
         result = self.decide(triage)
         self.assertEqual(result.decision.action, ACTION_ACCEPT)
         self.assertIsNone(result.target_ticket_id)
+        self.assertTrue(result.errored)
+        self.assertTrue(result.triaged)
 
-    def test_an_attach_with_no_index_is_an_accept(self):
+    def test_an_attach_with_no_index_is_an_accept_and_an_error(self):
         """Attach without a target is not a decision."""
         fixtures.create_ticket()
         triage = self.build(fake=FakeComplete('{"action": "attach", "reason": "sure"}'))
-        self.assertEqual(self.decide(triage).decision.action, ACTION_ACCEPT)
+        result = self.decide(triage)
+        self.assertEqual(result.decision.action, ACTION_ACCEPT)
+        self.assertTrue(result.errored)
+        self.assertTrue(result.triaged)
+
+    def test_an_attach_with_a_boolean_index_is_an_accept_and_an_error(self):
+        """A JSON `true` is an int in Python, and still not an index."""
+        fixtures.create_ticket()
+        triage = self.build(fake=FakeComplete('{"action": "attach", "reason": "sure", "ticket": true}'))
+        result = self.decide(triage)
+        self.assertEqual(result.decision.action, ACTION_ACCEPT)
+        self.assertIsNone(result.target_ticket_id)
+        self.assertTrue(result.errored)
 
     def test_a_failed_call_is_an_accept_and_counted_as_an_error(self):
         """T4 - fail open. The failure itself is on the usage record."""
@@ -204,6 +234,16 @@ class TestWhatNeverReachesTheModel(TriageTestCase):
         identity = fixtures.broker_message({}, partition=0, offset=7).identity
         self.assertFalse(self.decide(triage, identity=identity).from_memo)
         self.assertTrue(self.decide(triage, identity=identity).from_memo)
+
+    def test_a_reused_unusable_answer_is_still_an_error(self):
+        """T5 - the memo keeps the fallback, so the pipeline can skip the second count."""
+        triage = self.build(fake=FakeComplete(""))
+        identity = fixtures.broker_message({}, partition=0, offset=7).identity
+        self.decide(triage, identity=identity)
+        second = self.decide(triage, identity=identity)
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertTrue(second.from_memo)
+        self.assertTrue(second.errored)
 
     def test_a_new_message_is_a_new_decision(self):
         """The memo holds one entry: the message in flight."""
