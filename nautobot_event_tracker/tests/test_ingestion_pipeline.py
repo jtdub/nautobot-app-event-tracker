@@ -351,7 +351,7 @@ class TriagedPipelineTestCase(PipelineTestCase):
         )
 
 
-class TestTriageInThePipeline(TriagedPipelineTestCase):
+class TestTriageInThePipeline(TriagedPipelineTestCase):  # pylint: disable=too-many-public-methods
     """Spec 6.3: each verdict applied, attributed, counted - and every failure surviving."""
 
     def test_an_accept_opens_a_ticket_and_links_its_usage(self):
