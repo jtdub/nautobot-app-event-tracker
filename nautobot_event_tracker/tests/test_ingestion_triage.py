@@ -162,6 +162,7 @@ class TestTheVerdicts(TriageTestCase):
         result = self.decide(triage)
         self.assertEqual(result.decision.action, ACTION_ACCEPT)
         self.assertTrue(result.errored)
+        self.assertTrue(result.triaged)
 
     def test_an_attach_with_a_boolean_index_is_an_accept_and_an_error(self):
         """A JSON `true` is an int in Python, and still not an index."""
