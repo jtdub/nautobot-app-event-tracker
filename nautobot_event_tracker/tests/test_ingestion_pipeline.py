@@ -322,13 +322,17 @@ class TriagedPipelineTestCase(PipelineTestCase):
         super().setUp()
         self.fake = None
 
-    def handle_triaged(self, payload=None, *, answer=None, error=None, topic_settings=None, **kwargs):
+    def handle_triaged(
+        self, payload=None, *, answer=None, error=None, topic_settings=None, finish_reason=None, **kwargs
+    ):
         """Push one message through with a triage filter answering `answer` (or failing)."""
         return self.triaged_outcome(
-            payload, answer=answer, error=error, topic_settings=topic_settings, **kwargs
+            payload, answer=answer, error=error, topic_settings=topic_settings, finish_reason=finish_reason, **kwargs
         ).decision
 
-    def triaged_outcome(self, payload=None, *, answer=None, error=None, topic_settings=None, **kwargs):
+    def triaged_outcome(
+        self, payload=None, *, answer=None, error=None, topic_settings=None, finish_reason=None, **kwargs
+    ):
         """The same, returning the whole outcome rather than the decision alone."""
         from nautobot_event_tracker.ingestion.triage import TriageFilter  # pylint: disable=import-outside-toplevel
 
@@ -338,7 +342,7 @@ class TriagedPipelineTestCase(PipelineTestCase):
         ):
             loaded = config.load()
         rules = prefilter.PreFilter(loaded, clock=self.clock)
-        self.fake = fixtures.FakeComplete(answer, error=error)
+        self.fake = fixtures.FakeComplete(answer, error=error, finish_reason=finish_reason)
         triage = TriageFilter(loaded, complete=self.fake)
         message = fixtures.broker_message(payload if payload is not None else self.payload())
         self.recorder.record(message.topic, received=1, message_time=message.timestamp)
@@ -347,7 +351,7 @@ class TriagedPipelineTestCase(PipelineTestCase):
         )
 
 
-class TestTriageInThePipeline(TriagedPipelineTestCase):
+class TestTriageInThePipeline(TriagedPipelineTestCase):  # pylint: disable=too-many-public-methods
     """Spec 6.3: each verdict applied, attributed, counted - and every failure surviving."""
 
     def test_an_accept_opens_a_ticket_and_links_its_usage(self):
@@ -427,11 +431,11 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         self.assertEqual(counts.triaged, 1)
         self.assertEqual(counts.triage_errors, 1)
 
-    def assert_unusable_answer_is_counted(self, answer):
+    def assert_unusable_answer_is_counted(self, answer, finish_reason=None):
         """An answer triage cannot use still opens the ticket, and shows as one error."""
         from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
 
-        decision = self.handle_triaged(answer=answer)
+        decision = self.handle_triaged(answer=answer, finish_reason=finish_reason)
         self.assertEqual(decision.action, ACTION_ACCEPT)
         ticket = EventTicket.objects.get()
         self.assertEqual(LLMUsageRecord.objects.get().ticket, ticket)
@@ -441,8 +445,18 @@ class TestTriageInThePipeline(TriagedPipelineTestCase):
         self.assertEqual(counts.received, counts.accounted_for)
 
     def test_an_empty_answer_accepts_and_counts_the_error(self):
-        """T3 and T4 - an empty answer is not a healthy model."""
+        """L4 and T4 - an empty answer is a failed call, and triage still counts it."""
+        from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
+
         self.assert_unusable_answer_is_counted("")
+        self.assertFalse(LLMUsageRecord.objects.get().success)
+
+    def test_a_cut_off_answer_accepts_and_counts_the_error(self):
+        """T3 and T4 - an answer that reached the token limit is counted, and the call stays a success."""
+        from nautobot_event_tracker.models import LLMUsageRecord  # pylint: disable=import-outside-toplevel
+
+        self.assert_unusable_answer_is_counted('{"action": "drop", "reason": "leaf-01 ethernet-1', "length")
+        self.assertTrue(LLMUsageRecord.objects.get().success)
 
     def test_an_unparsable_answer_accepts_and_counts_the_error(self):
         """T3 and T4 - prose is not an answer."""

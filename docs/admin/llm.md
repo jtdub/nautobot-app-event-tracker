@@ -181,8 +181,9 @@ What to know before you turn it on:
   the result can be one ticket too many and never a lost event. An answer is unusable when it is
   empty, when it is not JSON, when its action is unknown, or when an `attach` does not name a
   ticket from the list that the app offered. Each such event adds 1 to the `triage_errors`
-  counter. A failed call also shows as failed on its usage record. An unusable answer shows there
-  as a successful call. The consumer never exits because a model misbehaved.
+  counter. A failed call shows as failed on its usage record, and an empty answer is a failed call.
+  Other unusable answers show there as a successful call.
+  The consumer never exits because a model misbehaved.
 - **Latency.** The consumer handles one message at a time, so a slow model bounds throughput.
   The pre-filter and the dedup short-circuit keep the call volume to genuinely new events.
 - **Attribution.** Actions the model decided — a suppression, an attach — appear in the ticket
@@ -201,6 +202,17 @@ Every call the app makes — including failed ones — writes a usage record wit
 computed cost and latency. Read them at AI Tools → Event Tracker AI → LLM Usage, filter by model,
 purpose or success, or query the same rows over REST and GraphQL. A ticket's detail page shows
 the calls made about that ticket.
+
+A reasoning model can use all of its output tokens before it writes an answer. The app writes one
+warning to the log for an empty answer, and one for an answer that reached the limit of output
+tokens (`finish_reason: length`). The warning gives the finish reason, the prompt and completion
+token counts, and the reasoning token count when the provider reports it. An empty answer is also
+a failed call, and the Error field of its usage record holds the same detail.
+
+If you see these warnings for triage, increase `max_output_tokens` in the `triage` settings. If you
+see them for the agent, increase *num_predict* on the AI Model. Some providers also accept a
+parameter that decreases the reasoning of the model. Set it in the **Default parameters** of the
+AI Model.
 
 The usage list is read-only everywhere. Write permissions on it grant nothing through any shipped
 route.

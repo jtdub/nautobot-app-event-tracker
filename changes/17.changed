@@ -1,0 +1,3 @@
+Changed the LLM Usage list. An empty model answer now shows as a failed call.
+Changed the consumer log and the worker log. A warning now gives the cause and the token counts of an empty or cut-off model answer.
+Changed the agent. A run now ends as failed when the model gives an empty answer.

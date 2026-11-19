@@ -345,13 +345,23 @@ class FakeLLMResponse:  # pylint: disable=too-few-public-methods
         request_id="req-1",
         usage=True,
         tool_calls=None,
+        finish_reason=None,
+        reasoning_tokens=None,
     ):
         """A successful-looking response carrying this content, these tool calls and this usage."""
         self.id = request_id
         message = SimpleNamespace(content=content, tool_calls=list(tool_calls) if tool_calls else None)
-        self.choices = [SimpleNamespace(message=message)] if content is not None or tool_calls else []
+        has_choice = content is not None or bool(tool_calls) or finish_reason is not None
+        self.choices = [SimpleNamespace(message=message, finish_reason=finish_reason or "stop")] if has_choice else []
+        details = SimpleNamespace(reasoning_tokens=reasoning_tokens) if reasoning_tokens is not None else None
         self.usage = (
-            SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens) if usage else None
+            SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                completion_tokens_details=details,
+            )
+            if usage
+            else None
         )
 
 
@@ -390,16 +400,17 @@ class FakeComplete:  # pylint: disable=too-few-public-methods
     decision leaves a real usage record behind, exactly as it would in production.
     """
 
-    def __init__(self, text=None, *, error=None):
+    def __init__(self, text=None, *, error=None, finish_reason=None):
         """Answer every call with this text, or fail every call with this error."""
         self.text = DEFAULT_TRIAGE_ANSWER if text is None else text
         self.error = error
+        self.finish_reason = finish_reason
         self.calls = []
 
     def __call__(self, **kwargs):
         """Record the call, then answer through the real service."""
         self.calls.append(kwargs)
-        client = FakeLLMClient(FakeLLMResponse(self.text), error=self.error)
+        client = FakeLLMClient(FakeLLMResponse(self.text, finish_reason=self.finish_reason), error=self.error)
         return llm_service.complete(**kwargs, client=client)
 
 
