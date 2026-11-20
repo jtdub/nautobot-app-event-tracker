@@ -1,0 +1,2 @@
+Changed the agent. It now runs each read-only tool call that the model asks for in one model answer, in the order asked.
+Changed the agent. One model answer can now use all of `max_tool_calls`. Lower that setting to limit the tool calls of a run.

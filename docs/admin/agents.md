@@ -41,7 +41,17 @@ Everything else has a default:
 | `tool_timeout_seconds` | 30 | One tool call. |
 
 Reaching any of the four size bounds ends the run cleanly, with what it found and a line on the
-ticket saying which bound it hit. There is no spend cap: a run is bounded individually, and a
+ticket saying which bound it hit.
+
+One model answer can ask for many tool calls. Each call counts against `max_tool_calls`, so a run
+can reach `max_tool_calls` before `max_iterations`. The agent checks the transcript limit before
+each model call, so the results of one answer can take the transcript past `max_transcript_chars`.
+
+The agent makes the calls of one answer one after the other. Each call can take up to
+`tool_timeout_seconds`. A run that passes the time limit of the Job (660 seconds) stops with no
+result on the ticket. To lower this risk, lower `max_tool_calls` or `tool_timeout_seconds`.
+
+There is no spend cap: a run is bounded individually, and a
 deployment that launches many runs can still spend a great deal.
 
 A value that cannot work — a bound of zero, agents enabled with no model named — is refused at the
@@ -85,7 +95,10 @@ When the agent asks for a tool marked **Mutating**, three things happen and then
    arguments in full.
 3. The run finishes as **Waiting for Approval** and gives its worker back.
 
-Nothing has been called. The proposal can sit over a weekend at no cost.
+Nothing has been called for this tool. The proposal can sit over a weekend at no cost.
+
+The agent runs each read-only call of one model answer, in order, until it reaches a Mutating call.
+A call that comes after a Mutating call in the same answer does not run.
 
 **Approve** or **Deny** on the ticket page. Approving records the decision and enqueues a
 resumption run, which makes the call and carries on from where the first run stopped. Denying ends
@@ -106,8 +119,9 @@ can be steered.
 - An attacker **cannot** make the agent call a tool nobody enabled, or run a mutating tool without
   a person pressing Approve.
 - An attacker **can** try to steer which read-only tools get called and with what arguments, and to
-  influence the comment the agent leaves. A read-only tool is not a harmless tool if it reads
-  something sensitive.
+  influence the comment the agent leaves. One model answer can cause up to `max_tool_calls`
+  read-only calls. A lower `max_tool_calls` lowers that number. A read-only tool is not a harmless
+  tool if it reads something sensitive.
 - An attacker **can** try to make a mutating proposal look reasonable to a tired approver at 03:00.
   The gate is only as good as the person reading it, which is why the proposal shows the server,
   the tool and the exact arguments rather than the model's summary of them.

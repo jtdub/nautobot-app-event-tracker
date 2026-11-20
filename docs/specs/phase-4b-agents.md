@@ -291,7 +291,8 @@ logging and the `JobResult`.
   calls across the whole chain of resumptions, `max_tool_result_chars` per result and
   `max_transcript_chars` overall. Reaching any of them ends the run `completed` with what it has
   and a line saying which limit it hit. An unbounded agent is a bill and a liability, and "the
-  model usually stops" is not a bound.
+  model usually stops" is not a bound. The Job time limit is not one of the four bounds. A turn of
+  slow tool calls can reach it.
 - **A3 — The loop ends at the first mutating proposal.** It never waits (ADR 0009). The proposal
   is written, the ticket's trail says so, the run finishes `waiting_approval`, and the worker slot
   goes back.
@@ -330,7 +331,8 @@ logging and the `JobResult`.
    the capped payload, and the enabled tools' schemas.
 4. `complete(tools=..., purpose="agent")`.
 5. No tool calls → the model's answer becomes a ticket comment; run `completed`.
-6. Read-only tool calls → execute (M4, M7), append results to the transcript, back to 4.
+6. Read-only tool calls → execute each one of the turn, in the order asked (M4, M7), append each result
+   to the transcript, back to 4. The run stops at the first mutating call of the turn (step 7).
 7. A mutating tool call → propose it and stop (A3).
 8. Any `LLMError`, `MCPError` or exhausted bound → A6 or A2.
 
@@ -466,7 +468,8 @@ can be steered. What the controls in this spec bound is the *blast radius*, not 
 - An attacker cannot make the agent call a tool nobody enabled (M4), or execute a mutating tool
   without a human pressing Approve (M6, A3).
 - An attacker **can** attempt to steer which read-only tools get called and with what arguments,
-  and to influence the comment the agent leaves on the ticket. A read-only tool is not a harmless
+  and to influence the comment the agent leaves on the ticket. One answer of the model can cause up
+  to `max_tool_calls` read-only calls. A read-only tool is not a harmless
   tool if it reads something sensitive: enabling one is a decision about what an event's author may
   cause to be read.
 - An attacker **can** attempt to make a mutating proposal look reasonable to a tired approver at
@@ -604,12 +607,14 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   row. What does happen, several times a day in a deployment that uses the gate, is a
   `waiting_approval` run whose approved call is taken over by a resumption. That run did not
   complete and was not abandoned - it handed over - and it now says so.
-- **One tool call is executed per turn.** Section 6.2 did not say what happens when a model asks
-  for three at once. The answer is that the first runs and the others are told, in the transcript,
-  that they were not executed; a model that still wants them asks again next turn. The alternatives
-  were a gate holding several proposals at once, or a run making two changes from one approval, and
-  neither is a thing to build. It also keeps the message sequence valid, since every tool call in
-  an assistant message must be answered before the next request.
+- **Each read-only tool call of a turn is executed (issue 20).** Section 6.2 did not say what
+  happens when a model asks for three at once. The agent runs each read-only call of the turn, in the
+  order asked. At the first mutating call it proposes and stops. After approval, the later calls of
+  that turn are told, in the transcript, that they did not run. One approval still gives one change,
+  and the gate still holds one proposal. Each call of an assistant message still gets an answer
+  before the next request. `max_tool_calls` can now be the limit that a run reaches first, because
+  one turn can use all of it. When the identifier of a call is empty or already in use, the app gives
+  the call a new identifier before it stores the turn.
 - **A tool call that fails does not fail the run.** Step 8 listed `MCPError` beside `LLMError` as a
   thing that ends a run, and section 7.4 said the opposite in the specific case it cared about. The
   narrower reading won: a tool that was reached and refused, or that answered badly, is a fact about
