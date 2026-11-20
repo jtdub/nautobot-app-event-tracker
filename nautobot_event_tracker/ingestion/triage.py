@@ -127,8 +127,8 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
     def _output_limit(self, model):
         """Return the limit of output tokens for one triage call.
 
-        The limit of the registry wins. The `max_output_tokens` setting applies when the AI Model
-        and its provider have no limit, or a limit of -1.
+        The registry limit wins when it is 1 or more. The `max_output_tokens` setting applies when
+        the registry value is empty, 0 or -1. A value on the AI Model hides the provider default.
         """
         return llm_service.registry_completion_cap(model) or self.triage.max_output_tokens
 

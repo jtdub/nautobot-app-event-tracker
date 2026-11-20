@@ -237,9 +237,8 @@ a failed call, and the Error field of its usage record holds the same detail.
 
 If you see these warnings, increase *num_predict* on the AI Model. For triage, you can also
 increase `max_output_tokens` in the `triage` settings when no *num_predict* value of 1 or more
-applies to the AI Model. Some providers also accept a
-parameter that decreases the reasoning of the model. Set it in the **Default parameters** of the
-AI Model.
+applies to the AI Model. Some providers also accept a parameter that decreases the reasoning of the
+model. Set it in the **Default parameters** of the AI Model.
 
 The usage list is read-only everywhere. Write permissions on it grant nothing through any shipped
 route.
