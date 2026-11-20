@@ -82,6 +82,9 @@ TOKENS_PER_MILLION = 1_000_000
 FINISH_REASON_LENGTH = "length"
 """The finish reason of an answer that reached the limit of output tokens."""
 
+PARAMETERS_SENT_AS_WRITTEN = ("reasoning_effort",)
+"""Allowed parameters that litellm refuses for a model it does not know on the `openai/` route."""
+
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
 #: rather than one per call. The same shape as `StatsRecorder._prune`'s bookkeeping.
 _last_pruned_on = None  # pylint: disable=invalid-name
@@ -627,6 +630,9 @@ def _registry_call_kwargs(model):
 
     Drop and log each key outside `ALLOWED_MODEL_PARAMETERS`, because a direct write can skip the check of the AI
     Models app. Use the temperature of the model or the provider when the parameters give none, as a float.
+
+    For an OpenAI-compatible provider, tell litellm to send `reasoning_effort`, because litellm does not know the
+    models of such an endpoint. The `extra_body` value applies when a row has the two forms.
     """
     registry_parameters = model.default_parameters or {}
     call_kwargs = {key: value for key, value in registry_parameters.items() if key in ALLOWED_MODEL_PARAMETERS}
@@ -638,6 +644,16 @@ def _registry_call_kwargs(model):
             ", ".join(dropped),
             ", ".join(ALLOWED_MODEL_PARAMETERS),
         )
+
+    if model.provider.provider_type == AIProviderTypeChoices.OPENAI_COMPATIBLE:
+        extra_body = call_kwargs.get("extra_body")
+        body_keys = extra_body if isinstance(extra_body, dict) else {}
+        for key in PARAMETERS_SENT_AS_WRITTEN:
+            if key in body_keys:
+                call_kwargs.pop(key, None)
+        sent_as_written = [key for key in PARAMETERS_SENT_AS_WRITTEN if key in call_kwargs]
+        if sent_as_written:
+            call_kwargs["allowed_openai_params"] = sent_as_written
 
     if "temperature" not in call_kwargs and model.resolved_temperature is not None:
         call_kwargs["temperature"] = float(model.resolved_temperature)

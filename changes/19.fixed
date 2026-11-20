@@ -1,0 +1,1 @@
+Fixed calls to an OpenAI-compatible AI Provider that failed when the Default parameters of the AI Model had a `reasoning_effort` key.

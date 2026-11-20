@@ -272,7 +272,7 @@ The Phase 2 AI-free guards are narrowed, not removed:
 | `test_ingestion_stats.py` / `test_ingestion_config.py` / `test_ingestion_command.py` (extend, PR B) | Counter flush and invariant; validation reporting every fault; dry-run spending nothing; the banner | 7, 8 |
 | `test_services.py` (extend, PR B) | `join_ticket` directly: S3/S4, monotonic `last_seen`, exactly one update | 5 |
 
-House rules hold: clocks injected, no test sleeps, no test opens a network connection — the `client` seam is the boundary, and no test mocks litellm internals.
+House rules hold: clocks injected, no test sleeps, no test opens a network connection — the `client` seam is the boundary, and no test mocks litellm internals. One exception exists. `test_llm_litellm_contract.py` runs the real litellm with a patched HTTP transport and no network connection, because only litellm can show which parameters it refuses (issue 19).
 
 ## 12. Decisions taken
 
