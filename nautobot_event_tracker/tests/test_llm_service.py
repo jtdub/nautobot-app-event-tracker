@@ -610,6 +610,20 @@ class TestCallParameters(TestCase):
         self.assertEqual(other_client.calls[0]["reasoning_effort"], "low")
         self.assertEqual(other_client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
 
+    def test_an_extra_body_that_is_not_an_object_does_not_drop_the_key(self):
+        """A text `extra_body` holds no keys, so the top-level key stays with its allowance."""
+        text_body = fixtures.create_llmmodel(name="text-body-model")
+        AIModel.objects.filter(pk=text_body.pk).update(
+            default_parameters={"reasoning_effort": "low", "extra_body": "reasoning_effort"}
+        )
+        text_body.refresh_from_db()
+
+        client = FakeLLMClient()
+        call(text_body, client)
+
+        self.assertEqual(client.calls[0]["reasoning_effort"], "low")
+        self.assertEqual(client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
+
     def test_the_allowance_reaches_a_call_with_tools(self):
         """The agent path passes `tools` and the allowance together."""
         model = fixtures.create_llmmodel(name="agent-reasoning-model", default_parameters={"reasoning_effort": "none"})

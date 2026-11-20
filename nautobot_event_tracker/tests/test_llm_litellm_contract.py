@@ -4,9 +4,12 @@ The Phase 3 spec (section 11) names this module as its one exception to the rule
 past the `client` seam. Only litellm can show which parameters it refuses, and a fake client cannot.
 """
 
+import importlib
 import importlib.util
 import json
 import os
+import socket
+import sys
 import unittest
 from unittest import mock
 
@@ -53,6 +56,7 @@ class TestTheRealClient(TestCase):
         super().setUp()
         import httpx  # pylint: disable=import-outside-toplevel
 
+        self.httpx = httpx
         self.bodies = []
 
         def fake_send(_client, request, **_kwargs):
@@ -67,6 +71,42 @@ class TestTheRealClient(TestCase):
         transport = mock.patch.object(httpx.Client, "send", fake_send)
         transport.start()
         self.addCleanup(transport.stop)
+
+    def test_importing_litellm_makes_no_network_request(self):
+        """Import litellm again with sockets blocked, so an earlier import cannot hide a request.
+
+        The test records each attempt, because litellm catches the error of a failed request. It sets the loaded
+        litellm modules aside and restores them after the import. It proves the import
+        with `LITELLM_LOCAL_MODEL_COST_MAP` set. It does not prove the later calls, which the patched transport
+        covers.
+        """
+
+        attempts = []
+
+        def refuse_network(*args, **_kwargs):
+            attempts.append(args[:2])
+            raise OSError("network blocked by the test")
+
+        def refuse_request(_client, request, **_kwargs):
+            attempts.append(str(request.url))
+            raise OSError("network blocked by the test")
+
+        loaded = {name: module for name, module in sys.modules.items() if name.split(".")[0] == "litellm"}
+        for name in loaded:
+            del sys.modules[name]
+        try:
+            with (
+                mock.patch.object(socket, "getaddrinfo", refuse_network),
+                mock.patch.object(socket, "create_connection", refuse_network),
+                mock.patch.object(socket.socket, "connect", refuse_network),
+                mock.patch.object(self.httpx.Client, "send", refuse_request),
+            ):
+                importlib.import_module("litellm")
+            self.assertEqual(attempts, [], "litellm tried to reach the network at import")
+        finally:
+            for name in [name for name in sys.modules if name.split(".")[0] == "litellm"]:
+                del sys.modules[name]
+            sys.modules.update(loaded)
 
     def complete(self, model):
         """One call through the service with the real client."""
