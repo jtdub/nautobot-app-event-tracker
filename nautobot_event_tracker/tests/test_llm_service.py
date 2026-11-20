@@ -513,6 +513,99 @@ class TestCallParameters(TestCase):
 
         self.assertEqual(client.calls[0]["timeout"], llm_service.DEFAULT_TIMEOUT_SECONDS)
 
+    def test_reasoning_effort_is_allowed_for_an_openai_compatible_provider(self):
+        """litellm cannot know the models of such an endpoint, so the app tells it to send the key."""
+        model = fixtures.create_llmmodel(name="reasoning-model", default_parameters={"reasoning_effort": "none"})
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertEqual(client.calls[0]["reasoning_effort"], "none")
+        self.assertEqual(client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
+
+    def test_no_allowance_is_passed_without_reasoning_effort(self):
+        """A model with no `reasoning_effort` key gets no allowance."""
+        model = fixtures.create_llmmodel(name="plain-model", default_parameters={"temperature": 0.1})
+
+        client = FakeLLMClient()
+        call(model, client)
+
+        self.assertNotIn("allowed_openai_params", client.calls[0])
+
+    def test_other_provider_types_get_no_allowance(self):
+        """OpenAI, Anthropic and Ollama keep the call that they had."""
+        for provider_type in (
+            AIProviderTypeChoices.OPENAI,
+            AIProviderTypeChoices.ANTHROPIC,
+            AIProviderTypeChoices.OLLAMA,
+        ):
+            with self.subTest(provider_type=provider_type):
+                provider = fixtures.create_llmprovider(name=f"{provider_type} provider", provider_type=provider_type)
+                model = fixtures.create_llmmodel(
+                    name=f"{provider_type}-model",
+                    provider=provider,
+                    default_parameters={"reasoning_effort": "low"},
+                )
+
+                client = FakeLLMClient()
+                call(model, client)
+
+                self.assertEqual(client.calls[0]["reasoning_effort"], "low")
+                self.assertNotIn("allowed_openai_params", client.calls[0])
+
+    def test_a_stored_allowance_does_not_reach_the_client(self):
+        """The filter drops `allowed_openai_params` from a row, so the app owns the list."""
+        with_key = fixtures.create_llmmodel(name="stored-allowance-model")
+        without_key = fixtures.create_llmmodel(name="stored-allowance-only-model")
+        AIModel.objects.filter(pk=with_key.pk).update(
+            default_parameters={"allowed_openai_params": ["api_base"], "reasoning_effort": "low"}
+        )
+        AIModel.objects.filter(pk=without_key.pk).update(default_parameters={"allowed_openai_params": ["api_base"]})
+        with_key.refresh_from_db()
+        without_key.refresh_from_db()
+
+        with_key_client = FakeLLMClient()
+        call(with_key, with_key_client)
+        without_key_client = FakeLLMClient()
+        call(without_key, without_key_client)
+
+        self.assertEqual(with_key_client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
+        self.assertNotIn("allowed_openai_params", without_key_client.calls[0])
+
+    def test_the_extra_body_value_applies_when_a_row_has_the_two_forms(self):
+        """The top-level key and its allowance go, and `extra_body` stays as written."""
+        both_forms = fixtures.create_llmmodel(
+            name="both-forms-model",
+            default_parameters={"reasoning_effort": "low", "extra_body": {"reasoning_effort": "none"}},
+        )
+        other_body = fixtures.create_llmmodel(
+            name="other-body-model",
+            default_parameters={"reasoning_effort": "low", "extra_body": {"top_k": 5}},
+        )
+
+        both_client = FakeLLMClient()
+        call(both_forms, both_client)
+        other_client = FakeLLMClient()
+        call(other_body, other_client)
+
+        self.assertNotIn("reasoning_effort", both_client.calls[0])
+        self.assertNotIn("allowed_openai_params", both_client.calls[0])
+        self.assertEqual(both_client.calls[0]["extra_body"], {"reasoning_effort": "none"})
+        self.assertEqual(other_client.calls[0]["reasoning_effort"], "low")
+        self.assertEqual(other_client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
+
+    def test_the_allowance_reaches_a_call_with_tools(self):
+        """The agent path passes `tools` and the allowance together."""
+        model = fixtures.create_llmmodel(name="agent-reasoning-model", default_parameters={"reasoning_effort": "none"})
+        definitions = [{"type": "function", "function": {"name": "look", "parameters": {}}}]
+
+        client = FakeLLMClient()
+        call(model, client, tools=definitions, purpose=LLMPurposeChoices.AGENT)
+
+        self.assertEqual(client.calls[0]["tools"], definitions)
+        self.assertEqual(client.calls[0]["reasoning_effort"], "none")
+        self.assertEqual(client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
+
 
 class TestRefusals(TestCase):
     """L8 - disabled means disabled, before any network traffic and with no record."""
