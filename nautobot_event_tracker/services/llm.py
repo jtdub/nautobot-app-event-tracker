@@ -283,7 +283,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         timeout or call_kwargs.get("timeout") or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS
     )
 
-    registry_cap = _registry_completion_cap(model)
+    registry_cap = registry_completion_cap(model)
     effective_max_tokens = max_tokens if max_tokens is not None else registry_cap
     if effective_max_tokens is not None:
         call_kwargs["max_tokens"] = effective_max_tokens
@@ -660,7 +660,7 @@ def _registry_call_kwargs(model):
     return call_kwargs
 
 
-def _registry_completion_cap(model):
+def registry_completion_cap(model):
     """Return the completion cap of the registry, or None. A value below 1 or no value means no cap."""
     registry_cap = model.resolved_num_predict
     if registry_cap is not None and registry_cap < 1:

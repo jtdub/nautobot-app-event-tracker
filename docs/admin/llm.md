@@ -204,7 +204,7 @@ suppress it, or drop it. Configure it inside the `ingestion` block:
         "provider": "Local Lab",        # AI Provider name
         "model": "llama-3.1-70b",       # AI Model name on that provider
         "timeout_seconds": 15,
-        "max_output_tokens": 256,
+        "max_output_tokens": 1024,      # used when the registry has no limit
         "max_context_chars": 4000,      # payload cap in the prompt
         "attach_candidates": 5,         # open tickets the model may attach to
         "model_cache_seconds": 60,      # how long a running consumer holds the model row
@@ -223,6 +223,32 @@ when the app was installed without the `llm` extra, alongside every other config
 row once and holds it for that long rather than joining before every event, which means unticking
 **Enabled** — or correcting a price — takes up to that long to reach a consumer that is already
 running. Lower it if you want the off switch to bite sooner; raise it on a very busy consumer.
+
+Triage sends a limit of output tokens with each call. It finds the limit in two steps:
+
+1. It reads *num_predict* of the AI Model. If that field is empty, it reads *Default num_predict*
+   of the AI Provider.
+2. If the value is 1 or more, that value is the limit. If the value is empty, 0 or -1, the limit
+   is `max_output_tokens` in the `triage` settings.
+
+A value on the AI Model hides the default of the AI Provider. For example, -1 on the model gives
+`max_output_tokens`, also when the provider has a default. A value of -1 does not remove the limit
+for triage.
+
+A reasoning model uses tokens from this limit before it writes the answer, so a small limit can
+give an empty answer. The default of 1024 leaves room for that reasoning. A model that does not
+reason writes one small JSON object, and the limit does not change its cost. To give one reasoning
+model more room, set *num_predict* on its AI Model. A running consumer uses the new value within
+`model_cache_seconds`.
+
+The agent uses the same *num_predict* value. If triage and the agent use the same AI Model, one
+value limits the two. To use different limits, register the model on a second AI Provider, which
+can use the same External Integration. The two rows then have their own prices, *Enabled* flags
+and Default parameters, and the LLM Usage list shows them as two models.
+
+`timeout_seconds` is the second limit. A slow model can reach the timeout before it reaches the
+token limit. If you increase the token limit for a reasoning model, also check `timeout_seconds`.
+When a call reaches one of the two limits, triage accepts the event.
 
 What to know before you turn it on:
 
@@ -275,10 +301,10 @@ tokens (`finish_reason: length`). The warning gives the finish reason, the promp
 token counts, and the reasoning token count when the provider reports it. An empty answer is also
 a failed call, and the Error field of its usage record holds the same detail.
 
-If you see these warnings for triage, increase `max_output_tokens` in the `triage` settings. If you
-see them for the agent, increase *num_predict* on the AI Model. Some providers also accept a
-parameter that decreases the reasoning of the model. Set it in the **Default parameters** of the
-AI Model.
+If you see these warnings, increase *num_predict* on the AI Model. For triage, you can also
+increase `max_output_tokens` in the `triage` settings when no *num_predict* value of 1 or more
+applies to the AI Model. Some providers also accept a parameter that decreases the reasoning of the
+model. Set it in the **Default parameters** of the AI Model.
 
 The usage list is read-only everywhere. Write permissions on it grant nothing through any shipped
 route.

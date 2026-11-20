@@ -277,6 +277,11 @@ class TestTriageConfiguration(fixtures.RefusalAssertions, SimpleTestCase):
         self.assertFalse(loaded.triage.enabled)
         self.assertTrue(loaded.topics["network.events"].triage)
 
+    @settings_with({"topics": {"network.events": TOPIC}})
+    def test_the_default_output_limit_is_1024(self):
+        """A reasoning model needs room for its reasoning and its answer."""
+        self.assertEqual(config.load().triage.max_output_tokens, 1024)
+
     @settings_with(
         {
             "topics": {"network.events": TOPIC},
@@ -336,6 +341,45 @@ class TestTriageConfiguration(fixtures.RefusalAssertions, SimpleTestCase):
     def test_a_topic_can_opt_out(self):
         """The payload-privacy escape hatch (spec 12.3)."""
         self.assertFalse(config.load().topics["network.events"].triage)
+
+
+class TestTheTriageSchemaAgreesWithTheValidator(fixtures.SchemaAgreementAssertions, SimpleTestCase):
+    """Prove that the schema and `config.load()` agree for the `triage` block.
+
+    The validator in the inherited failure messages is `config.load()`, not `get_settings()`.
+    """
+
+    BLOCK = "ingestion"
+    SETTINGS_MODULE = config
+    PROBES = {
+        "timeout_seconds": {"valid": (15, 0.5), "invalid": (0, -1, True)},
+        "max_output_tokens": {"valid": (1, 1024), "invalid": (0, -1, True)},
+        "max_context_chars": {"valid": (1, 4000), "invalid": (0, -1, True)},
+        "attach_candidates": {"valid": (1, 5), "invalid": (0, -1, True)},
+        "model_cache_seconds": {"valid": (1, 60), "invalid": (0, -1, True)},
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        """Read the `triage` block of the shipped schema."""
+        super().setUpClass()
+        cls.properties = cls.properties["triage"]["properties"]
+
+    def _validator_accepts(self, key, value):
+        """Return True if `config.load()` accepts this value for this key."""
+        with fixtures.app_settings(ingestion={"triage": {key: value}}):
+            try:
+                config.load()
+            except ImproperlyConfigured:
+                return False
+        return True
+
+    def test_every_default_is_declared_and_matches(self):
+        """The schema declares each `triage` key with the default of the code."""
+        self.assertEqual(set(self.properties), set(config.DEFAULTS["triage"]))
+
+        declared = {key: spec.get("default") for key, spec in self.properties.items()}
+        self.assertEqual(declared, dict(config.DEFAULTS["triage"]))
 
 
 class TestTriageDatabaseValidation(TestCase):

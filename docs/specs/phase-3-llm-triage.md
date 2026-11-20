@@ -76,7 +76,7 @@ PLUGINS_CONFIG = {
                 "provider": "",                 # LLMProvider.name — required when enabled
                 "model": "",                    # LLMModel.name on that provider — required when enabled
                 "timeout_seconds": 15,
-                "max_output_tokens": 256,
+                "max_output_tokens": 1024,      # used when the registry has no limit
                 "max_context_chars": 4000,      # payload cap into the prompt (T7)
                 "attach_candidates": 5,         # shortlist size (section 6.4)
                 "model_cache_seconds": 60,      # how stale the consumer's model row may be (L8)
@@ -205,7 +205,7 @@ Two refusals happen before anything is attempted and therefore record nothing: L
 1. Topic opted out (`triage: False`) → pass the pre-filter's decision through.
 2. T2's dedup short-circuit → pass through; S5 will join.
 3. T5's memo hit → return the memoized result.
-4. Build the shortlist (6.4); build the messages (T7); call `complete()` with `response_format={"type": "json_object"}`, the configured timeout and token cap, `purpose="triage"`.
+4. Build the shortlist (6.4); build the messages (T7); call `complete()` with `response_format={"type": "json_object"}`, the configured timeout, the output limit (the registry limit, or the configured token cap), `purpose="triage"`.
 5. On `LLMError`: T4. Otherwise parse and validate per T3.
 6. Memoize and return.
 
@@ -330,3 +330,4 @@ What a review of the merged phase found, and what closing it changed.
 - `TicketUpdate`, `IngestionStats` and `LLMUsageRecord` no longer carry `@extras_features("graphql")` beside their explicit GraphQL types: a model takes exactly one of Nautobot's two ways onto the schema, and carrying both registered two competing types for one model.
 - The `LLMProvider` and `LLMModel` filtersets gained the `tags` filter every taggable model's filterset is expected to carry, found by moving the filter tests onto `FilterTestCases.FilterTestCase`.
 - Six imports moved from internal Nautobot paths to `nautobot.apps.*`. `TokenPermissions` in `api/views.py` stays internal — it is not re-exported — and now carries a comment saying so.
+- Issue 18 raised the default of `triage.max_output_tokens` from 256 to 1024, because a reasoning model used 89 to 238 reasoning tokens in a test and those tokens count against the limit. Triage now sends the limit of the registry (`AIModel.resolved_num_predict`) when it is 1 or more, and the setting when it is not. `timeout_seconds` stays 15.
