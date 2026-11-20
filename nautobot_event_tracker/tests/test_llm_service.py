@@ -420,6 +420,22 @@ class TestCallParameters(TestCase):
         call(model, client, max_tokens=64)
         self.assertEqual(client.calls[0]["max_tokens"], 64)
 
+    def test_the_registry_cap_is_the_model_value_then_the_provider_default(self):
+        """A value on the model hides the provider default, and a value below 1 means no cap."""
+        capped_provider = fixtures.create_llmprovider(name="Capped Provider", num_predict=400)
+        rows = (
+            (fixtures.create_llmmodel(name="cap-model", num_predict=128), 128),
+            (fixtures.create_llmmodel(name="no-cap-model"), None),
+            (fixtures.create_llmmodel(name="unlimited-model", num_predict=-1), None),
+            (fixtures.create_llmmodel(name="inherits-model", provider=capped_provider), 400),
+            (fixtures.create_llmmodel(name="overrides-model", provider=capped_provider, num_predict=64), 64),
+            (fixtures.create_llmmodel(name="unlimited-on-capped", provider=capped_provider, num_predict=-1), None),
+            (fixtures.create_llmmodel(name="zero-on-capped", provider=capped_provider, num_predict=0), None),
+        )
+        for model, expected in rows:
+            with self.subTest(model=model.name):
+                self.assertEqual(llm_service.registry_completion_cap(model), expected)
+
     def test_default_parameters_pass_through_underneath(self):
         """The registry's parameters reach the call; the caller's own arguments beat them."""
         model = fixtures.create_llmmodel(name="tuned-model", default_parameters={"temperature": 0.1, "timeout": 999})
