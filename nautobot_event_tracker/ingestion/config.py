@@ -64,7 +64,7 @@ DEFAULTS = {
         "provider": "",
         "model": "",
         "timeout_seconds": 15,
-        "max_output_tokens": 256,
+        "max_output_tokens": 1024,
         "max_context_chars": 4000,
         "attach_candidates": 5,
         "model_cache_seconds": 60,

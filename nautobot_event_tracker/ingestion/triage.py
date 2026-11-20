@@ -124,16 +124,25 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
             self._memo_key, self._memo_result = identity, result
         return result
 
+    def _output_limit(self, model):
+        """Return the limit of output tokens for one triage call.
+
+        The registry limit wins when it is 1 or more. The `max_output_tokens` setting applies when
+        the registry value is empty, 0 or -1. A value on the AI Model hides the provider default.
+        """
+        return llm_service.registry_completion_cap(model) or self.triage.max_output_tokens
+
     def _ask_the_model(self, event, filter_result):
         """Build the prompt, make the call, and read the answer with appropriate suspicion."""
         shortlist = self._shortlist(filter_result.event_type)
         try:
+            model = self._get_model()
             response = self._complete(
-                model=self._get_model(),
+                model=model,
                 messages=self._messages(event, shortlist),
                 purpose=LLMPurposeChoices.TRIAGE,
                 timeout=self.triage.timeout_seconds,
-                max_tokens=self.triage.max_output_tokens,
+                max_tokens=self._output_limit(model),
                 response_format={"type": "json_object"},
             )
         except LLMError as error:

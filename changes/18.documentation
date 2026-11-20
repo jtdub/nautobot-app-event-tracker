@@ -1,0 +1,1 @@
+Added guidance on the triage output limit, num_predict, and `timeout_seconds` for reasoning models to the Configuring LLM Providers guide.

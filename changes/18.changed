@@ -1,0 +1,3 @@
+Changed event triage to use the num_predict value of the AI Model or its AI Provider as the limit. Check that value before you upgrade.
+Changed the default of `ingestion.triage.max_output_tokens` from 256 to 1024. Set the key to 256 to keep the old limit when no num_predict applies.
+Changed the `max_output_tokens` setting to apply only when no num_predict value of 1 or more applies to the triage model.

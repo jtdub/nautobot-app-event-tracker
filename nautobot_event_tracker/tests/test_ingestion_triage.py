@@ -285,6 +285,31 @@ class TestThePrompt(TriageTestCase):
         self.assertEqual(kwargs["response_format"], {"type": "json_object"})
         self.assertEqual(kwargs["purpose"], "triage")
 
+    def test_the_model_limit_wins_over_the_setting(self):
+        """The num_predict value of the AI Model is the limit of a triage call."""
+        AIModel.objects.filter(name="test-model").update(num_predict=300)
+        kwargs = self.call_kwargs(triage_settings={"max_output_tokens": 99})
+        self.assertEqual(kwargs["max_tokens"], 300)
+
+    def test_the_provider_default_applies_when_the_model_has_no_limit(self):
+        """The provider default is the limit when the model has no num_predict value."""
+        AIProvider.objects.filter(name="Test Provider").update(num_predict=400)
+        kwargs = self.call_kwargs(triage_settings={"max_output_tokens": 99})
+        self.assertEqual(kwargs["max_tokens"], 400)
+
+    def test_an_unlimited_registry_value_uses_the_setting(self):
+        """A num_predict value of -1 does not remove the limit of triage."""
+        AIModel.objects.filter(name="test-model").update(num_predict=-1)
+        kwargs = self.call_kwargs(triage_settings={"max_output_tokens": 99})
+        self.assertEqual(kwargs["max_tokens"], 99)
+
+    def test_an_unlimited_model_value_hides_the_provider_default(self):
+        """A model value of -1 gives the setting, also when the provider has a default."""
+        AIProvider.objects.filter(name="Test Provider").update(num_predict=400)
+        AIModel.objects.filter(name="test-model").update(num_predict=-1)
+        kwargs = self.call_kwargs(triage_settings={"max_output_tokens": 99})
+        self.assertEqual(kwargs["max_tokens"], 99)
+
     def test_the_prompt_carries_the_event_and_the_payload(self):
         """The model can only judge what it is shown."""
         kwargs = self.call_kwargs()
@@ -390,6 +415,19 @@ class TestTheModelCache(TriageTestCase):
         self.assertEqual(len(self.fake.calls), 1, "the disabled model was called anyway")
         self.assertTrue(result.errored)
         self.assertEqual(result.decision.action, ACTION_ACCEPT, "T4 still fails open")
+
+    def test_a_new_model_limit_reaches_a_running_consumer(self):
+        """A changed num_predict value applies after the TTL, with no restart."""
+        clock = StoppedClock()
+        triage = self.build(clock=clock, triage_settings={"max_output_tokens": 99})
+        self.decide(triage, identity="first")
+        self.assertEqual(self.fake.calls[0]["max_tokens"], 99)
+
+        AIModel.objects.filter(name="test-model").update(num_predict=300)
+        clock.now = 61.0
+        self.decide(triage, identity="second")
+
+        self.assertEqual(self.fake.calls[1]["max_tokens"], 300)
 
     def test_the_model_is_not_re_read_within_the_ttl(self):
         """The cache is still a cache: a join in front of every event is what it exists to avoid."""
