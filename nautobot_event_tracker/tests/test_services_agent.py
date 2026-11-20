@@ -950,7 +950,9 @@ class TestResumptionOfATurnWithMoreCalls(AgentTestCase):
     def approve_and_resume(self, calls):
         """Run one turn of these calls, approve its proposal, and run the agent again."""
         self.run_agent(calls)
-        agent_service.approve_tool_call(tool_call=AgentToolCall.objects.get(status=AgentToolCallStatusChoices.PROPOSED), user=self.user)
+        agent_service.approve_tool_call(
+            tool_call=AgentToolCall.objects.get(status=AgentToolCallStatusChoices.PROPOSED), user=self.user
+        )
         caller = fixtures.FakeToolCaller(text="config applied")
         run, _ = self.run_agent("Done.", call_tool=caller)
         return run, caller
