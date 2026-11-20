@@ -789,7 +789,8 @@ class SchemaAgreementAssertions:  # pylint: disable=no-member,invalid-name
     `ingestion/config.py`'s `_positive_int_problem` and `_positive_number_problem`, and
     `agent.py`'s `POSITIVE_INTEGER_KEYS` - are much less exposed, because one bound expression
     serves many keys there and drifting means editing the helper. `rag` and `dashboard` write each
-    bound out longhand per key, which is why they are the blocks with suites of their own.
+    bound out longhand per key, which is why they are the blocks with suites of their own. The
+    `triage` block of `ingestion` also has a suite, in `test_ingestion_config.py`.
 
     Subclass it with `BLOCK`, `SETTINGS_MODULE` and `PROBES`, and `BASE_BLOCK` where a key cannot
     be probed alone.
