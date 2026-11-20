@@ -156,9 +156,9 @@ every agent call.
 **Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
 tokens count against [`max_output_tokens`](#enabling-event-triage). With the default settings,
 2 of 14 triage answers were empty in the test. The `extra_body` value in the table stops the
-reasoning. Do not set `reasoning_effort` as a top-level key, because the call fails for the
-OpenAI-compatible provider type. The Default parameters apply to each call to this AI Model,
-agent calls included.
+reasoning. A top-level `reasoning_effort` key gives the same request. If the AI Model has the
+two forms, the `extra_body` value applies. The Default parameters apply to each call to this AI
+Model, agent calls included.
 
 **Go has no embedding model.** [Retrieval](rag.md) needs an embedding model on a different
 provider.
@@ -240,7 +240,9 @@ What to know before you turn it on:
   `timeout`. Anything that would choose *who* answers, an endpoint or a key or a header above
   all, is refused: those come from the provider's external integration and from nowhere else.
   A parameter outside the list that reached the row another way — a fixture, a data migration —
-  is dropped before the call and named in a log line rather than silently ignored.
+  is dropped before the call and named in a log line rather than silently ignored. For an
+  OpenAI-compatible provider, the app sends `reasoning_effort` as written, and the endpoint
+  decides if it accepts the value.
 - **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event, so
   the result can be one ticket too many and never a lost event. An answer is unusable when it is
   empty, when it is not JSON, when its action is unknown, or when an `attach` does not name a
