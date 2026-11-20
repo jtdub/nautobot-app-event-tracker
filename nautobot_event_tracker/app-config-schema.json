@@ -310,9 +310,9 @@
                         },
                         "max_output_tokens": {
                             "type": "integer",
-                            "description": "Completion cap for triage answers, which are one small JSON object.",
+                            "description": "Limit of output tokens for one triage answer. It applies when no num_predict value of 1 or more applies to the AI Model. Reasoning tokens count against it.",
                             "minimum": 1,
-                            "default": 256
+                            "default": 1024
                         },
                         "max_context_chars": {
                             "type": "integer",
