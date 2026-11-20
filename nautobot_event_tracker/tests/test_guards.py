@@ -845,7 +845,7 @@ class AIRegistryGuardTest(SimpleTestCase):
 
 
 class PythonSupportGuardTest(SimpleTestCase):
-    """The declared Python range, the classifiers, and the ruff target agree, with no 3.10 leftovers."""
+    """The declared Python range, the classifiers and the ruff target agree."""
 
     @staticmethod
     def _python_range():
