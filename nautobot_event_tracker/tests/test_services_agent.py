@@ -62,6 +62,20 @@ class AgentTestCase(TestCase):
         """Every trail entry of this type on the ticket."""
         return list(self.ticket.updates.filter(update_type=update_type))
 
+    @staticmethod
+    def messages_of(messages, role):
+        """Every message of a request with this role."""
+        return [message for message in messages if message.get("role") == role]
+
+
+class _EchoingToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-public-methods
+    """A fake tool caller whose text names the device of each call."""
+
+    def __call__(self, *, tool_call, timeout=None, max_result_chars=None):
+        """Answer with the device of this call."""
+        self.text = f"status of {tool_call.arguments['device']}"
+        return super().__call__(tool_call=tool_call, timeout=timeout, max_result_chars=max_result_chars)
+
 
 class TestTheSettings(TestCase):
     """The `agent` block: defaults, and the values that cannot work."""
@@ -233,6 +247,14 @@ class TestAPlainRun(AgentTestCase):
         self.assertEqual(len(complete.calls), 1)
         comment = self.updates(UpdateTypeChoices.COMMENT)[-1]
         self.assertIn("The interface flapped twice and recovered.", comment.message)
+
+    def test_the_system_prompt_allows_more_than_one_read_only_call_per_turn(self):
+        """The prompt states the rule that the code enforces."""
+        run, _ = self.run_agent("Nothing to report.")
+
+        self.assertIn("more than one read-only tool call", agent_service.SYSTEM_PROMPT)
+        self.assertNotIn("one tool call per turn", agent_service.SYSTEM_PROMPT)
+        self.assertEqual(run.transcript[0]["content"], agent_service.SYSTEM_PROMPT)
 
     def test_the_comment_is_attributed_to_the_ai_and_to_no_user(self):
         """A4 - the person who launched the run is not the actor on what the model decided."""
@@ -546,22 +568,99 @@ class TestReadOnlyCalls(AgentTestCase):
         self.assertIn("no tool called 'delete_everything'", self.messages(run, "tool")[0]["content"])
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
 
-    def test_only_the_first_call_of_a_turn_runs(self):
-        """One tool call per turn, and the others are told so rather than left unanswered."""
+    def test_every_read_only_call_of_a_turn_runs_in_order(self):
+        """Two reads in one turn are two calls, two rows and two trail entries."""
         caller = fixtures.FakeToolCaller()
+
+        run, _ = self.run_agent(
+            [
+                fixtures.fake_tool_call("get_interface_status", {"device": "leaf-01"}, identifier="call-1"),
+                fixtures.fake_tool_call("get_interface_status", {"device": "leaf-02"}, identifier="call-2"),
+            ],
+            "Done.",
+            call_tool=caller,
+        )
+
+        self.assertEqual([call["tool_call"].arguments["device"] for call in caller.calls], ["leaf-01", "leaf-02"])
+        self.assertEqual(
+            list(AgentToolCall.objects.values_list("status", flat=True)),
+            [AgentToolCallStatusChoices.EXECUTED] * 2,
+        )
+        self.assertEqual(len(self.updates(UpdateTypeChoices.TOOL_EXECUTED)), 2)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_two_identical_calls_of_a_turn_each_run_and_each_get_an_answer(self):
+        """The same name and arguments with different identifiers are two calls."""
+        caller = fixtures.FakeToolCaller()
+        arguments = {"device": "leaf-01"}
+
+        run, _ = self.run_agent(
+            [
+                fixtures.fake_tool_call("get_interface_status", arguments, identifier="call-1"),
+                fixtures.fake_tool_call("get_interface_status", arguments, identifier="call-2"),
+            ],
+            "Done.",
+            call_tool=caller,
+        )
+
+        self.assertEqual(len(caller.calls), 2)
+        self.assertEqual(AgentToolCall.objects.count(), 2)
+        self.assertEqual(len(self.messages(run, "tool")), 2)
+
+    def test_each_call_of_a_turn_is_answered_with_its_own_result_in_order(self):
+        """No answer starts with "Not executed", and the next request carries both answers."""
+        run, complete = self.run_agent(
+            [
+                fixtures.fake_tool_call("get_interface_status", {"device": "leaf-01"}, identifier="call-1"),
+                fixtures.fake_tool_call("get_interface_status", {"device": "leaf-02"}, identifier="call-2"),
+            ],
+            "Done.",
+            call_tool=_EchoingToolCaller(),
+        )
+
+        answers = self.messages(run, "tool")
+        self.assertEqual(
+            [(answer["tool_call_id"], answer["content"]) for answer in answers],
+            [("call-1", "status of leaf-01"), ("call-2", "status of leaf-02")],
+        )
+        self.assertFalse(any(answer["content"].startswith("Not executed") for answer in answers))
+        self.assertEqual(self.messages_of(complete.calls[1]["messages"], "tool"), answers)
+
+    def test_an_unknown_tool_between_two_valid_calls_is_answered_and_the_others_run(self):
+        """The unknown name writes no row and does not stop the calls after it."""
+        caller = fixtures.FakeToolCaller()
+
+        run, _ = self.run_agent(
+            [
+                fixtures.fake_tool_call("get_interface_status", identifier="call-1"),
+                fixtures.fake_tool_call("delete_everything", identifier="call-2"),
+                fixtures.fake_tool_call("get_interface_status", identifier="call-3"),
+            ],
+            "Done.",
+            call_tool=caller,
+        )
+
+        answers = {answer["tool_call_id"]: answer["content"] for answer in self.messages(run, "tool")}
+        self.assertIn("no tool called 'delete_everything'", answers["call-2"])
+        self.assertEqual(len(caller.calls), 2)
+        self.assertEqual(AgentToolCall.objects.count(), 2)
+
+    def test_a_failed_call_does_not_stop_the_next_call_of_the_turn(self):
+        """The model reads each failure, and the agent still makes the next call."""
+        caller = fixtures.FakeToolCaller(error=MCPConfigurationError("Tool 'x' is not enabled."))
 
         run, _ = self.run_agent(
             [
                 fixtures.fake_tool_call("get_interface_status", identifier="call-1"),
                 fixtures.fake_tool_call("get_interface_status", identifier="call-2"),
             ],
-            "Done.",
+            "I could not read them.",
             call_tool=caller,
         )
 
-        self.assertEqual(len(caller.calls), 1)
-        answers = {message["tool_call_id"]: message["content"] for message in self.messages(run, "tool")}
-        self.assertIn("Not executed", answers["call-2"])
+        self.assertEqual(len(caller.calls), 2)
+        self.assertTrue(all("The call failed" in answer["content"] for answer in self.messages(run, "tool")))
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
 
     def test_a_failing_tool_is_reported_to_the_model_rather_than_ending_the_run(self):
         """7.4 - the server was reached and had something to say, and it is the model's to read."""
@@ -594,6 +693,40 @@ class TestTheGate(AgentTestCase):
             call_tool=caller,
         )
         return run, caller
+
+    def test_reads_before_a_mutating_call_run_and_nothing_after_it_does(self):
+        """A3 - the first mutating call is proposed, and the calls around it are not made."""
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
+        caller = fixtures.FakeToolCaller()
+
+        run, _ = self.run_agent(
+            [
+                fixtures.fake_tool_call("look", identifier="call-1"),
+                fixtures.fake_tool_call("push_config", identifier="call-2"),
+                fixtures.fake_tool_call("look", identifier="call-3"),
+            ],
+            call_tool=caller,
+        )
+
+        self.assertEqual(len(caller.calls), 1)
+        self.assertEqual(AgentToolCall.objects.filter(status=AgentToolCallStatusChoices.PROPOSED).count(), 1)
+        self.assertEqual(run.status, AgentRunStatusChoices.WAITING_APPROVAL)
+        self.assertEqual([answer["tool_call_id"] for answer in self.messages(run, "tool")], ["call-1"])
+
+    def test_two_mutating_calls_of_a_turn_give_one_proposal(self):
+        """One approval gives one change, so the gate holds one proposal."""
+        caller = fixtures.FakeToolCaller()
+
+        self.run_agent(
+            [
+                fixtures.fake_tool_call("push_config", identifier="call-1"),
+                fixtures.fake_tool_call("push_config", identifier="call-2"),
+            ],
+            call_tool=caller,
+        )
+
+        self.assertEqual(AgentToolCall.objects.filter(status=AgentToolCallStatusChoices.PROPOSED).count(), 1)
+        self.assertEqual(caller.calls, [])
 
     def test_nothing_is_called(self):
         """The one assertion this phase exists for."""
@@ -805,6 +938,110 @@ class TestResumption(AgentTestCase):
         self.assertIsNone(run.parent)
 
 
+class TestResumptionOfATurnWithMoreCalls(AgentTestCase):
+    """A3 and A4 - an approval answers its own call, and the later calls are told they did not run."""
+
+    def setUp(self):
+        """One read-only tool and one mutating tool."""
+        super().setUp()
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
+
+    def approve_and_resume(self, calls):
+        """Run one turn of these calls, approve its proposal, and run the agent again."""
+        self.run_agent(calls)
+        agent_service.approve_tool_call(tool_call=AgentToolCall.objects.get(status=AgentToolCallStatusChoices.PROPOSED), user=self.user)
+        caller = fixtures.FakeToolCaller(text="config applied")
+        run, _ = self.run_agent("Done.", call_tool=caller)
+        return run, caller
+
+    def test_the_later_call_is_told_it_did_not_run(self):
+        """The approved result answers the mutating call, and the last call gets a plain refusal."""
+        run, caller = self.approve_and_resume(
+            [
+                fixtures.fake_tool_call("look", identifier="call-1"),
+                fixtures.fake_tool_call("push_config", identifier="call-2"),
+                fixtures.fake_tool_call("look", identifier="call-3"),
+            ]
+        )
+
+        answers = {answer["tool_call_id"]: answer["content"] for answer in self.messages(run, "tool")}
+        self.assertEqual(answers["call-2"], "config applied")
+        self.assertTrue(answers["call-3"].startswith("Not executed"))
+        self.assertIn("approval", answers["call-3"])
+        self.assertEqual(len(caller.calls), 1)
+
+    def test_the_second_mutating_call_is_told_it_did_not_run_and_has_no_proposal(self):
+        """The second change needs a new request, not a second row."""
+        run, _ = self.approve_and_resume(
+            [
+                fixtures.fake_tool_call("push_config", identifier="call-1"),
+                fixtures.fake_tool_call("push_config", identifier="call-2"),
+            ]
+        )
+
+        answers = {answer["tool_call_id"]: answer["content"] for answer in self.messages(run, "tool")}
+        self.assertTrue(answers["call-2"].startswith("Not executed"))
+        self.assertEqual(AgentToolCall.objects.count(), 1)
+
+    def test_a_read_and_a_mutating_call_with_one_identifier_still_answer_the_mutating_call(self):
+        """The app gives the second call a new identifier, so the approved result finds its call."""
+        run, _ = self.approve_and_resume(
+            [
+                fixtures.fake_tool_call("look", identifier="call-1"),
+                fixtures.fake_tool_call("push_config", identifier="call-1"),
+            ]
+        )
+
+        mutating_id = self.messages(run, "assistant")[0]["tool_calls"][1]["id"]
+        answers = {answer["tool_call_id"]: answer["content"] for answer in self.messages(run, "tool")}
+        self.assertEqual(answers[mutating_id], "config applied")
+
+
+class TestCallIdentifiers(AgentTestCase):
+    """The app does not trust the provider to give each call a different identifier."""
+
+    def setUp(self):
+        """One read-only tool."""
+        super().setUp()
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
+
+    def test_empty_and_repeated_identifiers_of_one_turn_are_replaced(self):
+        """A good identifier stays, and each tool message uses the stored identifier."""
+        caller = fixtures.FakeToolCaller()
+
+        run, _ = self.run_agent(
+            [
+                fixtures.fake_tool_call("look", identifier="call-1"),
+                fixtures.fake_tool_call("look", identifier="call-1"),
+                fixtures.fake_tool_call("look", identifier=""),
+            ],
+            "Done.",
+            call_tool=caller,
+        )
+
+        stored = [call["id"] for call in self.messages(run, "assistant")[0]["tool_calls"]]
+        self.assertEqual(len(set(stored)), 3)
+        self.assertNotIn("", stored)
+        self.assertEqual(stored[0], "call-1")
+        self.assertEqual([answer["tool_call_id"] for answer in self.messages(run, "tool")], stored)
+        self.assertEqual(len(caller.calls), 3)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_an_identifier_of_an_earlier_turn_is_replaced(self):
+        """Each tool message agrees with the turn it answers."""
+        run, _ = self.run_agent(
+            [fixtures.fake_tool_call("look", identifier="call-1")],
+            [fixtures.fake_tool_call("look", identifier="call-1")],
+            "Done.",
+        )
+
+        assistants = self.messages(run, "assistant")
+        stored = [message["tool_calls"][0]["id"] for message in assistants[:2]]
+        self.assertNotEqual(stored[0], stored[1])
+        self.assertEqual([answer["tool_call_id"] for answer in self.messages(run, "tool")], stored)
+
+
 class TestBounds(AgentTestCase):
     """A2 - four bounds, and each of them ends a run cleanly with what it has."""
 
@@ -833,6 +1070,25 @@ class TestBounds(AgentTestCase):
 
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
         self.assertEqual(AgentToolCall.objects.count(), 2)
+        self.assertIn("2 tool calls", self.updates(UpdateTypeChoices.COMMENT)[-1].message)
+
+    def test_the_tool_call_limit_stops_a_turn_in_the_middle(self):
+        """The calls past the limit are not made and are not answered."""
+        caller = fixtures.FakeToolCaller()
+        with fixtures.agent_settings(max_iterations=10, max_tool_calls=2):
+            run = agent_service.run_agent(
+                ticket=self.ticket,
+                user=self.user,
+                complete=fixtures.FakeAgentComplete(
+                    [fixtures.fake_tool_call("look", identifier=f"call-{number}") for number in (1, 2, 3)]
+                ),
+                call_tool=caller,
+            )
+
+        self.assertEqual(AgentToolCall.objects.count(), 2)
+        self.assertEqual(len(caller.calls), 2)
+        self.assertEqual([answer["tool_call_id"] for answer in self.messages(run, "tool")], ["call-1", "call-2"])
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
         self.assertIn("2 tool calls", self.updates(UpdateTypeChoices.COMMENT)[-1].message)
 
     def test_the_transcript_limit_ends_the_run(self):
