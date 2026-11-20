@@ -5,6 +5,7 @@ Here you will find detailed instructions on how to **install** and **configure**
 ## Prerequisites
 
 - The app is compatible with Nautobot 3.2.0 and higher.
+- It requires Python 3.11 through 3.14.
 - **Databases supported: PostgreSQL only.**
 - It requires the [AI Models app](https://pypi.org/project/nautobot-ai-models/), version 1.1 or
   higher, which `pip` installs with it.
