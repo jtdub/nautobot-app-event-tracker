@@ -4,9 +4,11 @@ The Phase 3 spec (section 11) names this module as its one exception to the rule
 past the `client` seam. Only litellm can show which parameters it refuses, and a fake client cannot.
 """
 
+import atexit
 import importlib
 import importlib.util
 import json
+import logging
 import os
 import socket
 import sys
@@ -91,22 +93,37 @@ class TestTheRealClient(TestCase):
             attempts.append(str(request.url))
             raise OSError("network blocked by the test")
 
+        def litellm_handlers():
+            return {
+                name: list(logging.getLogger(name).handlers)
+                for name in list(logging.Logger.manager.loggerDict)
+                if name.startswith("LiteLLM")
+            }
+
         loaded = {name: module for name, module in sys.modules.items() if name.split(".")[0] == "litellm"}
+        handlers_before = litellm_handlers()
         for name in loaded:
             del sys.modules[name]
         try:
             with (
+                mock.patch.object(atexit, "register") as register_callback,
                 mock.patch.object(socket, "getaddrinfo", refuse_network),
                 mock.patch.object(socket, "create_connection", refuse_network),
                 mock.patch.object(socket.socket, "connect", refuse_network),
                 mock.patch.object(self.httpx.Client, "send", refuse_request),
             ):
                 importlib.import_module("litellm")
-            self.assertEqual(attempts, [], "litellm tried to reach the network at import")
         finally:
             for name in [name for name in sys.modules if name.split(".")[0] == "litellm"]:
                 del sys.modules[name]
             sys.modules.update(loaded)
+            for name in list(logging.Logger.manager.loggerDict):
+                if name.startswith("LiteLLM"):
+                    logging.getLogger(name).handlers = handlers_before.get(name, [])
+
+        self.assertEqual(attempts, [], "litellm tried to reach the network at import")
+        self.assertEqual(litellm_handlers(), handlers_before, "the second import left a log handler behind")
+        register_callback.assert_called()
 
     def complete(self, model):
         """One call through the service with the real client."""
