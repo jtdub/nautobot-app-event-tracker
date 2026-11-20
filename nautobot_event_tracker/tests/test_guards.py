@@ -857,7 +857,7 @@ class PythonSupportGuardTest(SimpleTestCase):
         return int(match.group(1)), int(match.group(2))
 
     def test_the_python_floor_is_3_11_or_later(self):
-        """Python 3.10 is end of life, and litellm 1.97.0 cannot build its messages on it."""
+        """The floor is a Python release that its maker still supports and that litellm 1.97.0 can run on."""
         floor, _ceiling = self._python_range()
 
         self.assertGreaterEqual(floor, 11)
