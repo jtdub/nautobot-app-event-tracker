@@ -8,7 +8,9 @@ asserted rather than trusted.
 
 import ast
 import importlib
+import re
 import tokenize
+import tomllib
 from pathlib import Path
 
 from django.test import SimpleTestCase
@@ -278,6 +280,12 @@ def _import_offenders(paths, forbidden):
                     yield f"{path.relative_to(APP_ROOT)}:{node.lineno} imports {name}"
 
 
+def _pyproject():
+    """Return the parsed pyproject.toml."""
+    with open(APP_ROOT.parent / "pyproject.toml", "rb") as handle:
+        return tomllib.load(handle)
+
+
 class IngestionGuardTest(SimpleTestCase):
     """Phase 2's two rules, asserted rather than trusted.
 
@@ -338,13 +346,7 @@ class IngestionGuardTest(SimpleTestCase):
     @staticmethod
     def _poetry():
         """The parsed `[tool.poetry]` table, so the guards read data rather than source strings."""
-        try:
-            import tomllib  # pylint: disable=import-outside-toplevel
-        except ImportError:  # Python 3.10
-            import tomli as tomllib  # pylint: disable=import-outside-toplevel
-
-        with open(APP_ROOT.parent / "pyproject.toml", "rb") as handle:
-            return tomllib.load(handle)["tool"]["poetry"]
+        return _pyproject()["tool"]["poetry"]
 
     def test_the_app_declares_no_provider_sdk_dependency(self):
         """The no-SDK rule at the packaging level, where it is equally easy to break.
@@ -840,3 +842,47 @@ class AIRegistryGuardTest(SimpleTestCase):
 
         for name in sorted(self.REGISTRY_MODELS):
             self.assertTrue(isinstance(getattr(registry_models, name, None), type), f"{name} is not a registry class")
+
+
+class PythonSupportGuardTest(SimpleTestCase):
+    """The declared Python range, the classifiers, and the ruff target agree, with no 3.10 leftovers."""
+
+    @staticmethod
+    def _python_range():
+        """Return the floor and the ceiling minor versions of the declared Python range."""
+        constraint = _pyproject()["tool"]["poetry"]["dependencies"]["python"]
+        match = re.fullmatch(r">=3\.(\d+),<3\.(\d+)", constraint)
+        if match is None:
+            raise AssertionError(f"The Python constraint {constraint!r} is not in the form '>=3.X,<3.Y'.")
+        return int(match.group(1)), int(match.group(2))
+
+    def test_the_python_floor_is_3_11_or_later(self):
+        """Python 3.10 is end of life, and litellm 1.97.0 cannot build its messages on it."""
+        floor, _ceiling = self._python_range()
+
+        self.assertGreaterEqual(floor, 11)
+
+    def test_the_classifiers_match_the_python_range(self):
+        """Each supported minor version has one classifier, and no other minor version has one."""
+        floor, ceiling = self._python_range()
+        prefix = "Programming Language :: Python :: 3."
+
+        classifiers = _pyproject()["tool"]["poetry"]["classifiers"]
+
+        declared = [
+            name.removeprefix("Programming Language :: Python :: ") for name in classifiers if name.startswith(prefix)
+        ]
+        self.assertEqual(declared, [f"3.{minor}" for minor in range(floor, ceiling)])
+
+    def test_ruff_targets_the_python_floor(self):
+        """Ruff checks the code against the oldest Python that the app supports."""
+        floor, _ceiling = self._python_range()
+
+        self.assertEqual(_pyproject()["tool"]["ruff"]["target-version"], f"py3{floor}")
+
+    def test_no_backport_of_tomllib_is_declared(self):
+        """Python 3.11 has tomllib, so no group declares the tomli backport."""
+        poetry = _pyproject()["tool"]["poetry"]
+        tables = [poetry["dependencies"]] + [group["dependencies"] for group in poetry["group"].values()]
+
+        self.assertEqual([table for table in tables if "tomli" in table], [])
