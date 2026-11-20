@@ -154,11 +154,11 @@ installation. Do not change that text. The app sends the same value with every t
 every agent call.
 
 **Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
-tokens count against [`max_output_tokens`](#enabling-event-triage). With the default settings,
-2 of 14 triage answers were empty in the test. The `extra_body` value in the table stops the
-reasoning. A top-level `reasoning_effort` key gives the same request. If the AI Model has the
-two forms, the `extra_body` value applies. The Default parameters apply to each call to this AI
-Model, agent calls included.
+tokens count against [`max_output_tokens`](#enabling-event-triage). With a limit of 256 tokens,
+which was the default at that time, 2 of 14 triage answers were empty in the test. The
+`extra_body` value in the table stops the reasoning. A top-level `reasoning_effort` key gives
+the same request. If the AI Model has the two forms, the `extra_body` value applies. The
+Default parameters apply to each call to this AI Model, agent calls included.
 
 **Go has no embedding model.** [Retrieval](rag.md) needs an embedding model on a different
 provider.
