@@ -104,6 +104,70 @@ AI Models app refuses anything else at save time. Where both are set, an entry i
 parameters* wins over the column of the same name, and a model's own value wins over the
 provider's default.
 
+## OpenCode Go
+
+[OpenCode Go](https://opencode.ai/docs/en/go/) is a hosted service with an OpenAI-compatible API.
+It needs two settings that other endpoints do not need. The values in this section worked in a
+test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other Go model.
+
+!!! warning "Read the Go usage policy before you enable triage"
+    Unattended triage can use all of the allowance of your subscription. OpenCode says that Go
+    is for agents that write code, and that Go monitors traffic for abuse. Go has a 5-hour limit
+    and a weekly limit. Read the [usage limits of Go](https://opencode.ai/docs/en/go/#usage-limits)
+    before you continue.
+
+    The LLM Usage list does not show the Go allowance. It shows the cost from the prices on the
+    AI Model row (see [Watching the spend](#watching-the-spend)). Use the OpenCode console to
+    see the allowance. If Extra Usage is on in your OpenCode account, Go does not stop at a
+    limit. Go charges your account credit.
+
+    When Go stops a call, triage accepts the event. See "Failure is safe" in
+    [Enabling event triage](#enabling-event-triage).
+
+    The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
+
+Follow the steps in [Registering a provider](#registering-a-provider) with these values:
+
+| Object | Field | Value |
+| --- | --- | --- |
+| External Integration | *Remote URL* | `https://opencode.ai/inference/go/v1` |
+| External Integration | *Headers* | `{"x-opencode-session": "nautobot-event-tracker-prod"}` |
+| External Integration | *Secrets Group* | The group that holds your Go API key |
+| AI Provider | *Provider type* | **OpenAI-compatible** |
+| AI Model | *Name* | `deepseek-v4.1-flash` |
+| AI Model | *Kind* | *Chat* |
+| AI Model | *Default parameters* | `{"extra_body": {"reasoning_effort": "none"}}` |
+
+Make the AI Model row by hand. The model list of Go also has models that use a different API.
+
+To check the URL, read the model list. This call needs no key:
+
+```shell
+curl https://opencode.ai/inference/go/v1/models
+```
+
+The answer is a JSON list of the models that Go offers.
+
+**Go needs the session header.** Go refuses a call that does not have the
+`x-opencode-session` header. The error is `MissingSessionID`. Use a text that names this
+installation. Do not change that text. The app sends the same value with every triage call and
+every agent call.
+
+**Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
+tokens count against [`max_output_tokens`](#enabling-event-triage). With the default settings,
+2 of 14 triage answers were empty in the test. The `extra_body` value in the table stops the
+reasoning. Do not set `reasoning_effort` as a top-level key, because the call fails for the
+OpenAI-compatible provider type. The Default parameters apply to each call to this AI Model,
+agent calls included.
+
+**Go has no embedding model.** [Retrieval](rag.md) needs an embedding model on a different
+provider.
+
+**Some models need the Global region.** OpenCode says that `deepseek-v4.1-flash` is available
+only when the privacy settings of your OpenCode workspace permit the Global region. Triage sends
+the event payload to the model. Read "Cost and privacy" in
+[Enabling event triage](#enabling-event-triage) before you permit the region.
+
 ## Settings
 
 The service layer itself has one setting, under the app's `llm` key:
