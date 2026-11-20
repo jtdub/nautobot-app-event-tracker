@@ -40,7 +40,8 @@ once the test suite passes against it. A new Nautobot major release is where the
 move together. Dropping support for a Nautobot version raises `min_version` and is a minor release
 of this app, called out in the [release notes](release_notes/index.md).
 
-Python support follows Nautobot's: 3.10 through 3.14. PostgreSQL is the only supported database
+This app supports Python 3.11 through 3.14. Nautobot 3.2 also runs on Python 3.10, but this app
+does not. PostgreSQL is the only supported database
 ([ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md)); MySQL is not supported and is not planned.
 
 ## The AI Models app
