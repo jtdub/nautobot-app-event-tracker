@@ -78,4 +78,4 @@ Other constraints from the ADRs (`docs/decisions/`):
 - UI is `NautobotUIViewSet` + UI Component Framework only — no hand-written templates.
 - Phase specs live in `docs/specs/` and code comments reference them by section number; keep those references accurate when editing.
 
-Documentation is MkDocs (`invoke docs` serves it; `invoke build-and-check-docs` runs in CI and before `invoke unittest`). Supported: Python 3.10–3.14, Nautobot >=3.2.0 <4.0.0.
+Documentation is MkDocs (`invoke docs` serves it; `invoke build-and-check-docs` runs in CI and before `invoke unittest`). Supported: Python 3.11–3.14, Nautobot >=3.2.0 <4.0.0.
