@@ -60,10 +60,12 @@ class TestTheRealClient(TestCase):
 
         self.httpx = httpx
         self.bodies = []
+        self.headers = []
 
         def fake_send(_client, request, **_kwargs):
             self.assertEqual(str(request.url), COMPLETIONS_URL)
             self.bodies.append(json.loads(request.content))
+            self.headers.append(request.headers)
             return httpx.Response(200, request=request, json=CANNED_ANSWER)
 
         environment = mock.patch.dict(os.environ, {"LITELLM_LOCAL_MODEL_COST_MAP": "True"})
@@ -125,9 +127,22 @@ class TestTheRealClient(TestCase):
         self.assertEqual(litellm_handlers(), handlers_before, "the second import left a log handler behind")
         register_callback.assert_called()
 
-    def complete(self, model):
+    def complete(self, model, **kwargs):
         """One call through the service with the real client."""
-        return llm_service.complete(model=model, messages=MESSAGES, purpose=LLMPurposeChoices.TRIAGE)
+        return llm_service.complete(model=model, messages=MESSAGES, purpose=LLMPurposeChoices.TRIAGE, **kwargs)
+
+    def test_the_session_id_reaches_the_request_headers(self):
+        """AC-6 - the rendered Headers template is in the HTTP request, and each call has its own value."""
+        integration = fixtures.create_external_integration(
+            name="Session Header Endpoint", headers={"x-opencode-session": "{{ session_id }}"}
+        )
+        provider = fixtures.create_llmprovider(name="Session Header Provider", external_integration=integration)
+        model = fixtures.create_llmmodel(name="real-session-model", provider=provider)
+
+        self.complete(model, session_id="run-a")
+        self.complete(model, session_id="run-b")
+
+        self.assertEqual([headers["x-opencode-session"] for headers in self.headers], ["run-a", "run-b"])
 
     def test_a_top_level_reasoning_effort_reaches_the_request_body(self):
         """litellm sends the key at the top level and keeps the allowance out of the body."""

@@ -844,6 +844,20 @@ class AIRegistryGuardTest(SimpleTestCase):
             self.assertTrue(isinstance(getattr(registry_models, name, None), type), f"{name} is not a registry class")
 
 
+class SessionHeaderGuardTest(SimpleTestCase):
+    """AC-8 - the name of the session header is the operator's data, not the app's."""
+
+    def test_no_app_module_names_a_session_header(self):
+        """The Headers field of the integration holds the name. No Python file outside the tests does."""
+        offenders = [
+            str(path.relative_to(APP_ROOT))
+            for path in sorted(APP_ROOT.rglob("*.py"))
+            if "tests" not in path.relative_to(APP_ROOT).parts and "x-opencode" in path.read_text(encoding="utf-8")
+        ]
+
+        self.assertEqual(offenders, [], "A provider header name belongs in the Headers field. Offenders: " + ", ".join(offenders))
+
+
 class PythonSupportGuardTest(SimpleTestCase):
     """The declared Python range, the classifiers and the ruff target agree."""
 
