@@ -64,7 +64,7 @@ The integration decides more than the address. Four of its fields are read on ev
 | --- | --- |
 | *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the AI Provider |
 | *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
-| *Headers* | Sent with every request, templated the same way. The template also knows `{{ session_id }}`: the ID of an agent run, the consumer name of a triage call, or a random ID of the process for each other call |
+| *Headers* | Sent with every request, templated the same way. The template also knows `{{ session_id }}`: the ID of the first run of an agent investigation, the consumer name of a triage call, or a random ID of the process for each other call |
 | *SSL Verification* | **Not applied to LLM calls** — see below |
 | *CA File Path* | **Not applied to LLM calls** — see below |
 | *Timeout* | The call's timeout, unless the model row or the caller states one |
@@ -126,6 +126,11 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other 
 
     The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
 
+!!! warning
+    With the template, Go sees the consumer name of each triage call. The default
+    consumer name holds the host name and the process number. Set `ingestion.consumer_name` to a
+    text that names nothing.
+
 Follow the steps in [Registering a provider](#registering-a-provider) with these values:
 
 | Object | Field | Value |
@@ -166,11 +171,6 @@ A renderer that does not know `session_id` sends the literal text `{{ session_id
 registry Job "Discover AI Models" and an MCP server integration are such renderers. The
 `default` filter, with single quotes, gives them a value. Do not use double quotes in the
 filter. Double quotes break the stored JSON, and the app then refuses each call.
-
-!!! warning
-    With the template, Go sees the consumer name of each triage call. The default
-    consumer name holds the host name and the process number. Set `ingestion.consumer_name` to a
-    text that names nothing.
 
 After you change the Headers, make one agent run or send one event. Open the LLM Usage list and
 read the record of that call. If the record shows a session error, put the fixed value back.

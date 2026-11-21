@@ -46,7 +46,7 @@ only module that imports litellm and the only writer of the usage records.
 | **What is recorded** | One `LLMUsageRecord` per call — including failed calls — with token counts, cost and latency |
 | **Configured by** | The `llm` block and `ingestion.triage` — see [Configuring LLM Providers](../admin/llm.md) |
 
-Three things worth knowing before you enable it:
+Four things worth knowing before you enable it:
 
 - **The payload leaves the box.** Set `triage: False` on any topic whose payloads must not, or
   point the provider at a self-hosted endpoint. On-premises endpoints are a first-class case, not

@@ -546,9 +546,10 @@ def _session_value(session_id):
 def _connection_kwargs(provider, session_id):
     """L3 - everything the ExternalIntegration says about this connection, read at call time.
 
-    The endpoint, the key and the Headers. The Headers template also knows `session_id`. Reading `remote_url` raw was wrong twice over - Jinja2
-    templating is supported on it, so a templated URL reached litellm as a literal `{{ ... }}`,
-    and a templated endpoint went nowhere.
+    The endpoint, the key and the Headers. The Headers template also knows `session_id`.
+
+    Reading `remote_url` raw was wrong twice over - Jinja2 templating is supported on it, so a
+    templated URL reached litellm as a literal `{{ ... }}`, and a templated endpoint went nowhere.
 
     Not the TLS fields: litellm takes no per-call TLS argument, and `_warn_about_unappliable_tls`
     explains what happens instead.
