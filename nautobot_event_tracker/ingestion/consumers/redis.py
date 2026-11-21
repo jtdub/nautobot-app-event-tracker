@@ -15,7 +15,7 @@ from nautobot_event_tracker.ingestion.consumers.base import BrokerMessage, Event
 logger = logging.getLogger(__name__)
 
 
-def _tls_options(url, connection):
+def tls_options(url, connection):
     """The integration's TLS settings, in the keywords redis-py takes - and only when it takes them.
 
     Gated on the scheme because redis-py builds a plain `Connection` for `redis://`, which accepts
@@ -77,7 +77,7 @@ class RedisEventConsumer(EventConsumer):
         options = {
             key: value for key, value in (("username", connection.username), ("password", connection.password)) if value
         }
-        options.update(_tls_options(url, connection))
+        options.update(tls_options(url, connection))
         self._client = redis.Redis.from_url(url, **options)
         self._pubsub = self._client.pubsub(ignore_subscribe_messages=True)
         self._pubsub.subscribe(*self.topics)

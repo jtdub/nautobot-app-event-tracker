@@ -1,0 +1,2 @@
+Fixed `invoke send-test-event`. The task stopped with a `TypeError` before it published an event.
+Changed `invoke send-test-event` to use the TLS settings of the External Integration, as the event consumer does.

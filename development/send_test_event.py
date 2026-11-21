@@ -90,19 +90,24 @@ def _publish_to_redis(loaded, topic, payloads):
     from nautobot_event_tracker.ingestion.consumers.base import (  # pylint: disable=import-outside-toplevel
         connection_details,
     )
+    from nautobot_event_tracker.ingestion.consumers.redis import tls_options  # pylint: disable=import-outside-toplevel
 
-    url, username, password = connection_details(loaded.consumer_settings, url_key="url")
-    credentials = {key: value for key, value in (("username", username), ("password", password)) if value}
-    client = redis.Redis.from_url(url, **credentials)
+    connection = connection_details(loaded.consumer_settings, url_key="url")
+    options = {
+        key: value for key, value in (("username", connection.username), ("password", connection.password)) if value
+    }
+    options.update(tls_options(connection.url, connection))
+    client = redis.Redis.from_url(connection.url, **options)
     for payload in payloads:
         client.publish(topic, payload)
 
 
 def _publish_to_kafka(loaded, topic, payloads):
-    """Produce to the topic the Kafka consumer subscribes to."""
+    """Produce to the topic the Kafka consumer subscribes to.
+
+    confluent-kafka is an optional extra. The development image installs it.
+    """
     try:
-        # An optional extra, exactly as it is for the consumer: an environment consuming from Redis
-        # installs nothing it does not use. The development image installs every extra.
         from confluent_kafka import Producer  # pylint: disable=import-outside-toplevel,import-error
     except ImportError:
         sys.exit("confluent-kafka is not installed. `poetry install --extras kafka`, or use the development image.")
@@ -111,10 +116,22 @@ def _publish_to_kafka(loaded, topic, payloads):
         connection_details,
     )
 
-    url, username, password = connection_details(loaded.consumer_settings, url_key="bootstrap_servers")
-    settings = {"bootstrap.servers": ",".join(url) if isinstance(url, (list, tuple)) else url}
-    if username and password:
-        settings.update({"sasl.username": username, "sasl.password": password})
+    connection = connection_details(loaded.consumer_settings, url_key="bootstrap_servers")
+    servers = connection.url
+    settings = {"bootstrap.servers": ",".join(servers) if isinstance(servers, (list, tuple)) else str(servers)}
+    if connection.username and connection.password:
+        settings.update(
+            {
+                "security.protocol": loaded.consumer_settings.get("security_protocol", "SASL_PLAINTEXT"),
+                "sasl.mechanism": loaded.consumer_settings.get("sasl_mechanism", "PLAIN"),
+                "sasl.username": connection.username,
+                "sasl.password": connection.password,
+            }
+        )
+    if not connection.verify_ssl:
+        settings["enable.ssl.certificate.verification"] = False
+    elif connection.ca_file_path:
+        settings["ssl.ca.location"] = connection.ca_file_path
 
     producer = Producer(settings)
     for payload in payloads:
