@@ -78,6 +78,12 @@ starts with "The agent run failed: The Job reached its soft time limit". Each to
 Failed. If a tool that changes the network was cut, its error says that the change might be in effect. Check
 the device before you approve the same change again.
 
+The ticket's trail gets an entry for each call that was cut. The same applies after a worker died in the
+middle of a run: the next launch on the ticket marks the run and its calls Failed. A run that waits to make an
+approved call does not start if two times `tool_timeout_seconds` plus 30 seconds do not fit in the limit. The
+call stays approved. Set the limits of the Job back to their defaults, or lower `tool_timeout_seconds`, then run
+the agent again.
+
 ## Running it
 
 **Investigate with Agent**, on a ticket's page. It leads to the Job's own run form with the ticket

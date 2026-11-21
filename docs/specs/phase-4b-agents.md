@@ -317,7 +317,8 @@ logging and the `JobResult`.
   a finished one is worse than no investigation. A failed run ends `failed`, says why on the
   ticket, and proposes nothing. A run that the soft time limit of the Job interrupts ends `failed`
   and names the limit, and each call that it left unfinished becomes `failed`. A Mutating call that
-  was cut says that the change might be in effect.
+  was cut says that the change might be in effect. Each call that a stop cut gets an entry in the
+  ticket's trail, also when a later launch finds a run whose process died.
 - **A7 — The transcript is the record.** Every system prompt, model message, tool call and tool
   result is stored on the run. Resumption needs it, and a person asking "why did it want to do
   *that*" needs it more.
@@ -423,7 +424,9 @@ The resumption run executes the approved call through `call_tool()` (M6 re-check
 row it is holding), writes the result, appends one `tool_executed` update, adds the result to the
 transcript, and carries on from step 4. If the tool was disabled or the server turned off between
 the approval and the resumption, the call fails per M4 and the run continues with that failure in
-its transcript, which is the honest thing for the model to see.
+its transcript, which is the honest thing for the model to see. A resumption starts only if two
+times `tool_timeout_seconds` plus 30 seconds fit in the run time limit. If not, the launch is
+refused and the call stays approved.
 
 ## 8. The tool-calling extension to `complete()`
 
