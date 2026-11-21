@@ -347,7 +347,8 @@ def run_agent(  # pylint: disable=too-many-arguments
     if enabled_tools().exists():
         mcp_service.require_client()
 
-    run = _claim_run(ticket=ticket, user=user, job_result=job_result)
+    limit = _run_time_limit(soft_time_limit, time_limit)
+    run = _claim_run(ticket=ticket, user=user, job_result=job_result, settings=settings, limit=limit)
     return _Loop(
         run=run,
         settings=settings,
@@ -356,7 +357,7 @@ def run_agent(  # pylint: disable=too-many-arguments
         call_tool=call_tool if call_tool is not None else mcp_service.call_tool,
         clock=clock,
         started=started,
-        limit=_run_time_limit(soft_time_limit, time_limit),
+        limit=limit,
         job_soft_time_limit=_positive_number(soft_time_limit) or JOB_SOFT_TIME_LIMIT_SECONDS,
     ).execute()
 
@@ -479,7 +480,7 @@ def _resumable_run(ticket):
     return existing
 
 
-def _claim_run(*, ticket, user, job_result):
+def _claim_run(*, ticket, user, job_result, settings, limit):
     """Decide whether this launch starts a run or resumes one, and open it - in one step.
 
     A9 is a check followed by an act, and the two were separate: two Jobs launched together both
@@ -497,7 +498,21 @@ def _claim_run(*, ticket, user, job_result):
     """
     with transaction.atomic():
         EventTicket.objects.select_for_update().get(pk=ticket.pk)
-        return _open_run(ticket=ticket, user=user, job_result=job_result, parent=_resumable_run(ticket))
+        parent = _resumable_run(ticket)
+        if parent is not None:
+            _require_time_for_approved_call(settings, limit)
+        return _open_run(ticket=ticket, user=user, job_result=job_result, parent=parent)
+
+
+def _require_time_for_approved_call(settings, limit):
+    """Raise `AgentConfigurationError` if the run time limit leaves no time for the approved call."""
+    allowance = TOOL_CALL_TIMEOUTS * settings.tool_timeout_seconds
+    if allowance + RUN_END_RESERVE_SECONDS > limit:
+        raise AgentConfigurationError(
+            f"The run time limit of {round(limit)} seconds leaves no time for the approved call, "
+            f"which can take {round(allowance)} seconds. The call stays approved. "
+            "Raise the time limits of the Job or lower `tool_timeout_seconds`, then run the agent again."
+        )
 
 
 def _is_dead(run):
@@ -518,14 +533,36 @@ def _bury(run):
     is the thing somebody would otherwise open a shell to investigate.
     """
     logger.warning("Agent run %s outlived its Job's time limit and is being marked failed", run.pk)
+    cut = mcp_service.fail_unfinished_calls(_chain_ids(run), mcp_service.DEAD_PROCESS_CALL_ERROR)
     run.status = AgentRunStatusChoices.FAILED
     run.error = (
         "The process running this agent stopped without recording an outcome - a time limit, a "
         "restart or an out-of-memory kill. Marked failed so the ticket can be worked again."
     )
+    if any(row.tool.writable for row in cut):
+        run.error = f"{run.error} {mcp_service.CUT_CHANGE_ERROR}"
     run.finished_at = timezone.now()
     run.save()
+    _record_cut_calls(run.ticket, cut)
     return run
+
+
+def _chain_ids(run):
+    """Return the IDs of this run and its parents, from this run to the first run."""
+    chain = [run.pk]
+    while run.parent_id is not None:
+        chain.append(run.parent_id)
+        run = run.parent
+    return chain
+
+
+def _record_cut_calls(ticket, calls):
+    """Write a trail entry for each call that a stop cut. A ticket that refuses the write is logged."""
+    for call in calls:
+        try:
+            ticket_service.record_tool_result(ticket=ticket, tool_call=call)
+        except (TicketServiceError, DjangoValidationError) as error:
+            logger.warning("Agent call %s could not be recorded on ticket %s: %s", call.pk, ticket.pk, error)
 
 
 def _open_run(*, ticket, user, job_result, parent):
@@ -1007,11 +1044,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
 
     def _chain_ids(self):
         """Return the IDs of this run and its parents, from this run to the first run."""
-        chain, run = [self.run.pk], self.run
-        while run.parent_id is not None:
-            chain.append(run.parent_id)
-            run = run.parent
-        return chain
+        return _chain_ids(self.run)
 
     def _session(self):
         """Return the session ID of this investigation: the ID of its first run.
@@ -1125,6 +1158,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         in_flight = self._in_flight_row()
         if in_flight is not None and in_flight.pk not in {row.pk for row in cut} and _was_cut(in_flight):
             cut.append(in_flight)
+        _record_cut_calls(self.ticket, cut)
         message = SOFT_TIME_LIMIT_RUN_ERROR.format(
             limit=round(self._job_soft_time_limit), activity=self._activity or "its work"
         )
