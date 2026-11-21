@@ -36,12 +36,13 @@ class TriageTestCase(TestCase):
         self.fake = None
         self.topic_config = None
 
-    def build(self, *, fake=None, triage_settings=None, topic_settings=None, clock=None):
+    def build(self, *, fake=None, triage_settings=None, topic_settings=None, clock=None, consumer_name=""):
         """A TriageFilter over a loaded configuration, and the loaded topic to go with it."""
         self.fake = fake if fake is not None else FakeComplete()
         with fixtures.ingestion_settings(
             triage={**TRIAGE_SETTINGS, **(triage_settings or {})},
             topics={"network.events": {**fixtures.INGESTION_TOPIC, **(topic_settings or {})}},
+            consumer_name=consumer_name,
         ):
             loaded = config.load()
         self.topic_config = loaded.topics["network.events"]
@@ -284,6 +285,11 @@ class TestThePrompt(TriageTestCase):
         self.assertEqual(kwargs["max_tokens"], 99)
         self.assertEqual(kwargs["response_format"], {"type": "json_object"})
         self.assertEqual(kwargs["purpose"], "triage")
+
+    def test_the_call_carries_the_consumer_name_as_the_session_id(self):
+        """AC-3 - the calls of one consumer share one session."""
+        kwargs = self.call_kwargs(consumer_name="triage-a")
+        self.assertEqual(kwargs["session_id"], "triage-a")
 
     def test_the_model_limit_wins_over_the_setting(self):
         """The num_predict value of the AI Model is the limit of a triage call."""

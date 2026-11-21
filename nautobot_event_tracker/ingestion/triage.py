@@ -88,6 +88,7 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
         self.triage = config.triage
         self._complete = complete if complete is not None else llm_service.complete
         self._clock = clock
+        self._session_id = config.consumer_name
         self._model = None
         self._model_error = None
         self._model_read_at = None
@@ -144,6 +145,7 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
                 timeout=self.triage.timeout_seconds,
                 max_tokens=self._output_limit(model),
                 response_format={"type": "json_object"},
+                session_id=self._session_id,
             )
         except LLMError as error:
             # T4 - fail open. The call is already on the usage record (L1); the counter and the
