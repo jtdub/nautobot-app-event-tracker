@@ -1254,3 +1254,33 @@ def _failing_complete(error):
         raise error
 
     return _complete
+
+
+class TestSessionId(AgentTestCase):
+    """Each model call of an investigation sends the ID of its first run as the session ID."""
+
+    def setUp(self):
+        """A mutating tool, so that a run can stop at a proposal."""
+        super().setUp()
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
+
+    def test_every_call_of_a_run_sends_the_run_id(self):
+        """AC-2 - the session of a run is the run."""
+        run, complete = self.run_agent(
+            [fixtures.fake_tool_call("get_interface_status", {"device": "leaf-01"})],
+            "Nothing to report.",
+        )
+
+        self.assertGreater(len(complete.calls), 1)
+        self.assertEqual({call["session_id"] for call in complete.calls}, {str(run.pk)})
+
+    def test_a_resumed_run_sends_the_id_of_the_first_run(self):
+        """AC-2 - an approval continues the investigation, so it continues the session."""
+        first, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=AgentToolCall.objects.get(), user=self.user)
+
+        resumed, complete = self.run_agent("Done.")
+
+        self.assertEqual(resumed.parent, first)
+        self.assertNotEqual(resumed.pk, first.pk)
+        self.assertEqual({call["session_id"] for call in complete.calls}, {str(first.pk)})

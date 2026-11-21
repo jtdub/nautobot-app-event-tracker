@@ -591,6 +591,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         self.model = model
         self._complete = complete
         self._call_tool = call_tool
+        self._session_id = None
 
     @property
     def transcript(self):
@@ -750,6 +751,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             ticket=self.ticket,
             tools=definitions or None,
             timeout=self.settings.timeout_seconds,
+            session_id=self._session(),
         )
 
     @staticmethod
@@ -905,11 +907,24 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         investigation continuing: counting per run would make the limit "twenty calls per
         approval", which is not a limit.
         """
+        return AgentToolCall.objects.filter(run_id__in=self._chain_ids()).count()
+
+    def _chain_ids(self):
+        """Return the IDs of this run and its parents, from this run to the first run."""
         chain, run = [self.run.pk], self.run
         while run.parent_id is not None:
             chain.append(run.parent_id)
             run = run.parent
-        return AgentToolCall.objects.filter(run_id__in=chain).count()
+        return chain
+
+    def _session(self):
+        """Return the session ID of this investigation: the ID of its first run.
+
+        The first model call finds it, inside `execute()`, so a database fault ends the run as failed (A6).
+        """
+        if self._session_id is None:
+            self._session_id = str(self._chain_ids()[-1])
+        return self._session_id
 
     def _exhausted_bound(self):
         """The bound this run has reached, or None while it still has room (A2)."""

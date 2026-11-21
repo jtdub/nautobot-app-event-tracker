@@ -32,7 +32,11 @@ reason the floor is 1.1 rather than 1.0.
 
 import json
 import logging
+import os
+import re
+import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -84,6 +88,15 @@ FINISH_REASON_LENGTH = "length"
 
 PARAMETERS_SENT_AS_WRITTEN = ("reasoning_effort",)
 """Allowed parameters that litellm refuses for a model it does not know on the `openai/` route."""
+
+SESSION_ID_MAX_LENGTH = 128
+"""Characters of a session ID that reach the Headers template."""
+
+SESSION_ID_FORBIDDEN = re.compile(r"[^A-Za-z0-9._:-]")
+"""Each character that the service replaces with a dash in a session ID. ASCII only."""
+
+_process_session = None  # pylint: disable=invalid-name
+_process_session_lock = threading.Lock()
 
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
 #: rather than one per call. The same shape as `StatsRecorder._prune`'s bookkeeping.
@@ -246,6 +259,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     response_format=None,
     tools=None,
     tool_choice=None,
+    session_id=None,
     client=None,
 ):
     """One model call: refuse (L8), resolve credentials (L3), call (L6), record (L1), price (L5).
@@ -259,6 +273,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     The app builds them from the registry's `MCPTool.input_schema` and never from anything a model
     said (Phase 4B section 8). A call that asked for tools and one that did not are priced
     identically: L1 through L8 are untouched by this argument.
+
+    `session_id` reaches the Headers template of the provider integration as `{{ session_id }}`.
+    The service cleans it. A call with no value sends one random value for each process.
 
     An answer with no text and no tool call is a failed call. A tool call with no text is a
     complete answer. A tool call problem keeps its own error text, so that the operator looks in
@@ -301,7 +318,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     # Splatted last and kept out of `call_kwargs`, so the endpoint and the key are decided here
     # and nowhere else (L3). A registry parameter colliding with one of them is a TypeError from
     # the call itself rather than a silent redirection - the allowlist above makes it unreachable.
-    connection = _connection_kwargs(model.provider)
+    connection = _connection_kwargs(model.provider, _session_value(session_id))
 
     started = time.monotonic()
     try:
@@ -354,7 +371,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
 
 def embed(  # pylint: disable=too-many-arguments,too-many-locals
-    *, model, text, purpose=LLMPurposeChoices.EMBEDDING, ticket=None, timeout=None, client=None
+    *, model, text, purpose=LLMPurposeChoices.EMBEDDING, ticket=None, timeout=None, session_id=None, client=None
 ):
     """One embedding call: the twin of `complete()`, and every rule it obeys applies here too.
 
@@ -365,7 +382,8 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     different verb.
 
     `client` is the test seam: a callable `(model_string, input, **kwargs)` returning a
-    litellm-shaped embedding response. No test reaches a provider.
+    litellm-shaped embedding response. No test reaches a provider. `session_id` works as it does
+    in `complete()`.
 
     Returns an `LLMEmbedding`. The vector is a list of floats, and its length is whatever the model
     produces - the caller records it rather than assuming (rule R2's other half). An embedding call reads no
@@ -379,7 +397,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
         "timeout": timeout or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
     }
     model_string = _model_string(model)
-    connection = _connection_kwargs(model.provider)
+    connection = _connection_kwargs(model.provider, _session_value(session_id))
 
     started = time.monotonic()
     try:
@@ -503,12 +521,35 @@ def _model_string(model):
     return f"{prefix}/{model.name}"
 
 
-def _connection_kwargs(provider):
+def _process_session_id():
+    """Return the random session value of this process, made on first use.
+
+    A forked worker has a new pid, so it makes its own value. A lock guards the check and the write.
+    """
+    global _process_session  # pylint: disable=global-statement
+    with _process_session_lock:
+        pid = os.getpid()
+        if _process_session is None or _process_session[0] != pid:
+            _process_session = (pid, str(uuid.uuid4()))
+        return _process_session[1]
+
+
+def _session_value(session_id):
+    """Return the session ID that the Headers template gets, cleaned of unsafe characters.
+
+    Return the process session value when the argument is `None` or empty.
+    """
+    cleaned = SESSION_ID_FORBIDDEN.sub("-", "" if session_id is None else str(session_id))
+    return cleaned[:SESSION_ID_MAX_LENGTH] or _process_session_id()
+
+
+def _connection_kwargs(provider, session_id):
     """L3 - everything the ExternalIntegration says about this connection, read at call time.
 
-    The endpoint, the key and the Headers. Reading `remote_url` raw was wrong twice over - Jinja2
-    templating is supported on it, so a templated URL reached litellm as a literal `{{ ... }}`,
-    and a templated endpoint went nowhere.
+    The endpoint, the key and the Headers. The Headers template also knows `session_id`.
+
+    Reading `remote_url` raw was wrong twice over - Jinja2 templating is supported on it, so a
+    templated URL reached litellm as a literal `{{ ... }}`, and a templated endpoint went nowhere.
 
     Not the TLS fields: litellm takes no per-call TLS argument, and `_warn_about_unappliable_tls`
     explains what happens instead.
@@ -529,7 +570,7 @@ def _connection_kwargs(provider):
     integration = provider.external_integration
     kwargs = {}
 
-    remote_url = _rendered(integration, "render_remote_url", provider)
+    remote_url = _rendered(integration, "render_remote_url", {"obj": provider})
     if remote_url:
         kwargs["api_base"] = remote_url
     elif provider.provider_type in PROVIDER_TYPES_REQUIRING_A_URL:
@@ -571,7 +612,7 @@ def _connection_kwargs(provider):
             # with a placeholder this app invented.
             kwargs["api_key"] = NO_CREDENTIAL_PLACEHOLDER
 
-    headers = _rendered(integration, "render_headers", provider)
+    headers = _rendered(integration, "render_headers", {"obj": provider, "session_id": session_id})
     if headers:
         kwargs["extra_headers"] = headers
 
@@ -679,15 +720,15 @@ def _integration_timeout(provider):
     return timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
 
 
-def _rendered(integration, method_name, provider):
+def _rendered(integration, method_name, context):
     """One of the integration's Jinja2-templated fields, rendered rather than read raw.
 
-    The template context is the provider, under `obj`, matching what Nautobot's own callers pass.
+    The caller gives the template context. It always holds the provider under `obj`, as Nautobot's own callers pass it.
     A broken template is a configuration fault and is raised as one: rendering it to something
     half-formed would point the call at an address nobody chose.
     """
     try:
-        return getattr(integration, method_name)({"obj": provider})
+        return getattr(integration, method_name)(context)
     except Exception as error:  # pylint: disable=broad-except
         raise LLMConfigurationError(
             f"External integration '{integration}' has a template that does not render: {error}"

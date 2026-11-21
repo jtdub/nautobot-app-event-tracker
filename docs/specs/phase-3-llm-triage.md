@@ -320,6 +320,7 @@ Appended as each PR lands, per the Phase 2 precedent.
 
 What a review of the merged phase found, and what closing it changed.
 
+- Issue 22 gave `complete()` and `embed()` a `session_id` argument. The Headers template of the integration gets the value as `session_id`. A call with no value sends one random value for each process. Rules L1 to L8 did not change.
 - Issue 15 made the code count a T3 rejection in `triage_errors`, which the first implementation did not do.
 - Issue 17 made `complete()` read the finish reason. An empty answer (`""` or white space) is now an `LLMResponseError`, which the first implementation returned as a success.
 - `LLMModel.default_parameters` is an **allowlist**, not the denylist PR A shipped. The denylist named `api_base`; litellm also accepts `base_url`, which overrides `api_base` inside litellm, so a user holding only `change_llmmodel` could redirect a call and send the provider's key with it — the exact outcome rule L3 exists to prevent. A denylist would have to track every alias litellm accepts in every release. The field now takes generation parameters only, and `complete()` filters against the same tuple immediately before the call, because a fixture, a data migration or an `nbshell` write never runs `clean()`. The endpoint and the key are splatted separately and last.

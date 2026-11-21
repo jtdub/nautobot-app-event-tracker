@@ -64,7 +64,7 @@ The integration decides more than the address. Four of its fields are read on ev
 | --- | --- |
 | *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the AI Provider |
 | *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
-| *Headers* | Sent with every request, templated the same way |
+| *Headers* | Sent with every request, templated the same way. The template also knows `{{ session_id }}`: the ID of the first run of an agent investigation, the consumer name of a triage call, or a random ID of the process for each other call |
 | *SSL Verification* | **Not applied to LLM calls** — see below |
 | *CA File Path* | **Not applied to LLM calls** — see below |
 | *Timeout* | The call's timeout, unless the model row or the caller states one |
@@ -126,17 +126,29 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other 
 
     The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
 
+!!! warning
+    With the `session_id` template in the *Headers* field, Go sees the consumer name of each triage call. The default
+    consumer name holds the host name and the process number. Set `ingestion.consumer_name` to a
+    text that names nothing, and give each consumer a different name. See
+    [Ingestion](ingestion.md).
+
 Follow the steps in [Registering a provider](#registering-a-provider) with these values:
 
 | Object | Field | Value |
 | --- | --- | --- |
 | External Integration | *Remote URL* | `https://opencode.ai/inference/go/v1` |
-| External Integration | *Headers* | `{"x-opencode-session": "nautobot-event-tracker-prod"}` |
+| External Integration | *Headers* | The JSON under this table |
 | External Integration | *Secrets Group* | The group that holds your Go API key |
 | AI Provider | *Provider type* | **OpenAI-compatible** |
 | AI Model | *Name* | `deepseek-v4.1-flash` |
 | AI Model | *Kind* | *Chat* |
 | AI Model | *Default parameters* | `{"extra_body": {"reasoning_effort": "none"}}` |
+
+Put this JSON in the *Headers* field:
+
+```json
+{"x-opencode-session": "{{ session_id | default('nautobot-discovery') }}"}
+```
 
 Make the AI Model row by hand. The model list of Go also has models that use a different API.
 
@@ -149,9 +161,33 @@ curl https://opencode.ai/inference/go/v1/models
 The answer is a JSON list of the models that Go offers.
 
 **Go needs the session header.** Go refuses a call that does not have the
-`x-opencode-session` header. The error is `MissingSessionID`. Use a text that names this
-installation. Do not change that text. The app sends the same value with every triage call and
-every agent call.
+`x-opencode-session` header. The error is `MissingSessionID`. The template in the table gives
+the header a value on every call.
+
+- A fixed value, such as `nautobot-event-tracker-prod`, continues to work. The app then sends
+  the same value with every call.
+- An agent call sends the ID of the first run of the investigation. A run that resumes after
+  an approval sends the same ID.
+- A triage call sends the consumer name. The same consumer sends the same value each time.
+- Any other call sends one random ID for each process.
+- The app replaces each character other than `A-Z a-z 0-9 . _ : -` with `-`. It cuts the
+  value at 128 characters.
+- Go sees one session for each agent investigation, one for each consumer name, and one for each
+  other process. This is the purpose of the template. The Go console then shows each session
+  apart.
+
+A renderer that does not know `session_id` sends the literal text `{{ session_id }}`. The
+registry Job "Discover AI Models" and an MCP server integration are such renderers. The
+`default` filter, with single quotes, gives them a value. Do not use double quotes in the
+filter. Double quotes break the stored JSON, and the app then refuses each call.
+
+After you change the Headers, make one agent run or send one event. Open the LLM Usage list and
+read the record of that call. If the record shows a session error, put the fixed value back.
+
+If no new record appears, the app did not send the call. A template that does not render stops
+the call before the app writes a record. Look for the text "has a template that does not
+render" in the result of the agent run or in the log of the consumer. Then put the fixed value
+back.
 
 **Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
 tokens count against [`max_output_tokens`](#enabling-event-triage). With a limit of 256 tokens,

@@ -42,17 +42,20 @@ only module that imports litellm and the only writer of the usage records.
 | **Endpoint** | The AI Provider's `ExternalIntegration.remote_url`. No model parameter can change it; changing it needs `nautobot_ai_models.change_aiprovider`, or the rights to edit that integration |
 | **Credential** | That integration's secrets group, read at call time; secret type `token`, falling back to `secret` |
 | **TLS** | The integration's SSL Verification, CA File Path and Headers are applied to the call; its Extra Config is deliberately not |
-| **What is sent** | A fixed system prompt, the event payload capped at `max_context_chars`, and the titles and severities of up to `attach_candidates` open tickets |
+| **What is sent** | A fixed system prompt, the event payload capped at `max_context_chars`, and the titles and severities of up to `attach_candidates` open tickets. A Headers template that uses `session_id` also sends the consumer name, which by default holds the host name and the process number |
 | **What is recorded** | One `LLMUsageRecord` per call — including failed calls — with token counts, cost and latency |
 | **Configured by** | The `llm` block and `ingestion.triage` — see [Configuring LLM Providers](../admin/llm.md) |
 
-Three things worth knowing before you enable it:
+Four things worth knowing before you enable it:
 
 - **The payload leaves the box.** Set `triage: False` on any topic whose payloads must not, or
   point the provider at a self-hosted endpoint. On-premises endpoints are a first-class case, not
   an afterthought.
 - **The off switch is a database flag.** Unticking **Enabled** on the provider or the model stops
   every call, including on a consumer already running — within `triage.model_cache_seconds`.
+- **The consumer name can leave the box.** A Headers template that uses `session_id` sends it to the
+  provider. Set `ingestion.consumer_name` to a text that names nothing, and give each consumer a
+  different name. See [Ingestion](../admin/ingestion.md).
 - **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event and is
   counted. The consumer never exits because a model misbehaved.
 

@@ -6,6 +6,8 @@ connection.
 """
 
 import os
+import threading
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -26,7 +28,7 @@ from nautobot_event_tracker.models import LLMUsageRecord
 from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
 from nautobot_event_tracker.tests import fixtures
-from nautobot_event_tracker.tests.fixtures import FakeLLMClient, FakeLLMResponse
+from nautobot_event_tracker.tests.fixtures import FakeEmbeddingClient, FakeLLMClient, FakeLLMResponse
 
 MESSAGES = [{"role": "user", "content": "hello"}]
 
@@ -1100,3 +1102,100 @@ class TestFinishReason(TestCase):
             self.assertIsNone(read(raw(SimpleNamespace(reasoning_tokens=bad))))
         self.assertIsNone(read(raw(None)))
         self.assertIsNone(read(SimpleNamespace(usage=None)))
+
+
+class TestSessionId(TestCase):
+    """The `session_id` variable of the integration Headers template."""
+
+    def setUp(self):
+        """Reset the process session value that other tests may have made."""
+        super().setUp()
+        llm_service._process_session = None  # pylint: disable=protected-access
+        self.addCleanup(setattr, llm_service, "_process_session", None)
+
+    @staticmethod
+    def _chat_model(headers):
+        """A chat model whose integration has these Headers."""
+        integration = fixtures.create_external_integration(name="Session Endpoint", headers=headers)
+        provider = fixtures.create_llmprovider(name="Session Provider", external_integration=integration)
+        return fixtures.create_llmmodel(provider=provider)
+
+    def _session_header_of_one_call(self, **kwargs):
+        """The `X-Session` header that `complete()` sent for one call."""
+        client = FakeLLMClient()
+        call(self._chat_model({"X-Session": "{{ session_id }}"}), client, **kwargs)
+        return client.calls[0]["extra_headers"]["X-Session"]
+
+    def test_complete_renders_the_given_session_id(self):
+        """AC-1: the Headers template gets the value the caller gave."""
+        self.assertEqual(self._session_header_of_one_call(session_id="run-1"), "run-1")
+
+    def test_embed_renders_the_given_session_id(self):
+        """AC-1: `embed()` gives the template the same variable."""
+        integration = fixtures.create_external_integration(
+            name="Embed Session", headers={"X-Session": "{{ session_id }}"}
+        )
+        provider = fixtures.create_llmprovider(name="Embed Session Provider", external_integration=integration)
+        model = fixtures.create_embedding_model(provider=provider)
+        client = FakeEmbeddingClient()
+
+        llm_service.embed(model=model, text="hello", client=client, session_id="run-2")
+
+        self.assertEqual(client.calls[0]["extra_headers"], {"X-Session": "run-2"})
+
+    def test_fixed_headers_go_out_unchanged(self):
+        """AC-8: a Headers value with no template is sent as written and nothing is added."""
+        client = FakeLLMClient()
+        call(self._chat_model({"X-Tenant": "network-ops"}), client)
+
+        self.assertEqual(client.calls[0]["extra_headers"], {"X-Tenant": "network-ops"})
+
+    def test_a_call_with_no_session_id_sends_the_process_session_value(self):
+        """AC-4: the fallback is one UUID, the same on each call."""
+        first = self._session_header_of_one_call()
+        second = self._session_header_of_one_call()
+
+        self.assertEqual(first, llm_service._process_session_id())  # pylint: disable=protected-access
+        self.assertEqual(first, second)
+        self.assertEqual(str(uuid.UUID(first)), first)
+
+    def test_an_empty_session_id_sends_the_process_session_value(self):
+        """AC-4: an empty value is no value."""
+        self.assertEqual(
+            self._session_header_of_one_call(session_id=""),
+            llm_service._process_session_id(),  # pylint: disable=protected-access
+        )
+
+    def test_a_new_process_makes_a_new_session_value(self):
+        """A forked worker does not share the session value of its parent."""
+        before = llm_service._process_session_id()  # pylint: disable=protected-access
+        with mock.patch("nautobot_event_tracker.services.llm.os.getpid", return_value=os.getpid() + 1):
+            after = llm_service._process_session_id()  # pylint: disable=protected-access
+
+        self.assertNotEqual(before, after)
+
+    def test_threads_share_one_process_session_value(self):
+        """AC-4: eight threads on first use get one value."""
+        values = []
+        barrier = threading.Barrier(8)
+
+        def read_value():
+            barrier.wait()
+            values.append(llm_service._process_session_id())  # pylint: disable=protected-access
+
+        threads = [threading.Thread(target=read_value) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(len(values), 8)
+        self.assertEqual(len(set(values)), 1)
+
+    def test_an_unsafe_session_id_is_cleaned(self):
+        """AC-5: a quote, a backslash, a space and a non-ASCII letter become a dash."""
+        self.assertEqual(self._session_header_of_one_call(session_id='a"b\\c d\u00e9'), "a-b-c-d-")
+
+    def test_a_long_session_id_is_cut(self):
+        """AC-5: the value stops at 128 characters."""
+        self.assertEqual(self._session_header_of_one_call(session_id="x" * 300), "x" * 128)
