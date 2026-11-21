@@ -27,7 +27,8 @@ Rules implemented here, referenced by number from the Phase 4B spec:
   definition that call was approved against, and only once: the row is claimed atomically before
   the call, so two callers cannot both make it.
 * **M7** - every call is on the record - arguments, result, latency, error - before its caller
-  sees any of it. Rule L1's promise, made about the other kind of call this app makes.
+  sees any of it. Rule L1's promise, made about the other kind of call this app makes. A call that
+  the soft time limit of the Job interrupts is recorded as failed before the error goes on.
 * **M8** - every call is bounded in both directions: a timeout going out, and a cap on the result
   coming back. Long separator runs and the cell spaces of `|` rows are made short before the cap.
 """
@@ -41,6 +42,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 from django.core.exceptions import ImproperlyConfigured
+from django.db.models import Q
 from django.utils import timezone
 from nautobot.apps.choices import SecretsGroupSecretTypeChoices
 from nautobot_ai_models.choices import MCPTransportChoices
@@ -49,12 +51,26 @@ from nautobot_ai_models.models import MCPTool
 from nautobot_event_tracker.choices import AgentToolCallStatusChoices
 from nautobot_event_tracker.models import AgentToolCall
 from nautobot_event_tracker.secrets import read_secret
-from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError, MCPError
+from nautobot_event_tracker.services.exceptions import (
+    MCPCallError,
+    MCPConfigurationError,
+    MCPError,
+    is_soft_time_limit,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 30
 """The timeout of a call when the integration gives none (M8)."""
+
+SOFT_TIME_LIMIT_CALL_ERROR = "The Job reached its soft time limit before this call finished."
+"""The error of a read-only call that the soft time limit of the Job interrupted."""
+
+CUT_CHANGE_ERROR = (
+    "The call was interrupted before the app got an answer. This tool changes the network, so the change might be "
+    "in effect. Check the device before you approve the same change again."
+)
+"""The error of a call of a writable tool that a stop interrupted."""
 
 SEPARATOR_RUN = re.compile(r"([=+-])\1{9,}")
 """Ten or more of one separator character in a row (M8)."""
@@ -180,7 +196,7 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     error of its own is a `failed` row and not an exception: the server was reached and had
     something to say, and what it said is the model's to read (section 7.4). Raises
     `MCPConfigurationError` when the call is refused before any network I/O, and `MCPCallError`
-    when it left the process and did not come back usable.
+    when it left the process and did not come back usable. The soft time limit of the Job is raised again as itself, after the row is written (M7).
     """
     cap = int(max_result_chars) if max_result_chars else DEFAULT_MAX_RESULT_CHARS
 
@@ -206,6 +222,13 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
         caller = client if client is not None else _default_client()
         raw = caller.call_tool(connection, tool.name, dict(tool_call.arguments or {}))
     except Exception as error:  # pylint: disable=broad-except
+        if is_soft_time_limit(error):
+            _finish(
+                tool_call,
+                latency_ms=_elapsed_ms(started),
+                error=CUT_CHANGE_ERROR if tool.writable else SOFT_TIME_LIMIT_CALL_ERROR,
+            )
+            raise
         # M7 - on the record first, then the caller hears about it.
         _finish(tool_call, latency_ms=_elapsed_ms(started), error=f"The call failed: {error}")
         # The family the caller expects is preserved: a configuration fault stays one, and a
@@ -224,6 +247,26 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
         error = result.get("text") or "The server reported an error and said nothing about it."
     _finish(tool_call, latency_ms=_elapsed_ms(started), result=result, error=error)
     return tool_call
+
+
+def fail_unfinished_calls(run_ids, reason):
+    """Mark the unfinished calls of these runs as failed, and return the rows that changed.
+
+    A call is unfinished when it is `executing`, or when it is `proposed` for a tool that is not
+    writable. A call of a writable tool gets `CUT_CHANGE_ERROR`; the others get `reason`. A
+    `proposed` call of a writable tool is a proposal for a person, so it stays.
+    """
+    unfinished = AgentToolCall.objects.filter(run_id__in=run_ids).filter(
+        Q(status=AgentToolCallStatusChoices.EXECUTING)
+        | Q(status=AgentToolCallStatusChoices.PROPOSED, tool__writable=False)
+    )
+    changed = list(unfinished.values_list("pk", flat=True))
+    now = timezone.now()
+    for writable, error in ((True, CUT_CHANGE_ERROR), (False, reason)):
+        AgentToolCall.objects.filter(pk__in=changed, tool__writable=writable).update(
+            status=AgentToolCallStatusChoices.FAILED, error=str(error)[:ERROR_TEXT_CAP], called_at=now
+        )
+    return list(AgentToolCall.objects.filter(pk__in=changed).select_related("tool__mcp_server"))
 
 
 def _claim(tool_call, tool):

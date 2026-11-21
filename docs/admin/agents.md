@@ -73,6 +73,11 @@ Do not set the limits of this Job above 600 and 660 seconds. A higher value give
 If `timeout_seconds` plus 30 seconds do not fit in the limit, each run stops before its first model call. The
 Job log then has a warning.
 
+If the Job still reaches its soft time limit in the middle of a call, the run is Failed. The ticket comment
+starts with "The agent run failed: The Job reached its soft time limit". Each tool call that did not finish is
+Failed. If a tool that changes the network was cut, its error says that the change might be in effect. Check
+the device before you approve the same change again.
+
 ## Running it
 
 **Investigate with Agent**, on a ticket's page. It leads to the Job's own run form with the ticket

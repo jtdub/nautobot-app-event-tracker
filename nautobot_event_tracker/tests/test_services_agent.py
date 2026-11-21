@@ -5,8 +5,11 @@ the fakes route through the real `services.llm` so that every turn leaves a real
 behind - which is what makes the accounting assertions here mean anything.
 """
 
+# pylint: disable=too-many-lines
 import json
+from unittest import mock
 
+from celery.exceptions import SoftTimeLimitExceeded
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from nautobot_ai_models.choices import MCPTransportChoices
@@ -21,6 +24,8 @@ from nautobot_event_tracker.choices import (
 )
 from nautobot_event_tracker.models import AgentRun, AgentToolCall, LLMUsageRecord
 from nautobot_event_tracker.services import agent as agent_service
+from nautobot_event_tracker.services import mcp as mcp_service
+from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import (
     AgentBusyError,
     AgentConfigurationError,
@@ -341,7 +346,6 @@ class TestAPlainRun(AgentTestCase):
         asking an SR Linux box for `show ip interface brief` and `show bgp summary` until it ran
         out of iterations. Nautobot knows what the device is; this is the app saying so.
         """
-        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
 
         device = fixtures.create_device(name="edge-01")
         ticket_service.attach_object(ticket=self.ticket, obj=device, source=TicketSourceChoices.HUMAN, user=self.user)
@@ -355,7 +359,6 @@ class TestAPlainRun(AgentTestCase):
 
     def test_an_attached_object_with_no_platform_reads_as_before(self):
         """Only a device gains the extra clause; everything else is untouched."""
-        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
 
         location = fixtures.create_location()
         ticket_service.attach_object(ticket=self.ticket, obj=location, source=TicketSourceChoices.HUMAN, user=self.user)
@@ -382,7 +385,6 @@ class TestAPlainRun(AgentTestCase):
     def test_the_prompt_names_the_objects_enrichment_attached(self):
         """Phase 4A put them there; this is what they were for."""
         location = fixtures.create_location()
-        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
 
         ticket_service.attach_object(ticket=self.ticket, obj=location, source=TicketSourceChoices.HUMAN, user=self.user)
 
@@ -429,7 +431,6 @@ class TestAPlainRun(AgentTestCase):
 
     def test_a_human_comment_is_still_carried(self):
         """Only the agent's reports about itself are filtered, never anybody else's words."""
-        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
 
         ticket_service.add_comment(
             ticket=self.ticket,
@@ -584,7 +585,6 @@ class TestReadOnlyCalls(AgentTestCase):
 
     def test_the_fingerprint_is_recorded_with_the_call(self):
         """M6's second half needs the digest the call was made against."""
-        from nautobot_event_tracker.services import mcp as mcp_service  # pylint: disable=C0415
 
         self.tool.definition_fingerprint = "abc123"
         self.tool.validated_save()
@@ -1271,6 +1271,220 @@ class TestTheTimeLimit(AgentTestCase):
         self.assertEqual([call["max_retries"] for call in complete.calls], [0, 0])
 
 
+def _wire_with(error):
+    """A `call_tool` seam that is the real service over a client that raises this error."""
+
+    def _call_tool(**kwargs):
+        return mcp_service.call_tool(**kwargs, client=fixtures.FakeMCPCaller(error=error))
+
+    return _call_tool
+
+
+def _cut_model_call(**_kwargs):
+    """A `complete` seam that fails the way litellm fails when the signal arrives in a call."""
+    raise LLMCallError("The call failed.") from SoftTimeLimitExceeded()
+
+
+class _CuttingToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-public-methods
+    """A tool seam that claims its row and is then cut by the signal."""
+
+    def __call__(self, *, tool_call, timeout=None, max_result_chars=None):
+        """Mark the row executing, as the claim does, and raise the signal."""
+        AgentToolCall.objects.filter(pk=tool_call.pk).update(status=AgentToolCallStatusChoices.EXECUTING)
+        raise SoftTimeLimitExceeded()
+
+
+class _SignalToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-public-methods
+    """A tool seam that sets the row to this status, if given, and then raises the signal."""
+
+    def __init__(self, row_status=None):
+        """Leave the row alone when no status is given."""
+        super().__init__()
+        self.row_status = row_status
+
+    def __call__(self, *, tool_call, timeout=None, max_result_chars=None):
+        """Write the status, then raise the signal."""
+        if self.row_status is not None:
+            AgentToolCall.objects.filter(pk=tool_call.pk).update(status=self.row_status)
+        raise SoftTimeLimitExceeded()
+
+
+class TestTheSoftTimeLimit(AgentTestCase):
+    """A6 - a run that the soft time limit interrupts ends failed and names the limit."""
+
+    CUT = (
+        "The Job reached its soft time limit of {limit} seconds in the middle of {activity}. "
+        "Lower `timeout_seconds` or `tool_timeout_seconds`, or raise the time limits of the Job."
+    )
+
+    def setUp(self):
+        """One read-only tool and one writable tool."""
+        super().setUp()
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
+
+    def last_comment(self):
+        """The newest comment on the ticket."""
+        return self.updates(UpdateTypeChoices.COMMENT)[-1].message
+
+    def test_a_signal_in_a_tool_call_fails_the_run(self):
+        """AC-9, AC-10 - the real service records the row and raises the signal again."""
+        run, complete = self.run_agent([fixtures.fake_tool_call("look")], call_tool=_wire_with(SoftTimeLimitExceeded()))
+
+        text = self.CUT.format(limit=600, activity="a tool call")
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(run.error, text)
+        self.assertEqual(self.last_comment(), f"{agent_service.FAILURE_COMMENT_PREFIX}{text}")
+        self.assertEqual(len(complete.calls), 1)
+        self.assertEqual(AgentToolCall.objects.get().error, mcp_service.SOFT_TIME_LIMIT_CALL_ERROR)
+
+    def test_a_signal_in_a_model_call_fails_the_run(self):
+        """AC-10 - litellm wraps the signal, and the limit that the Job passed is named."""
+        with fixtures.agent_settings():
+            run = agent_service.run_agent(
+                ticket=self.ticket, user=self.user, complete=_cut_model_call, soft_time_limit=200
+            )
+
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(run.error, self.CUT.format(limit=200, activity="a model call"))
+
+    def test_a_model_error_with_no_signal_keeps_its_text(self):
+        """AC-10 - only the signal changes the text."""
+        with fixtures.agent_settings():
+            run = agent_service.run_agent(
+                ticket=self.ticket, user=self.user, complete=_failing_complete(LLMCallError("boom"))
+            )
+
+        self.assertEqual(run.error, "The model call failed: boom")
+
+    def test_a_signal_in_other_work_fails_the_run(self):
+        """AC-10 - the signal can arrive anywhere in the loop."""
+        with mock.patch.object(ticket_service, "get_related_objects", side_effect=SoftTimeLimitExceeded()):
+            run, complete = self.run_agent("Never asked.")
+
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(run.error, self.CUT.format(limit=600, activity="its work"))
+        self.assertEqual(complete.calls, [])
+
+    def test_a_row_left_executing_by_the_signal_becomes_failed(self):
+        """AC-11 - a call that was cut before its row was written."""
+        run, _ = self.run_agent([fixtures.fake_tool_call("look")], call_tool=_CuttingToolCaller())
+
+        row = AgentToolCall.objects.get()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.SOFT_TIME_LIMIT_CALL_ERROR)
+
+    def test_the_activity_is_reset_after_a_tool_call_that_failed(self):
+        """AC-10 - a fault in a tool call must not leave the next model call named as a tool call."""
+        complete = fixtures.FakeAgentComplete([fixtures.fake_tool_call("look")])
+        calls = []
+
+        def _signal_on_second_call(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                raise SoftTimeLimitExceeded()
+            return complete(**kwargs)
+
+        with fixtures.agent_settings():
+            run = agent_service.run_agent(
+                ticket=self.ticket,
+                user=self.user,
+                complete=_signal_on_second_call,
+                call_tool=fixtures.FakeToolCaller(error=mcp_service.MCPCallError("no route")),
+            )
+
+        self.assertEqual(run.error, self.CUT.format(limit=600, activity="a model call"))
+
+    def test_a_cut_approved_call_of_the_parent_says_the_change_might_be_in_effect(self):
+        """AC-11, AC-13 - the sweep reads the whole chain, and the comment ends with the warning."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_CuttingToolCaller())
+
+        row = AgentToolCall.objects.get()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
+        self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_ERROR))
+        self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_ERROR))
+
+    def test_a_cut_approved_call_that_the_service_recorded_still_warns(self):
+        """AC-13 - the real `call_tool` writes the row, so the run adds the warning from the call in flight."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_wire_with(SoftTimeLimitExceeded()))
+
+        row = AgentToolCall.objects.get()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
+        self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_ERROR))
+        self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_ERROR))
+
+    def test_an_approved_call_that_was_not_started_carries_no_warning(self):
+        """AC-13 - a row that is still approved was not cut, so no warning that the change might be in effect."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_SignalToolCaller())
+
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertNotIn("might be in effect", run.error)
+        self.assertEqual(AgentToolCall.objects.get().status, AgentToolCallStatusChoices.APPROVED)
+
+    def test_a_call_that_finished_before_the_signal_carries_no_warning(self):
+        """AC-13 - a row that is executed was not cut."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_SignalToolCaller(AgentToolCallStatusChoices.EXECUTED))
+
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertNotIn("might be in effect", run.error)
+        self.assertEqual(AgentToolCall.objects.get().status, AgentToolCallStatusChoices.EXECUTED)
+
+    def test_a_signal_after_the_end_status_keeps_the_status(self):
+        """AC-12, edge case (e) - the run was already completed."""
+        finish = agent_service._Loop._finish  # pylint: disable=protected-access
+        raised = []
+
+        def _finish_then_signal(loop, status):
+            finish(loop, status)
+            if not raised:
+                raised.append(True)
+                raise SoftTimeLimitExceeded()
+
+        with mock.patch.object(agent_service._Loop, "_finish", autospec=True, side_effect=_finish_then_signal):  # pylint: disable=protected-access
+            run, _ = self.run_agent("Done.")
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertNotIn(agent_service.FAILURE_COMMENT_PREFIX, self.last_comment())
+
+    def test_a_signal_while_the_run_handles_another_fault_keeps_both_causes(self):
+        """AC-12, edge case (f) - the first cause stays in the text."""
+        add_comment = ticket_service.add_comment
+        calls = []
+
+        def _signal_once(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise SoftTimeLimitExceeded()
+            return add_comment(**kwargs)
+
+        with mock.patch.object(ticket_service, "add_comment", side_effect=_signal_once):
+            with fixtures.agent_settings():
+                run = agent_service.run_agent(
+                    ticket=self.ticket, user=self.user, complete=_failing_complete(LLMCallError("boom"))
+                )
+
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertTrue(run.error.startswith(self.CUT.format(limit=600, activity="a model call")))
+        self.assertIn("The run was already ending for this cause: The model call failed: boom", run.error)
+
+
 class TestFailure(AgentTestCase):
     """A6 - fail closed. Nothing half-finished is reported as finished."""
 
@@ -1312,7 +1526,6 @@ class TestFailure(AgentTestCase):
 
     def test_a_ticket_resolved_mid_run_does_not_lose_the_run_s_record(self):
         """S3 refuses the write, which is correct, and the transcript survives it."""
-        from nautobot_event_tracker.services import tickets as ticket_service  # pylint: disable=C0415
 
         class _ResolvingComplete(fixtures.FakeAgentComplete):
             """Resolves the ticket between the call and the conclusion."""

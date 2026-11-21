@@ -26,6 +26,8 @@ Rules implemented here, referenced by number from the Phase 4B spec:
   `AGENT_ALLOWED_TRANSITIONS`; resolving and closing are a person's judgement.
 * **A6** - fail closed. Triage fails open because a missing verdict costs a ticket that should not
   exist; a half-finished investigation reported as a finished one is worse than none.
+  A run that the soft time limit of the Job interrupts ends `failed`, names the limit, and marks each
+  call that it left unfinished as `failed`.
 * **A7** - the transcript is the record, and is written as the run goes rather than at the end.
 * **A8** - the prompt is hostile input, and every control lives outside it.
 * **A9** - one live run per ticket, checked here rather than with `is_singleton`, which would
@@ -72,6 +74,7 @@ from nautobot_event_tracker.services.exceptions import (
     MCPError,
     TicketImmutableError,
     TicketServiceError,
+    is_soft_time_limit,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,6 +170,15 @@ RUN_END_RESERVE_SECONDS = 30
 
 TOOL_CALL_TIMEOUTS = 2
 """Timeouts that one tool call can take: the handshake and the call each get `tool_timeout_seconds`."""
+
+SOFT_TIME_LIMIT_RUN_ERROR = (
+    "The Job reached its soft time limit of {limit} seconds in the middle of {activity}. "
+    "Lower `timeout_seconds` or `tool_timeout_seconds`, or raise the time limits of the Job."
+)
+"""The error of a run that the soft time limit interrupted."""
+
+SOFT_TIME_LIMIT_FIRST_CAUSE = " The run was already ending for this cause: "
+"""The words between the text of the soft time limit and the cause that the run already had."""
 
 #: How many dead runs one launch will clear before giving up and saying so. A ticket needs more
 #: than one only if several workers died on it in a row; refusing beyond that is better than a
@@ -621,6 +633,14 @@ def _with_unique_identifiers(calls, used):
     return tuple(unique)
 
 
+def _was_cut(call):
+    """Return True if the call row records that the soft time limit cut it."""
+    return call.status == AgentToolCallStatusChoices.FAILED and call.error in (
+        mcp_service.SOFT_TIME_LIMIT_CALL_ERROR,
+        mcp_service.CUT_CHANGE_ERROR,
+    )
+
+
 class _Loop:  # pylint: disable=too-many-instance-attributes
     """One run, from its first model call to whichever bound or gate ends it.
 
@@ -644,6 +664,8 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         self._started = started
         self._limit = limit
         self._job_soft_time_limit = job_soft_time_limit
+        self._activity = None
+        self._in_flight = None
 
     @property
     def transcript(self):
@@ -658,28 +680,38 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         a finished one, and no path that leaves the row saying `running` forever.
         """
         try:
+            self._run()
+        except Exception as error:  # pylint: disable=broad-except
+            if not is_soft_time_limit(error):
+                raise
+            self._fail_at_soft_time_limit()
+        return self.run
+
+    def _run(self):
+        """Run the loop and turn each fault of it into a failed run."""
+        try:
             if self.run.parent_id is not None:
                 self._execute_approved()
             else:
                 self._begin()
             self._loop()
         except LLMError as error:
-            self._fail(f"The model call failed: {error}")
+            self._fail_for(error, f"The model call failed: {error}")
         except MCPError as error:
             # Reached only by a refusal outside the per-call handling below - the two are kept
             # apart because a tool that answered badly is the model's to read (7.4), and one the
             # loop could not even attempt is the run's problem.
-            self._fail(f"A tool call failed: {error}")
+            self._fail_for(error, f"A tool call failed: {error}")
         except TicketServiceError as error:
             # The ticket was resolved or closed while the run was working (S3), or refused a write
             # for another reason. The run has nowhere to put its findings, so it ends.
-            self._fail(f"The ticket would not take the agent's write: {error}")
+            self._fail_for(error, f"The ticket would not take the agent's write: {error}")
         except Exception as error:  # pylint: disable=broad-except
             # A6 - anything at all ends the run visibly. The traceback goes to the log, where a
             # developer needs it; the ticket gets the sentence an operator needs.
-            logger.exception("The agent run on ticket %s failed", self.run.ticket_id)
-            self._fail(f"The run failed unexpectedly: {error}")
-        return self.run
+            if not is_soft_time_limit(error):
+                logger.exception("The agent run on ticket %s failed", self.run.ticket_id)
+            self._fail_for(error, f"The run failed unexpectedly: {error}")
 
     def _begin(self):
         """Open the transcript with the instruction and the ticket (step 3 of the loop)."""
@@ -796,7 +828,8 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
 
     def _ask(self, definitions):
         """One model call (A10). Accounted, linked to the ticket, and timed out (L6)."""
-        return self._complete(
+        self._activity = "a model call"
+        response = self._complete(
             model=self.model,
             messages=list(self.transcript),
             purpose=LLMPurposeChoices.AGENT,
@@ -806,6 +839,8 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             session_id=self._session(),
             max_retries=0,
         )
+        self._activity = None
+        return response
 
     @staticmethod
     def _assistant_message(response):
@@ -904,6 +939,8 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         has to read next is that the call did not work. The exception exists for callers that are
         not a loop.
         """
+        self._activity = "a tool call"
+        self._in_flight = record
         try:
             self._call_tool(
                 tool_call=record,
@@ -912,6 +949,8 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             )
         except MCPError as error:
             logger.info("Agent run %s could not call %s: %s", self.run.pk, record.tool, error)
+        self._activity = None
+        self._in_flight = None
 
         record.refresh_from_db()
         ticket_service.record_tool_result(ticket=self.ticket, tool_call=record)
@@ -1064,6 +1103,42 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         except (TicketServiceError, DjangoValidationError) as error:
             logger.warning("Agent run %s could not write to ticket %s: %s", self.run.pk, self.ticket.pk, error)
             return None
+
+    def _fail_for(self, error, message):
+        """End the run for this fault, naming the soft time limit when the fault holds it."""
+        if is_soft_time_limit(error):
+            self._fail_at_soft_time_limit()
+        else:
+            self._fail(message)
+
+    def _fail_at_soft_time_limit(self):
+        """A6 - end the run that the soft time limit interrupted, and mark the calls that it left unfinished.
+
+        A run that already wrote its end status keeps it. A run that had another cause keeps that
+        cause in the text. A cut call of a writable tool adds the warning that the change might be
+        in effect.
+        """
+        if self.run.status != AgentRunStatusChoices.RUNNING:
+            self._save()
+            return
+        cut = mcp_service.fail_unfinished_calls(self._chain_ids(), mcp_service.SOFT_TIME_LIMIT_CALL_ERROR)
+        in_flight = self._in_flight_row()
+        if in_flight is not None and in_flight.pk not in {row.pk for row in cut} and _was_cut(in_flight):
+            cut.append(in_flight)
+        message = SOFT_TIME_LIMIT_RUN_ERROR.format(
+            limit=round(self._job_soft_time_limit), activity=self._activity or "its work"
+        )
+        if any(row.tool.writable for row in cut):
+            message = f"{message} {mcp_service.CUT_CHANGE_ERROR}"
+        if self.run.error:
+            message = f"{message}{SOFT_TIME_LIMIT_FIRST_CAUSE}{self.run.error}"
+        self._fail(message)
+
+    def _in_flight_row(self):
+        """Return the call that the loop was making, read again from the database, or None."""
+        if self._in_flight is None:
+            return None
+        return AgentToolCall.objects.select_related("tool__mcp_server").filter(pk=self._in_flight.pk).first()
 
     def _fail(self, message):
         """A6 - end the run visibly, say why on the ticket, and propose nothing."""

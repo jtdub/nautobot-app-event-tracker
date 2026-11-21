@@ -82,3 +82,19 @@ class AgentBusyError(AgentError):
 
 class AgentDecisionError(AgentError):
     """The approval decision cannot be made: no user, or the call was decided already (7.3)."""
+
+
+def is_soft_time_limit(error):
+    """Return True if the error is the soft time limit of the Job, or holds it as a cause, a context or a member."""
+    from celery.exceptions import SoftTimeLimitExceeded  # pylint: disable=import-outside-toplevel
+
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, SoftTimeLimitExceeded):
+            return True
+        pending.extend([current.__cause__, current.__context__, *getattr(current, "exceptions", ())])
+    return False
