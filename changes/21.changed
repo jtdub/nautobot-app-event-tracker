@@ -1,0 +1,3 @@
+Changed the text of a tool result. The app makes each run of 10 or more `=`, `-` or `+` characters 3 characters long before the size limit.
+Changed the text of a tool result. In a table row that starts with `|`, the app makes each run of spaces one space long.
+Changed the Result of an Agent Tool Call. A `separators_shortened` key shows that the app made the text shorter.

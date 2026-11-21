@@ -268,7 +268,10 @@ supplies one. No test opens a socket.
 - **M8 — Bounded in both directions.** Every call has a timeout (`tool_timeout_seconds`), and every
   result is capped at `max_tool_result_chars` before it is stored or shown to a model. A tool that
   returns forty megabytes of interface counters must not become a prompt, and must not become a
-  row either.
+  row either. Before the cap, the app makes two kinds of padding short. A run of 10 or more `=`,
+  `-` or `+` becomes 3 characters. In a line that starts with `|`, a run of 2 or more spaces or
+  tabs becomes one space. A result that the app changed in this way has the key
+  `separators_shortened`.
 
 ### 5.2 Discovery
 
@@ -670,4 +673,7 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   sends no message content - so the pre-existing "the response carried no message content" error had
   to learn that a tool call is a complete answer, and the two faults had to be told apart on the
   usage record rather than collapsed into one message pointing somewhere unhelpful.
-
+- **A tool result is made short before the cap (issue 21).** SR Linux pads its tables with long runs
+  of `=`, `-` and spaces, and four results of one lab run reached the cap. The app now makes these runs short
+  first (M8). The record stores the short text and the key `separators_shortened`. The agent tells the model
+  with one note line.

@@ -136,6 +136,9 @@ FAILURE_COMMENT_PREFIX = "The agent run failed: "
 BOUND_COMMENT_PREFIX = "The agent stopped at "
 SELF_REPORT_PREFIXES = (FAILURE_COMMENT_PREFIX, BOUND_COMMENT_PREFIX)
 
+SHORTENED_NOTE = "Note: the app shortened separator lines and table spaces in this output."
+"""The line before a tool result whose padding the app made short (M8)."""
+
 #: The wire name a tool is offered under has to match this. Providers reject anything else, and a
 #: server is free to name a tool in a way that does not.
 WIRE_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]")
@@ -856,12 +859,21 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
 
     @staticmethod
     def _result_text(record):
-        """What the model is told a call did. The row's own words, never a summary of them."""
+        """What the model is told a call did. The row's own words, never a summary of them.
+
+        A note line comes first when the row carries the key `separators_shortened`.
+        """
         if record is None:
             return "The approved call could not be found."
         if record.error:
             return f"The call failed: {record.error}"
-        return (record.result or {}).get("text") or "The call returned nothing."
+        result = record.result or {}
+        text = result.get("text")
+        if not text:
+            return "The call returned nothing."
+        if result.get("separators_shortened"):
+            return f"{SHORTENED_NOTE}\n{text}"
+        return text
 
     def _answer(self, identifier, content):
         """Answer one pending tool call in the transcript."""

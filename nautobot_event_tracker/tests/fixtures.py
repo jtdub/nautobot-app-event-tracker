@@ -545,10 +545,11 @@ class FakeToolCaller:  # pylint: disable=too-few-public-methods
     that faked the call without recording it would be testing a loop that never sees a result.
     """
 
-    def __init__(self, text="all good", *, error=None):
+    def __init__(self, text="all good", *, error=None, separators_shortened=False):
         """Answer every call with this text, or refuse every call with this error."""
         self.text = text
         self.error = error
+        self.separators_shortened = separators_shortened
         self.calls = []
 
     def __call__(self, *, tool_call, timeout=None, max_result_chars=None):
@@ -569,10 +570,10 @@ class FakeToolCaller:  # pylint: disable=too-few-public-methods
             rows.update(status=AgentToolCallStatusChoices.FAILED, error=str(self.error))
             tool_call.refresh_from_db()
             raise self.error
-        rows.update(
-            status=AgentToolCallStatusChoices.EXECUTED,
-            result={"is_error": False, "text": self.text},
-        )
+        result = {"is_error": False, "text": self.text}
+        if self.separators_shortened:
+            result["separators_shortened"] = True
+        rows.update(status=AgentToolCallStatusChoices.EXECUTED, result=result)
         tool_call.refresh_from_db()
         return tool_call
 

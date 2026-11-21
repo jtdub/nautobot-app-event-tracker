@@ -521,6 +521,31 @@ class TestReadOnlyCalls(AgentTestCase):
         self.assertEqual(len(complete.calls), 2)
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
 
+    def test_a_shortened_result_reaches_the_model_with_a_note(self):
+        """The model reads one note line before text that the app made short, and the record keeps the text."""
+        caller = fixtures.FakeToolCaller(text="---", separators_shortened=True)
+
+        run, _ = self.run_agent(
+            [fixtures.fake_tool_call("get_interface_status", {"device": "leaf-01"})],
+            "Done.",
+            call_tool=caller,
+        )
+
+        self.assertEqual(self.messages(run, "tool")[0]["content"], agent_service.SHORTENED_NOTE + "\n---")
+        self.assertEqual(caller.calls[0]["tool_call"].result["text"], "---")
+
+    def test_a_result_that_was_not_shortened_has_no_note(self):
+        """Text with no marker key reaches the model as it is."""
+        caller = fixtures.FakeToolCaller(text="---")
+
+        run, _ = self.run_agent(
+            [fixtures.fake_tool_call("get_interface_status", {"device": "leaf-01"})],
+            "Done.",
+            call_tool=caller,
+        )
+
+        self.assertEqual(self.messages(run, "tool")[0]["content"], "---")
+
     def test_the_call_is_recorded(self):
         """M7 - the row carries the arguments, whatever else happens."""
         self.run_agent(
