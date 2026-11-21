@@ -1132,7 +1132,9 @@ class TestSessionId(TestCase):
 
     def test_embed_renders_the_given_session_id(self):
         """AC-1: `embed()` gives the template the same variable."""
-        integration = fixtures.create_external_integration(name="Embed Session", headers={"X-Session": "{{ session_id }}"})
+        integration = fixtures.create_external_integration(
+            name="Embed Session", headers={"X-Session": "{{ session_id }}"}
+        )
         provider = fixtures.create_llmprovider(name="Embed Session Provider", external_integration=integration)
         model = fixtures.create_embedding_model(provider=provider)
         client = FakeEmbeddingClient()

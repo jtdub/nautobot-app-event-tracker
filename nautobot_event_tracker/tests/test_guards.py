@@ -855,7 +855,9 @@ class SessionHeaderGuardTest(SimpleTestCase):
             if "tests" not in path.relative_to(APP_ROOT).parts and "x-opencode" in path.read_text(encoding="utf-8")
         ]
 
-        self.assertEqual(offenders, [], "A provider header name belongs in the Headers field. Offenders: " + ", ".join(offenders))
+        self.assertEqual(
+            offenders, [], "A provider header name belongs in the Headers field. Offenders: " + ", ".join(offenders)
+        )
 
 
 class PythonSupportGuardTest(SimpleTestCase):
