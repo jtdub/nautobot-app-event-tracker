@@ -196,7 +196,7 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     error of its own is a `failed` row and not an exception: the server was reached and had
     something to say, and what it said is the model's to read (section 7.4). Raises
     `MCPConfigurationError` when the call is refused before any network I/O, and `MCPCallError`
-    when it left the process and did not come back usable.
+    when it left the process and did not come back usable. The soft time limit of the Job is raised again as itself, after the row is written (M7).
     """
     cap = int(max_result_chars) if max_result_chars else DEFAULT_MAX_RESULT_CHARS
 

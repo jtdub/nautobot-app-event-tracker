@@ -5,6 +5,7 @@ the fakes route through the real `services.llm` so that every turn leaves a real
 behind - which is what makes the accounting assertions here mean anything.
 """
 
+# pylint: disable=too-many-lines
 import json
 from unittest import mock
 
@@ -1293,6 +1294,21 @@ class _CuttingToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-pu
         raise SoftTimeLimitExceeded()
 
 
+class _SignalToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-public-methods
+    """A tool seam that sets the row to this status, if given, and then raises the signal."""
+
+    def __init__(self, row_status=None):
+        """Leave the row alone when no status is given."""
+        super().__init__()
+        self.row_status = row_status
+
+    def __call__(self, *, tool_call, timeout=None, max_result_chars=None):
+        """Write the status, then raise the signal."""
+        if self.row_status is not None:
+            AgentToolCall.objects.filter(pk=tool_call.pk).update(status=self.row_status)
+        raise SoftTimeLimitExceeded()
+
+
 class TestTheSoftTimeLimit(AgentTestCase):
     """A6 - a run that the soft time limit interrupts ends failed and names the limit."""
 
@@ -1393,6 +1409,41 @@ class TestTheSoftTimeLimit(AgentTestCase):
         self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
         self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_ERROR))
         self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_ERROR))
+
+    def test_a_cut_approved_call_that_the_service_recorded_still_warns(self):
+        """AC-13 - the real `call_tool` writes the row, so the run adds the warning from the call in flight."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_wire_with(SoftTimeLimitExceeded()))
+
+        row = AgentToolCall.objects.get()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
+        self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_ERROR))
+        self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_ERROR))
+
+    def test_an_approved_call_that_was_not_started_carries_no_warning(self):
+        """AC-13 - a row that is still approved was not cut, so no warning that the change might be in effect."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_SignalToolCaller())
+
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertNotIn("might be in effect", run.error)
+        self.assertEqual(AgentToolCall.objects.get().status, AgentToolCallStatusChoices.APPROVED)
+
+    def test_a_call_that_finished_before_the_signal_carries_no_warning(self):
+        """AC-13 - a row that is executed was not cut."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_SignalToolCaller(AgentToolCallStatusChoices.EXECUTED))
+
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertNotIn("might be in effect", run.error)
+        self.assertEqual(AgentToolCall.objects.get().status, AgentToolCallStatusChoices.EXECUTED)
 
     def test_a_signal_after_the_end_status_keeps_the_status(self):
         """AC-12, edge case (e) - the run was already completed."""

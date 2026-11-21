@@ -6,14 +6,6 @@ from django.test import SimpleTestCase
 from nautobot_event_tracker.services.exceptions import LLMCallError, is_soft_time_limit
 
 
-class _Group(Exception):
-    """A stand-in for `ExceptionGroup`, which Python 3.10 does not have."""
-
-    def __init__(self, exceptions):
-        super().__init__("a group")
-        self.exceptions = exceptions
-
-
 class TestIsSoftTimeLimit(SimpleTestCase):
     """AC-10 - the signal arrives bare, wrapped by litellm, or inside a group."""
 
@@ -37,9 +29,15 @@ class TestIsSoftTimeLimit(SimpleTestCase):
             self.assertTrue(is_soft_time_limit(error))
 
     def test_the_error_in_an_exception_group(self):
-        group = _Group([ValueError("one"), SoftTimeLimitExceeded()])
+        group = ExceptionGroup("a group", [ValueError("one"), SoftTimeLimitExceeded()])
 
         self.assertTrue(is_soft_time_limit(group))
+
+    def test_the_error_in_a_nested_exception_group(self):
+        inner = ExceptionGroup("inner", [SoftTimeLimitExceeded()])
+        outer = ExceptionGroup("outer", [ValueError("a"), inner])
+
+        self.assertTrue(is_soft_time_limit(outer))
 
     def test_a_different_error_is_not_the_signal(self):
         self.assertFalse(is_soft_time_limit(ValueError("no")))

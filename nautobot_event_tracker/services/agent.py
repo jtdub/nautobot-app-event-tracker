@@ -633,6 +633,14 @@ def _with_unique_identifiers(calls, used):
     return tuple(unique)
 
 
+def _was_cut(call):
+    """Return True if the call row records that the soft time limit cut it."""
+    return call.status == AgentToolCallStatusChoices.FAILED and call.error in (
+        mcp_service.SOFT_TIME_LIMIT_CALL_ERROR,
+        mcp_service.CUT_CHANGE_ERROR,
+    )
+
+
 class _Loop:  # pylint: disable=too-many-instance-attributes
     """One run, from its first model call to whichever bound or gate ends it.
 
@@ -1115,7 +1123,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             return
         cut = mcp_service.fail_unfinished_calls(self._chain_ids(), mcp_service.SOFT_TIME_LIMIT_CALL_ERROR)
         in_flight = self._in_flight_row()
-        if in_flight is not None and in_flight.pk not in {row.pk for row in cut}:
+        if in_flight is not None and in_flight.pk not in {row.pk for row in cut} and _was_cut(in_flight):
             cut.append(in_flight)
         message = SOFT_TIME_LIMIT_RUN_ERROR.format(
             limit=round(self._job_soft_time_limit), activity=self._activity or "its work"
