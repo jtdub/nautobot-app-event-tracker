@@ -64,7 +64,7 @@ The integration decides more than the address. Four of its fields are read on ev
 | --- | --- |
 | *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the AI Provider |
 | *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
-| *Headers* | Sent with every request, templated the same way |
+| *Headers* | Sent with every request, templated the same way. The template also knows `{{ session_id }}`: the ID of an agent run, the consumer name of a triage call, or a random ID of the process for each other call |
 | *SSL Verification* | **Not applied to LLM calls** — see below |
 | *CA File Path* | **Not applied to LLM calls** — see below |
 | *Timeout* | The call's timeout, unless the model row or the caller states one |
@@ -131,7 +131,7 @@ Follow the steps in [Registering a provider](#registering-a-provider) with these
 | Object | Field | Value |
 | --- | --- | --- |
 | External Integration | *Remote URL* | `https://opencode.ai/inference/go/v1` |
-| External Integration | *Headers* | `{"x-opencode-session": "nautobot-event-tracker-prod"}` |
+| External Integration | *Headers* | `{"x-opencode-session": "{{ session_id \| default('nautobot-discovery') }}"}` |
 | External Integration | *Secrets Group* | The group that holds your Go API key |
 | AI Provider | *Provider type* | **OpenAI-compatible** |
 | AI Model | *Name* | `deepseek-v4.1-flash` |
@@ -149,9 +149,31 @@ curl https://opencode.ai/inference/go/v1/models
 The answer is a JSON list of the models that Go offers.
 
 **Go needs the session header.** Go refuses a call that does not have the
-`x-opencode-session` header. The error is `MissingSessionID`. Use a text that names this
-installation. Do not change that text. The app sends the same value with every triage call and
-every agent call.
+`x-opencode-session` header. The error is `MissingSessionID`. The template in the table gives
+the header a value on every call.
+
+- A fixed value, such as `nautobot-event-tracker-prod`, continues to work. The app then sends
+  the same value with every call.
+- An agent call sends the ID of the first run of the investigation. A run that resumes after
+  an approval sends the same ID.
+- A triage call sends the consumer name. The same consumer sends the same value each time.
+- Any other call sends one random ID for each process.
+- The app replaces each character other than `A-Z a-z 0-9 . _ : -` with `-`. It cuts the
+  value at 128 characters.
+- Go sees more than one session for one account.
+
+A renderer that does not know `session_id` sends the literal text `{{ session_id }}`. The
+registry Job "Discover AI Models" and an MCP server integration are such renderers. The
+`default` filter, with single quotes, gives them a value. Do not use double quotes in the
+filter. Double quotes break the stored JSON, and the app then refuses each call.
+
+!!! warning
+    With the template, Go sees the consumer name of each triage call. The default
+    consumer name holds the host name and the process number. Set `ingestion.consumer_name` to a
+    text that names nothing.
+
+After you change the Headers, make one agent run or send one event. Open the LLM Usage list and
+read the record of that call. If the record shows a session error, put the fixed value back.
 
 **Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
 tokens count against [`max_output_tokens`](#enabling-event-triage). With a limit of 256 tokens,

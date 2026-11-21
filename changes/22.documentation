@@ -1,0 +1,1 @@
+Changed the OpenCode Go section of the Configuring LLM Providers guide to use the `session_id` variable in the `x-opencode-session` header.

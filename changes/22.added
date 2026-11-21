@@ -1,0 +1,3 @@
+Added the `session_id` variable to the Headers template of an AI Provider integration. Write `{{ session_id }}` in a header value to use it.
+An agent run and each run that resumes it now send one `session_id`.
+Triage calls send the consumer name as `session_id`. The provider sees the host name unless you set `ingestion.consumer_name`.
