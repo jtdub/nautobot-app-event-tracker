@@ -1,0 +1,3 @@
+Changed the agent. A run now stops before the time limit of the Job and writes what it found to the ticket.
+Changed the agent. It no longer tries a failed model call again on OpenAI and OpenAI-compatible providers.
+Changed the Investigate an Event Ticket Job. A lower time limit on the Job edit page makes a run stop earlier.

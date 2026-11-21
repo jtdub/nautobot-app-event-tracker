@@ -98,7 +98,7 @@ PLUGINS_CONFIG = {
             "max_tool_result_chars": 8000,      # per result, before truncation (M8)
             "max_context_chars": 8000,          # payload cap into the prompt
             "max_transcript_chars": 60000,      # the whole stored transcript (A2)
-            "timeout_seconds": 60,              # per model call
+            "timeout_seconds": 60,              # per model call, with no retry (A2)
             "tool_timeout_seconds": 30,         # per tool call (M8)
         },
     },
@@ -271,7 +271,8 @@ supplies one. No test opens a socket.
   row either. Before the cap, the app makes two kinds of padding short. A run of 10 or more `=`,
   `-` or `+` becomes 3 characters. In a line that starts with `|`, a run of 2 or more spaces or
   tabs becomes one space. A result that the app changed in this way has the key
-  `separators_shortened`.
+  `separators_shortened`. The timeout applies to each step of a call, so one call can take two
+  times `tool_timeout_seconds` or more.
 
 ### 5.2 Discovery
 
@@ -290,12 +291,16 @@ logging and the `JobResult`.
 
 - **A1 — A run is a Job over one ticket.** ADR 0009. Launched by a person, recorded as an
   `AgentRun`, bounded by the Job's `time_limit`.
-- **A2 — Every run is bounded, in four ways.** `max_iterations` model calls, `max_tool_calls` tool
-  calls across the whole chain of resumptions, `max_tool_result_chars` per result and
-  `max_transcript_chars` overall. Reaching any of them ends the run `completed` with what it has
-  and a line saying which limit it hit. An unbounded agent is a bill and a liability, and "the
-  model usually stops" is not a bound. The Job time limit is not one of the four bounds. A turn of
-  slow tool calls can reach it.
+- **A2 — Every run is bounded, in five ways.** `max_iterations` model calls, `max_tool_calls` tool
+  calls across the whole chain of resumptions, `max_tool_result_chars` per result,
+  `max_transcript_chars` overall, and the run time limit. Reaching any of them ends the run
+  `completed` with what it has and a line saying which limit it hit. The run time limit is the
+  lowest of the soft time limit of the Job, its hard time limit, and 600 seconds. Before each model
+  call and each read-only tool call, the agent reads a clock. A call starts only if its allowance
+  ends 30 seconds or more before the limit. The allowance is `timeout_seconds` for a model call and
+  two times `tool_timeout_seconds` for a tool call. The allowance is a measured case and not a
+  bound. An unbounded agent is a bill and a liability, and "the model usually stops" is not a
+  bound.
 - **A3 — The loop ends at the first mutating proposal.** It never waits (ADR 0009). The proposal
   is written, the ticket's trail says so, the run finishes `waiting_approval`, and the worker slot
   goes back.
@@ -356,6 +361,11 @@ class EventTicketAgentJob(Job):
 a Nautobot Approval Workflow in front of it, and the only input is a ticket. `time_limit` is above
 `soft_time_limit`, or Nautobot kills the Job silently and logs a warning about it — which is
 exactly the failure A6 is trying not to have.
+
+The Job passes the limits that Celery applied to the service. An operator can lower them on the Job
+edit page. A value above 600 and 660 seconds gives a run no more time, and the check for a dead run
+assumes 660 seconds, so do not raise them. A run that ends before its first model call writes a
+warning to the Job log.
 
 A **Job Button** on the ticket detail page launches it, which is where a person is standing when
 they want it.
@@ -528,7 +538,7 @@ is replayed as messages and the model continues. The alternative — storing the
 continuation state — is provider-specific and would not survive a provider change. *Cost:* a long
 run re-sends its history and pays for it, bounded by `max_transcript_chars`.
 
-**13.6 Per-run caps, not spend caps.** *Proposed reading:* A2's four bounds, and no budget. A
+**13.6 Per-run caps, not spend caps.** *Proposed reading:* A2's five bounds, and no budget. A
 cross-process budget needs shared state (Phase 2, 13.6; Phase 3, 12.6) and the answer has not
 changed; what *has* changed is that a run is now expensive enough to want bounding individually,
 which A2 does. *Cost:* a deployment can still spend a great deal by launching many runs.
@@ -677,3 +687,10 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   of `=`, `-` and spaces, and four results of one lab run reached the cap. The app now makes these runs short
   first (M8). The record stores the short text and the key `separators_shortened`. The agent tells the model
   with one note line.
+- **A run stops before the time limit of the Job (issue 31).** A2 had four bounds, and the Job time limit
+  was not one of them: a run with slow calls reached the limit, and the ticket got no result. Two measured
+  facts shaped the fix. On an OpenAI or OpenAI-compatible provider, one model call lasted three times
+  `timeout_seconds` when the server gave no answer, because the SDK sent the request again. One MCP tool call
+  lasted two times `tool_timeout_seconds` when the handshake was slow. So the agent sends `max_retries=0`, and
+  the allowance of a tool call is two timeouts. A run now reads a clock before each model call and each
+  read-only tool call, and stops with a comment if the call does not fit before the run time limit.
