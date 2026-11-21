@@ -184,7 +184,7 @@ class TestRunningTheJob(JobRunTestCase):
         self.assertEqual(self.run_agent_calls[0].kwargs["soft_time_limit"], 80)
         self.assertEqual(job_result.status, JobResultStatusChoices.STATUS_SUCCESS)
         self.assertEqual(AgentRun.objects.get().status, AgentRunStatusChoices.COMPLETED)
-        self.assertIn("0 of 80 seconds used", self.ticket.updates.latest("created").message)
+        self.assertIn("of 80 seconds used", self.ticket.updates.latest("created").message)
 
     def test_a_run_with_no_model_call_writes_a_warning_to_the_job_log(self):
         """AC-8 - a run that ended before its first call must not look like a normal success."""

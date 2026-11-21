@@ -51,6 +51,12 @@ One model answer can ask for many tool calls. Each call counts against `max_tool
 can reach `max_tool_calls` before `max_iterations`. The agent checks the transcript limit before
 each model call, so the results of one answer can take the transcript past `max_transcript_chars`.
 
+There is no spend cap: a run is bounded individually, and a
+deployment that launches many runs can still spend a great deal.
+
+A value that cannot work — a bound of zero, agents enabled with no model named — is refused at the
+first run with a message naming every fault at once.
+
 ### The run time limit
 
 A run stops before the time limit of the Job. The limit of the run is the lowest of the soft time limit of
@@ -66,12 +72,6 @@ Do not set the limits of this Job above 600 and 660 seconds. A higher value give
 
 If `timeout_seconds` plus 30 seconds do not fit in the limit, each run stops before its first model call. The
 Job log then has a warning.
-
-There is no spend cap: a run is bounded individually, and a
-deployment that launches many runs can still spend a great deal.
-
-A value that cannot work — a bound of zero, agents enabled with no model named — is refused at the
-first run with a message naming every fault at once.
 
 ## Running it
 
