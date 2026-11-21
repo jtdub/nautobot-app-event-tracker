@@ -5,6 +5,7 @@ the log lines, and whether the JobResult ends up the right colour. What the agen
 in `test_services_agent.py`, where the loop lives.
 """
 
+from types import SimpleNamespace
 from unittest import mock
 
 from nautobot.apps.choices import JobResultStatusChoices
@@ -68,8 +69,22 @@ class JobRunTestCase(TransactionTestCase):
                     complete=complete if complete is not None else fixtures.FakeAgentComplete("Nothing to report."),
                     call_tool=call_tool if call_tool is not None else fixtures.FakeToolCaller(),
                 ),
-            ):
-                return create_job_result_and_run_job(MODULE, JOB_NAME, job_kwargs={"ticket": str(self.ticket.pk)})
+            ) as patched:
+                job_result = create_job_result_and_run_job(MODULE, JOB_NAME, job_kwargs={"ticket": str(self.ticket.pk)})
+        self.run_agent_calls = patched.call_args_list
+        return job_result
+
+    @staticmethod
+    def set_job_limits(*, soft, hard):
+        """Override the two time limits on the Job row, as the Job edit page does."""
+        Job.objects.filter(module_name=MODULE, job_class_name=JOB_NAME).update(
+            soft_time_limit=soft, soft_time_limit_override=True, time_limit=hard, time_limit_override=True
+        )
+
+    @staticmethod
+    def log_text(job_result):
+        """Every line of the Job log, joined."""
+        return " ".join(job_result.job_log_entries.values_list("message", flat=True))
 
 
 class TestRunningTheJob(JobRunTestCase):
@@ -150,6 +165,66 @@ class TestRunningTheJob(JobRunTestCase):
 
         self.assertEqual(job_result.status, JobResultStatusChoices.STATUS_FAILURE)
         self.assertFalse(AgentToolCall.objects.exists())
+
+    def test_the_job_passes_the_limits_of_its_row_to_the_service(self):
+        """AC-4 - a stock Job passes 600 and 660, and a normal run has no warning about its first call."""
+        job_result = self.run_job()
+
+        self.assertEqual(self.run_agent_calls[0].kwargs["soft_time_limit"], 600)
+        self.assertEqual(self.run_agent_calls[0].kwargs["time_limit"], 660)
+        self.assertNotIn("before its first model call", self.log_text(job_result))
+
+    def test_a_lower_limit_on_the_job_row_stops_the_run_at_that_limit(self):
+        """AC-4 - an operator who lowers the limit on the Job edit page gets a clean stop at the new number."""
+        self.set_job_limits(soft=80, hard=120)
+
+        job_result = self.run_job()
+
+        self.assertEqual(self.run_agent_calls[0].kwargs["soft_time_limit"], 80)
+        self.assertEqual(job_result.status, JobResultStatusChoices.STATUS_SUCCESS)
+        self.assertEqual(AgentRun.objects.get().status, AgentRunStatusChoices.COMPLETED)
+        self.assertIn("0 of 80 seconds used", self.ticket.updates.latest("created").message)
+
+    def test_a_run_with_no_model_call_writes_a_warning_to_the_job_log(self):
+        """AC-8 - a run that ended before its first call must not look like a normal success."""
+        self.set_job_limits(soft=80, hard=120)
+
+        job_result = self.run_job()
+
+        self.assertIn(
+            "The run ended before its first model call. A limit leaves no room for one call. "
+            "Read the last comment on the ticket.",
+            self.log_text(job_result),
+        )
+
+
+class TestTheAppliedTimeLimits(TestCase):
+    """AC-4 - the Job reads the limits that Celery applied, then the row, then the settings."""
+
+    @staticmethod
+    def job_with(*, timelimit, row_soft=600.0, row_hard=660.0):
+        """A Job object with a stand-in request and a stand-in row."""
+        job = EventTicketAgentJob()
+        job.request = SimpleNamespace(timelimit=timelimit)
+        job.__dict__["job_model"] = SimpleNamespace(soft_time_limit=row_soft, time_limit=row_hard)
+        return job
+
+    def test_the_limits_of_the_request_win(self):
+        """Celery keeps the header as `(hard, soft)`, and the Job returns `(soft, hard)`."""
+        self.assertEqual(self.job_with(timelimit=(260, 200))._applied_time_limits(), (200, 260))
+
+    def test_a_request_with_no_limits_falls_back_to_the_row(self):
+        """A run from the Job page in a test, or a worker that sent none."""
+        job = self.job_with(timelimit=(None, None), row_soft=90.0, row_hard=95.0)
+
+        self.assertEqual(job._applied_time_limits(), (90.0, 95.0))
+
+    def test_a_row_limit_of_zero_falls_back_to_the_settings(self):
+        """Nautobot then sends no limit, and the worker uses its own default."""
+        job = self.job_with(timelimit=None, row_soft=0.0, row_hard=0.0)
+
+        with self.settings(CELERY_TASK_SOFT_TIME_LIMIT=300, CELERY_TASK_TIME_LIMIT=600):
+            self.assertEqual(job._applied_time_limits(), (300, 600))
 
 
 def _real_run_agent():

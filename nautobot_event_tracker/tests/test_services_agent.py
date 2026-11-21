@@ -42,7 +42,7 @@ class AgentTestCase(TestCase):
         self.ticket = fixtures.create_ticket(user=self.user, title="leaf-01 interface down")
         self.model = fixtures.create_llmmodel()
 
-    def run_agent(self, *turns, call_tool=None, ticket=None, user=None):
+    def run_agent(self, *turns, call_tool=None, ticket=None, user=None, **service_kwargs):
         """Run the agent with these scripted model turns, and hand back the run and the fake."""
         complete = fixtures.FakeAgentComplete(*turns)
         with fixtures.agent_settings():
@@ -51,6 +51,7 @@ class AgentTestCase(TestCase):
                 user=user if user is not None else self.user,
                 complete=complete,
                 call_tool=call_tool if call_tool is not None else fixtures.FakeToolCaller(),
+                **service_kwargs,
             )
         return run, complete
 
@@ -75,6 +76,21 @@ class _EchoingToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-pu
         """Answer with the device of this call."""
         self.text = f"status of {tool_call.arguments['device']}"
         return super().__call__(tool_call=tool_call, timeout=timeout, max_result_chars=max_result_chars)
+
+
+class _SlowToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-public-methods
+    """A fake tool caller that moves a fake clock forward by the time of each call."""
+
+    def __init__(self, clock, seconds, **kwargs):
+        """Move this clock by this many seconds in each call."""
+        super().__init__(**kwargs)
+        self.clock = clock
+        self.seconds = seconds
+
+    def __call__(self, **kwargs):
+        """Spend the time, then answer."""
+        self.clock.advance(self.seconds)
+        return super().__call__(**kwargs)
 
 
 class TestTheSettings(TestCase):
@@ -1070,7 +1086,7 @@ class TestCallIdentifiers(AgentTestCase):
 
 
 class TestBounds(AgentTestCase):
-    """A2 - four bounds, and each of them ends a run cleanly with what it has."""
+    """A2 - the four counted bounds, and each of them ends a run cleanly with what it has."""
 
     def setUp(self):
         """One read-only tool, so a run can be made to loop."""
@@ -1137,6 +1153,122 @@ class TestBounds(AgentTestCase):
 
         self.assertGreater(len(run.transcript), 3)
         self.assertGreater(AgentToolCall.objects.count(), 0)
+
+
+class TestTheTimeLimit(AgentTestCase):
+    """A2 - the run time limit: a call starts only if its allowance ends 30 seconds before the limit."""
+
+    def setUp(self):
+        """One read-only tool, one writable tool, and a clock that a test moves."""
+        super().setUp()
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
+        self.clock = fixtures.FakeClock()
+
+    def run_limited(self, *turns, seconds=0, **service_kwargs):
+        """Run with room for many calls, and with each tool call taking this long on the fake clock."""
+        complete = fixtures.FakeAgentComplete(*turns)
+        with fixtures.agent_settings(max_iterations=20, max_tool_calls=20):
+            run = agent_service.run_agent(
+                ticket=self.ticket,
+                user=self.user,
+                complete=complete,
+                call_tool=_SlowToolCaller(self.clock, seconds),
+                clock=self.clock,
+                **service_kwargs,
+            )
+        return run, complete
+
+    def last_comment(self):
+        """The newest comment on the ticket."""
+        return self.updates(UpdateTypeChoices.COMMENT)[-1].message
+
+    def test_a_model_call_that_does_not_fit_is_not_started(self):
+        """AC-1, AC-3 - the run ends completed and the comment says what was used."""
+        run, complete = self.run_limited([fixtures.fake_tool_call("look")], seconds=520)
+
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertEqual(len(complete.calls), 1)
+        self.assertEqual(
+            self.last_comment(),
+            "The agent stopped at the run time limit (520 of 600 seconds used, and one more model call can "
+            "take 60 seconds) without finishing its investigation.",
+        )
+
+    def test_a_tool_call_that_does_not_fit_stops_a_turn_in_the_middle(self):
+        """AC-2, AC-3 - the later calls of the turn get no answer and no row."""
+        calls = [fixtures.fake_tool_call("look", identifier=f"call-{number}") for number in (1, 2, 3)]
+
+        run, _ = self.run_limited(calls, seconds=260)
+
+        self.assertEqual(AgentToolCall.objects.count(), 2)
+        self.assertEqual([answer["tool_call_id"] for answer in self.messages(run, "tool")], ["call-1", "call-2"])
+        self.assertIn("520 of 600 seconds used, and one more tool call can take 60 seconds", self.last_comment())
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_a_call_that_ends_exactly_30_seconds_before_the_limit_starts(self):
+        """AC-1 - 510 + 60 + 30 is 600, which fits."""
+        run, complete = self.run_limited([fixtures.fake_tool_call("look")], "Done.", seconds=510)
+
+        self.assertEqual(len(complete.calls), 2)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertNotIn(agent_service.BOUND_COMMENT_PREFIX, self.last_comment())
+
+    def test_a_limit_with_no_room_for_one_model_call_stops_the_run_at_once(self):
+        """AC-4, edge case (a) - a limit of 80 seconds leaves no room for a call of 60."""
+        run, complete = self.run_limited("Never asked.", soft_time_limit=80)
+
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertEqual(complete.calls, [])
+        self.assertEqual(run.iterations, 0)
+        self.assertIn("0 of 80 seconds used", self.last_comment())
+
+    def test_a_limit_above_the_defaults_gives_a_run_no_more_time(self):
+        """AC-4 - the lowest of the soft limit, the hard limit and 600 seconds."""
+        for limits in ({"soft_time_limit": 3000, "time_limit": 3060}, {}):
+            with self.subTest(limits=limits):
+                self.clock.now = 0
+                self.run_limited([fixtures.fake_tool_call("look")], seconds=520, **limits)
+                self.assertIn("520 of 600 seconds used", self.last_comment())
+
+    def test_a_hard_limit_below_the_soft_limit_sets_the_run_time_limit(self):
+        """AC-4 - only the hard limit is lowered, and the clean stop comes before the kill."""
+        self.run_limited([fixtures.fake_tool_call("look")], seconds=250, soft_time_limit=600, time_limit=300)
+
+        self.assertIn("250 of 300 seconds used", self.last_comment())
+
+    def test_a_proposal_is_written_with_no_time_check(self):
+        """AC-5, edge case (c) - a proposal makes no network call, so a run near its limit still writes it."""
+        calls = [fixtures.fake_tool_call("look", identifier="call-1"), fixtures.fake_tool_call("push_config")]
+
+        run, _ = self.run_limited(calls, seconds=590)
+
+        self.assertEqual(run.status, AgentRunStatusChoices.WAITING_APPROVAL)
+        self.assertEqual(AgentToolCall.objects.filter(tool__name="push_config").count(), 1)
+
+    def test_a_resumption_has_its_own_clock(self):
+        """AC-5, edge case (d) - the elapsed time starts at the first reading of the run."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", clock=fixtures.FakeClock(10000))
+
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertNotIn(agent_service.BOUND_COMMENT_PREFIX, self.last_comment())
+
+    def test_the_stop_comment_is_kept_out_of_the_next_prompt(self):
+        """AC-7, edge case (g) - a later run does not read the limit as a fault of the network."""
+        self.run_limited([fixtures.fake_tool_call("look")], seconds=520)
+
+        run, _ = self.run_agent("Nothing to report.")
+
+        self.assertNotIn("run time limit", self.messages(run, "user")[0]["content"])
+
+    def test_each_model_call_is_sent_with_no_retry(self):
+        """AC-6 - the SDK retry hides the soft time limit and triples the time of a call."""
+        _, complete = self.run_limited([fixtures.fake_tool_call("look")], "Done.")
+
+        self.assertEqual([call["max_retries"] for call in complete.calls], [0, 0])
 
 
 class TestFailure(AgentTestCase):

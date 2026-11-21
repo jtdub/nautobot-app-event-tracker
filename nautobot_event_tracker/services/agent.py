@@ -14,9 +14,10 @@ Rules implemented here, referenced by number from the Phase 4B spec:
 
 * **A1** - a run is a Nautobot Job over one ticket, launched by a person (ADR 0009). This module
   holds the loop; `jobs.py` holds the Job's own concerns and nothing else.
-* **A2** - every run is bounded four ways: model calls, tool calls across the whole chain of
-  resumptions, characters per tool result, and characters of transcript. Reaching any of them ends
-  the run `completed` with what it has and a line saying which bound it hit.
+* **A2** - every run is bounded five ways: model calls, tool calls across the whole chain of
+  resumptions, characters per tool result, characters of transcript, and the run time limit.
+  Reaching any of them ends the run `completed` with what it has and a line saying which bound it
+  hit.
 * **A3** - the loop ends at the first mutating proposal and never waits for a person.
 * **A4** - ticket writes go through the service layer as `source=ai` with no user. S4 is not
   relaxed for agents; the person who launched the run is `started_by`, and is the actor on
@@ -35,6 +36,7 @@ Rules implemented here, referenced by number from the Phase 4B spec:
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, replace
 from datetime import timedelta
 
@@ -153,6 +155,19 @@ ERROR_TEXT_CAP = 1000
 #: uses it to decide when a `running` row can only be a process that died.
 JOB_TIME_LIMIT_SECONDS = 660
 
+JOB_SOFT_TIME_LIMIT_SECONDS = 600
+"""The soft time limit of the Job, and the highest run time limit.
+
+The Job sets its soft limit from this number. It must stay below the hard limit, or Nautobot kills the Job and the
+Job never finds out. The run time limit is never above it, so a higher limit on the Job gives a run no more time.
+"""
+
+RUN_END_RESERVE_SECONDS = 30
+"""Seconds that a call must leave before the run time limit, for the last ticket comment and the row writes."""
+
+TOOL_CALL_TIMEOUTS = 2
+"""Timeouts that one tool call can take: the handshake and the call each get `tool_timeout_seconds`."""
+
 #: How many dead runs one launch will clear before giving up and saying so. A ticket needs more
 #: than one only if several workers died on it in a row; refusing beyond that is better than a
 #: loop nobody bounded.
@@ -264,15 +279,28 @@ def pending_call(run):
     )
 
 
-def run_agent(*, ticket, user=None, job_result=None, complete=None, call_tool=None):
+def run_agent(  # pylint: disable=too-many-arguments
+    *,
+    ticket,
+    user=None,
+    job_result=None,
+    complete=None,
+    call_tool=None,
+    soft_time_limit=None,
+    time_limit=None,
+    clock=time.monotonic,
+):
     """Run the agent over one ticket, or resume the run a person just approved something on.
 
     One entry point for both, because the Job's only input is a ticket (section 6.3) and "start or
     continue" is this module's decision rather than the operator's: a person who has approved a
     call and pressed the button again means continue, and saying so twice is a way to get it wrong.
 
-    `complete` and `call_tool` are the test seams, defaulting to the two service functions. No test
-    calls a model or opens a socket.
+    `complete`, `call_tool` and `clock` are the test seams, defaulting to the two service functions
+    and `time.monotonic`. No test calls a model or opens a socket.
+
+    `soft_time_limit` and `time_limit` are the limits that the Job runs under, in seconds. The run
+    time limit is the lowest of the two and 600. A caller that passes nothing gets 600.
 
     Returns the `AgentRun`, always in a finished state - `completed`, `waiting_approval` or
     `failed`. Raises `AgentConfigurationError` when agents are off, `TicketImmutableError` on a
@@ -280,6 +308,7 @@ def run_agent(*, ticket, user=None, job_result=None, complete=None, call_tool=No
     `LLMConfigurationError` when the configured model is not callable. All four are refusals
     before any run exists.
     """
+    started = clock()
     settings = get_settings()
     if not settings.enabled:
         raise AgentConfigurationError(
@@ -313,7 +342,24 @@ def run_agent(*, ticket, user=None, job_result=None, complete=None, call_tool=No
         model=model,
         complete=complete if complete is not None else llm_service.complete,
         call_tool=call_tool if call_tool is not None else mcp_service.call_tool,
+        clock=clock,
+        started=started,
+        limit=_run_time_limit(soft_time_limit, time_limit),
+        job_soft_time_limit=_positive_number(soft_time_limit) or JOB_SOFT_TIME_LIMIT_SECONDS,
     ).execute()
+
+
+def _positive_number(value):
+    """Return the value if it is a number above zero, and None if not."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _run_time_limit(soft_time_limit, time_limit):
+    """Return the run time limit: the lowest of the soft limit, the hard limit and 600 seconds."""
+    limits = (JOB_SOFT_TIME_LIMIT_SECONDS, _positive_number(soft_time_limit), _positive_number(time_limit))
+    return min(limit for limit in limits if limit is not None)
 
 
 def approve_tool_call(*, tool_call, user):
@@ -583,8 +629,10 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
     mid-run leaves a readable record rather than a row that says `running` and nothing else.
     """
 
-    def __init__(self, *, run, settings, model, complete, call_tool):
-        """Hold the run, its configuration, and the two service seams it calls through."""
+    def __init__(  # pylint: disable=too-many-arguments
+        self, *, run, settings, model, complete, call_tool, clock, started, limit, job_soft_time_limit
+    ):
+        """Hold the run, its configuration, the two service seams it calls through, and its clock."""
         self.run = run
         self.ticket = run.ticket
         self.settings = settings
@@ -592,6 +640,10 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         self._complete = complete
         self._call_tool = call_tool
         self._session_id = None
+        self._clock = clock
+        self._started = started
+        self._limit = limit
+        self._job_soft_time_limit = job_soft_time_limit
 
     @property
     def transcript(self):
@@ -752,6 +804,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             tools=definitions or None,
             timeout=self.settings.timeout_seconds,
             session_id=self._session(),
+            max_retries=0,
         )
 
     @staticmethod
@@ -790,6 +843,10 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
                 return False
             if tool.writable:
                 self._propose(tool, call)
+                return False
+            bound = self._time_bound("tool", TOOL_CALL_TIMEOUTS * self.settings.tool_timeout_seconds)
+            if bound is not None:
+                self._conclude_at_bound(bound)
                 return False
             self._run_tool(tool, call)
         return True
@@ -932,7 +989,20 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             return f"the limit of {self.settings.max_iterations} model calls"
         if self._transcript_chars() > self.settings.max_transcript_chars:
             return f"the transcript limit of {self.settings.max_transcript_chars} characters"
-        return None
+        return self._time_bound("model", self.settings.timeout_seconds)
+
+    def _time_bound(self, kind, allowance):
+        """Return the run time limit as a bound if a call of this kind does not fit, and None if it fits.
+
+        The call fits if its allowance ends `RUN_END_RESERVE_SECONDS` or more before the limit.
+        """
+        elapsed = self._clock() - self._started
+        if elapsed + allowance + RUN_END_RESERVE_SECONDS <= self._limit:
+            return None
+        return (
+            f"the run time limit ({round(elapsed)} of {round(self._limit)} seconds used, "
+            f"and one more {kind} call can take {round(allowance)} seconds)"
+        )
 
     def _transcript_chars(self):
         """How large the transcript has become, measured the way it is sent."""
