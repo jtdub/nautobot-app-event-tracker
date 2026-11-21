@@ -260,6 +260,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     tools=None,
     tool_choice=None,
     session_id=None,
+    max_retries=None,
     client=None,
 ):
     """One model call: refuse (L8), resolve credentials (L3), call (L6), record (L1), price (L5).
@@ -276,6 +277,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
     `session_id` reaches the Headers template of the provider integration as `{{ session_id }}`.
     The service cleans it. A call with no value sends one random value for each process.
+
+    `max_retries` goes to the client when it is not None. The agent sends 0, so the SDK does not
+    send a timed-out request again.
 
     An answer with no text and no tool call is a failed call. A tool call with no text is a
     complete answer. A tool call problem keeps its own error text, so that the operator looks in
@@ -306,6 +310,8 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
         call_kwargs["max_tokens"] = effective_max_tokens
     if response_format is not None:
         call_kwargs["response_format"] = response_format
+    if max_retries is not None:
+        call_kwargs["max_retries"] = max_retries
     if tools:
         call_kwargs["tools"] = tools
         if tool_choice is not None:

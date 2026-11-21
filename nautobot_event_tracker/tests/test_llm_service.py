@@ -411,6 +411,17 @@ class TestCallParameters(TestCase):
         call(model, client, timeout=5)
         self.assertEqual(client.calls[0]["timeout"], 5)
 
+    def test_max_retries_reaches_the_client_only_when_a_caller_sets_it(self):
+        """AC-6 - the agent turns the retry of the SDK off, and a call for another purpose does not send the key."""
+        model = fixtures.create_llmmodel()
+        client = FakeLLMClient()
+        call(model, client, max_retries=0)
+        self.assertEqual(client.calls[0]["max_retries"], 0)
+
+        client = FakeLLMClient()
+        call(model, client)
+        self.assertNotIn("max_retries", client.calls[0])
+
     def test_max_tokens_falls_back_to_the_models_cap(self):
         """The registry's cap applies when the caller sets none, and the caller's wins when set."""
         model = fixtures.create_llmmodel(name="capped-model", num_predict=128)

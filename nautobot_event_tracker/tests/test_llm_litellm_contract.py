@@ -21,6 +21,7 @@ from nautobot_ai_models.constants import ALLOWED_MODEL_PARAMETERS
 from nautobot_event_tracker.choices import LLMPurposeChoices
 from nautobot_event_tracker.models import LLMUsageRecord
 from nautobot_event_tracker.services import llm as llm_service
+from nautobot_event_tracker.services.exceptions import LLMCallError
 from nautobot_event_tracker.tests import fixtures
 
 COMPLETIONS_URL = "http://llm.example.test/v1/chat/completions"
@@ -130,6 +131,22 @@ class TestTheRealClient(TestCase):
     def complete(self, model, **kwargs):
         """One call through the service with the real client."""
         return llm_service.complete(model=model, messages=MESSAGES, purpose=LLMPurposeChoices.TRIAGE, **kwargs)
+
+    def test_a_call_with_no_retry_sends_one_request_when_the_server_times_out(self):
+        """AC-6 - `max_retries=0` is the only way to keep the SDK from sending the request again."""
+        attempts = []
+
+        def time_out(_client, request, **_kwargs):
+            attempts.append(str(request.url))
+            raise self.httpx.ReadTimeout("no answer", request=request)
+
+        model = fixtures.create_llmmodel(name="real-no-retry-model")
+
+        with mock.patch.object(self.httpx.Client, "send", time_out):
+            with self.assertRaises(LLMCallError):
+                self.complete(model, max_retries=0)
+
+        self.assertEqual(len(attempts), 1)
 
     def test_the_session_id_reaches_the_request_headers(self):
         """AC-6 - the rendered Headers template is in the HTTP request, and each call has its own value."""
