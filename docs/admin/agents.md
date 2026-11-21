@@ -37,29 +37,41 @@ Everything else has a default:
 | `max_tool_result_chars` | 8000 | How much of one tool's answer is kept, after the app makes separator lines and table spaces short. |
 | `max_context_chars` | 8000 | How much of the ticket's raw payload goes into the prompt. |
 | `max_transcript_chars` | 60000 | How large a run's transcript may grow. |
-| `timeout_seconds` | 60 | One model call. |
-| `tool_timeout_seconds` | 30 | One tool call. |
+| `timeout_seconds` | 60 | One model call. The agent does not try it again. |
+| `tool_timeout_seconds` | 30 | One step of a tool call. A call can take two times this value or more. |
 
 Before the app applies `max_tool_result_chars`, it makes padding short. A run of 10 or more `=`, `-` or `+`
 becomes 3 characters. In a table row that starts with `|`, a run of 2 or more spaces becomes one space. The
 agent tells the model when this occurred.
 
-Reaching any of the four size bounds ends the run cleanly, with what it found and a line on the
+Reaching any of the five bounds ends the run cleanly, with what it found and a line on the
 ticket saying which bound it hit.
 
 One model answer can ask for many tool calls. Each call counts against `max_tool_calls`, so a run
 can reach `max_tool_calls` before `max_iterations`. The agent checks the transcript limit before
 each model call, so the results of one answer can take the transcript past `max_transcript_chars`.
 
-The agent makes the calls of one answer one after the other. Each call can take up to
-`tool_timeout_seconds`. A run that passes the time limit of the Job (660 seconds) stops with no
-result on the ticket. To lower this risk, lower `max_tool_calls` or `tool_timeout_seconds`.
-
 There is no spend cap: a run is bounded individually, and a
 deployment that launches many runs can still spend a great deal.
 
 A value that cannot work — a bound of zero, agents enabled with no model named — is refused at the
 first run with a message naming every fault at once.
+
+### The run time limit
+
+A run stops before the time limit of the Job. The limit of the run is the lowest of the soft time limit of
+the Job, its hard time limit, and 600 seconds. The agent starts a model call only if `timeout_seconds` plus
+30 seconds fit before that limit. It starts a read-only tool call only if two times `tool_timeout_seconds`
+plus 30 seconds fit. With the defaults, no call starts after 510 seconds. A run that stops this way is
+Completed, and the ticket comment starts with "The agent stopped at the run time limit".
+
+You can lower the limits on the Job edit page: **Jobs > Jobs > Investigate an Event Ticket > Edit**.
+
+WARNING: With limits above the defaults, a second run can start on a ticket beside a run that is still alive.
+Do not set the limits of this Job above 600 and 660 seconds. A higher value gives a run no more time.
+
+If `timeout_seconds` plus 30 seconds do not fit in the limit, each run stops before its first model call. The
+Job log then has a warning.
 
 ## Running it
 

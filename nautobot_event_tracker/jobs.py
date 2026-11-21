@@ -10,6 +10,7 @@ time limit, and a place a person can read what happened - while the approval gat
 row that no runtime can wave through.
 """
 
+from django.conf import settings
 from nautobot.apps.jobs import Job, JobHookReceiver, ObjectVar, register_jobs
 
 from nautobot_event_tracker.choices import AgentRunStatusChoices, TicketStatusChoices
@@ -36,17 +37,27 @@ class EventTicketAgentJob(Job):
         # A ticket ID is not a credential. Saying so is what lets an operator schedule this Job or
         # put a Nautobot Approval Workflow in front of it; the default of True blocks both.
         has_sensitive_variables = False
-        # Above the soft limit, or Nautobot kills the Job without the Job ever finding out - which
-        # is exactly the silent half-finished run rule A6 exists to prevent.
-        soft_time_limit = 600
-        # From the service, so the number the Job is killed at and the number the service uses to
-        # decide a run's process must be dead cannot drift apart.
+        soft_time_limit = agent_service.JOB_SOFT_TIME_LIMIT_SECONDS
         time_limit = agent_service.JOB_TIME_LIMIT_SECONDS
 
     ticket = ObjectVar(
         model=EventTicket,
         description="The ticket to investigate. One run per ticket at a time.",
     )
+
+    def _applied_time_limits(self):
+        """Return the soft and hard time limits of this run, in seconds.
+
+        Celery keeps the limits of the request as `(hard, soft)`. A limit that the request lacks comes
+        from the Job row, and then from the Celery settings, which Nautobot uses for a limit of 0.
+        """
+        hard, soft = getattr(self.request, "timelimit", None) or (None, None)
+        soft = soft if soft and soft > 0 else self.job_model.soft_time_limit
+        hard = hard if hard and hard > 0 else self.job_model.time_limit
+        return (
+            soft if soft and soft > 0 else settings.CELERY_TASK_SOFT_TIME_LIMIT,
+            hard if hard and hard > 0 else settings.CELERY_TASK_TIME_LIMIT,
+        )
 
     def run(self, ticket):  # pylint: disable=arguments-differ
         """Run or resume the agent, and report what it did in the terms a person needs.
@@ -55,7 +66,14 @@ class EventTicketAgentJob(Job):
         off, a model that is not callable and a ticket that already has a run are all things an
         operator fixes by doing something, and each of them says what.
         """
-        run = agent_service.run_agent(ticket=ticket, user=self.user, job_result=self.job_result)
+        soft_time_limit, time_limit = self._applied_time_limits()
+        run = agent_service.run_agent(
+            ticket=ticket,
+            user=self.user,
+            job_result=self.job_result,
+            soft_time_limit=soft_time_limit,
+            time_limit=time_limit,
+        )
 
         self.logger.info(
             "Agent run %s finished as '%s' after %d model call(s).",
@@ -64,6 +82,13 @@ class EventTicketAgentJob(Job):
             run.iterations,
             extra={"object": ticket},
         )
+
+        if run.status == AgentRunStatusChoices.COMPLETED and run.iterations == 0:
+            self.logger.warning(
+                "The run ended before its first model call. A limit leaves no room for one call. "
+                "Read the last comment on the ticket.",
+                extra={"object": ticket},
+            )
 
         if run.status == AgentRunStatusChoices.WAITING_APPROVAL:
             proposal = agent_service.pending_call(run)
