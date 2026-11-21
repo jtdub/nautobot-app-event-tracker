@@ -264,7 +264,8 @@ supplies one. No test opens a socket.
     that sentence, enforced.
 - **M7 — Every call is recorded.** Success or failure, the `AgentToolCall` carries the arguments,
   the result, the latency and the error before the caller sees any of them. L1's rule, applied to
-  the other kind of call this app makes.
+  the other kind of call this app makes. A call that the soft time limit of the Job interrupts is
+  recorded as `failed` before the error goes on.
 - **M8 — Bounded in both directions.** Every call has a timeout (`tool_timeout_seconds`), and every
   result is capped at `max_tool_result_chars` before it is stored or shown to a model. A tool that
   returns forty megabytes of interface counters must not become a prompt, and must not become a
@@ -314,7 +315,9 @@ logging and the `JobResult`.
 - **A6 — Fail closed, not open.** Triage fails open because a missing verdict costs a ticket that
   should not exist (T4); an agent fails *closed* because a half-finished investigation reported as
   a finished one is worse than no investigation. A failed run ends `failed`, says why on the
-  ticket, and proposes nothing.
+  ticket, and proposes nothing. A run that the soft time limit of the Job interrupts ends `failed`
+  and names the limit, and each call that it left unfinished becomes `failed`. A Mutating call that
+  was cut says that the change might be in effect.
 - **A7 — The transcript is the record.** Every system prompt, model message, tool call and tool
   result is stored on the run. Resumption needs it, and a person asking "why did it want to do
   *that*" needs it more.
@@ -342,7 +345,7 @@ logging and the `JobResult`.
 6. Read-only tool calls → execute each one of the turn, in the order asked (M4, M7), append each result
    to the transcript, back to 4. The run stops at the first mutating call of the turn (step 7).
 7. A mutating tool call → propose it and stop (A3).
-8. Any `LLMError`, `MCPError` or exhausted bound → A6 or A2.
+8. Any `LLMError`, `MCPError`, the soft time limit of the Job, or an exhausted bound → A6 or A2.
 
 ### 6.3 The Job
 

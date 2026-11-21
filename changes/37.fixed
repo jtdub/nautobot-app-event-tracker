@@ -1,0 +1,2 @@
+Fixed an agent run that stayed "Running" after the Job reached its soft time limit. The run now fails and the ticket comment names the cause.
+Fixed an Agent Tool Call that stayed "Executing" after its run stopped at the soft time limit.
