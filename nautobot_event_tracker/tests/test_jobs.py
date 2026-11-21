@@ -56,6 +56,7 @@ class JobRunTestCase(TransactionTestCase):
         super().setUp()
         fixtures.create_event_types()
         self.ticket = fixtures.create_ticket(user=self.user)
+        self.run_agent_calls = []
         fixtures.create_llmmodel()
 
     def run_job(self, complete=None, call_tool=None):
@@ -211,20 +212,22 @@ class TestTheAppliedTimeLimits(TestCase):
 
     def test_the_limits_of_the_request_win(self):
         """Celery keeps the header as `(hard, soft)`, and the Job returns `(soft, hard)`."""
-        self.assertEqual(self.job_with(timelimit=(260, 200))._applied_time_limits(), (200, 260))
+        job = self.job_with(timelimit=(260, 200))
+
+        self.assertEqual(job._applied_time_limits(), (200, 260))  # pylint: disable=protected-access
 
     def test_a_request_with_no_limits_falls_back_to_the_row(self):
         """A run from the Job page in a test, or a worker that sent none."""
         job = self.job_with(timelimit=(None, None), row_soft=90.0, row_hard=95.0)
 
-        self.assertEqual(job._applied_time_limits(), (90.0, 95.0))
+        self.assertEqual(job._applied_time_limits(), (90.0, 95.0))  # pylint: disable=protected-access
 
     def test_a_row_limit_of_zero_falls_back_to_the_settings(self):
         """Nautobot then sends no limit, and the worker uses its own default."""
         job = self.job_with(timelimit=None, row_soft=0.0, row_hard=0.0)
 
         with self.settings(CELERY_TASK_SOFT_TIME_LIMIT=300, CELERY_TASK_TIME_LIMIT=600):
-            self.assertEqual(job._applied_time_limits(), (300, 600))
+            self.assertEqual(job._applied_time_limits(), (300, 600))  # pylint: disable=protected-access
 
 
 def _real_run_agent():
