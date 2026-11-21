@@ -127,7 +127,7 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other 
     The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
 
 !!! warning
-    With the template, Go sees the consumer name of each triage call. The default
+    With the `session_id` template in the *Headers* field, Go sees the consumer name of each triage call. The default
     consumer name holds the host name and the process number. Set `ingestion.consumer_name` to a
     text that names nothing.
 
