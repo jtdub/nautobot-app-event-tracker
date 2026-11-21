@@ -54,7 +54,8 @@ Four things worth knowing before you enable it:
 - **The off switch is a database flag.** Unticking **Enabled** on the provider or the model stops
   every call, including on a consumer already running — within `triage.model_cache_seconds`.
 - **The consumer name can leave the box.** A Headers template that uses `session_id` sends it to the
-  provider. Set `ingestion.consumer_name` to a text that names nothing.
+  provider. Set `ingestion.consumer_name` to a text that names nothing, and give each consumer a
+  different name. See [Ingestion](../admin/ingestion.md).
 - **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event and is
   counted. The consumer never exits because a model misbehaved.
 

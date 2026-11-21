@@ -129,19 +129,26 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other 
 !!! warning
     With the `session_id` template in the *Headers* field, Go sees the consumer name of each triage call. The default
     consumer name holds the host name and the process number. Set `ingestion.consumer_name` to a
-    text that names nothing.
+    text that names nothing, and give each consumer a different name. See
+    [Ingestion](ingestion.md).
 
 Follow the steps in [Registering a provider](#registering-a-provider) with these values:
 
 | Object | Field | Value |
 | --- | --- | --- |
 | External Integration | *Remote URL* | `https://opencode.ai/inference/go/v1` |
-| External Integration | *Headers* | `{"x-opencode-session": "{{ session_id \| default('nautobot-discovery') }}"}` |
+| External Integration | *Headers* | The JSON under this table |
 | External Integration | *Secrets Group* | The group that holds your Go API key |
 | AI Provider | *Provider type* | **OpenAI-compatible** |
 | AI Model | *Name* | `deepseek-v4.1-flash` |
 | AI Model | *Kind* | *Chat* |
 | AI Model | *Default parameters* | `{"extra_body": {"reasoning_effort": "none"}}` |
+
+Put this JSON in the *Headers* field:
+
+```json
+{"x-opencode-session": "{{ session_id | default('nautobot-discovery') }}"}
+```
 
 Make the AI Model row by hand. The model list of Go also has models that use a different API.
 
@@ -165,7 +172,9 @@ the header a value on every call.
 - Any other call sends one random ID for each process.
 - The app replaces each character other than `A-Z a-z 0-9 . _ : -` with `-`. It cuts the
   value at 128 characters.
-- Go sees more than one session for one account.
+- Go sees one session for each agent investigation, one for each consumer name, and one for each
+  other process. This is the purpose of the template. The Go console then shows each session
+  apart.
 
 A renderer that does not know `session_id` sends the literal text `{{ session_id }}`. The
 registry Job "Discover AI Models" and an MCP server integration are such renderers. The
@@ -174,6 +183,11 @@ filter. Double quotes break the stored JSON, and the app then refuses each call.
 
 After you change the Headers, make one agent run or send one event. Open the LLM Usage list and
 read the record of that call. If the record shows a session error, put the fixed value back.
+
+If no new record appears, the app did not send the call. A template that does not render stops
+the call before the app writes a record. Look for the text "has a template that does not
+render" in the result of the agent run or in the log of the consumer. Then put the fixed value
+back.
 
 **Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
 tokens count against [`max_output_tokens`](#enabling-event-triage). With a limit of 256 tokens,
