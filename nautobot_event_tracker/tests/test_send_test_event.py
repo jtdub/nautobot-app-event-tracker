@@ -23,7 +23,7 @@ PASSWORD_VARIABLE = "EVENT_TRACKER_TEST_BROKER_PASSWORD"
 
 
 class StubProducer:
-    """A confluent-kafka Producer that records what was asked of it."""
+    """A confluent-kafka Producer that records each call that the script makes."""
 
     def __init__(self, config):
         """Keep the configuration so the tests can assert on it."""
