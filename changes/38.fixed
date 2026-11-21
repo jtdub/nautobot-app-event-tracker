@@ -1,0 +1,1 @@
+Fixed an Agent Tool Call that stayed "Executing" after a worker stopped. The next run on the ticket marks it failed.

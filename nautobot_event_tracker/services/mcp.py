@@ -72,6 +72,9 @@ CUT_CHANGE_ERROR = (
 )
 """The error of a call of a writable tool that a stop interrupted."""
 
+DEAD_PROCESS_CALL_ERROR = "The process that ran this agent stopped before this call finished."
+"""The error of a read-only call that a dead process left unfinished."""
+
 SEPARATOR_RUN = re.compile(r"([=+-])\1{9,}")
 """Ten or more of one separator character in a row (M8)."""
 

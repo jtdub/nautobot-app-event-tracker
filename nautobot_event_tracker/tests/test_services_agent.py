@@ -217,6 +217,66 @@ class TestStartingARun(AgentTestCase):
         self.assertIn("stopped without recording an outcome", dead.error)
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
 
+    def dead_run(self, **overrides):
+        """Return a `running` run whose process has outlived the dead-run check."""
+        from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+        from django.utils import timezone  # pylint: disable=import-outside-toplevel
+
+        age = agent_service.JOB_TIME_LIMIT_SECONDS + agent_service.STALE_RUN_GRACE_SECONDS + 60
+        return fixtures.create_agentrun(
+            ticket=self.ticket,
+            status=AgentRunStatusChoices.RUNNING,
+            started_at=timezone.now() - timedelta(seconds=age),
+            **overrides,
+        )
+
+    def test_a_dead_run_s_unfinished_read_only_call_is_failed_and_recorded(self):
+        """AC-15 - the next launch marks the call that the dead process left, and the trail says so."""
+        dead = self.dead_run()
+        tool = fixtures.create_mcptool(name="look", enabled=True, writable=False)
+        row = fixtures.create_agenttoolcall(run=dead, tool=tool, status=AgentToolCallStatusChoices.EXECUTING)
+
+        self.run_agent("Looked again.")
+
+        row.refresh_from_db()
+        entry = self.updates(UpdateTypeChoices.TOOL_EXECUTED)[0]
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.DEAD_PROCESS_CALL_ERROR)
+        self.assertIn("(failed,", entry.message)
+        self.assertIn(mcp_service.DEAD_PROCESS_CALL_ERROR, entry.message)
+
+    def test_a_dead_resumption_s_cut_approved_call_is_failed_with_the_warning(self):
+        """AC-15 - the call of the parent run gets the warning, the dead run's error ends with it."""
+        parent = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.SUPERSEDED)
+        tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
+        row = fixtures.create_agenttoolcall(run=parent, tool=tool, status=AgentToolCallStatusChoices.EXECUTING)
+        dead = self.dead_run(parent=parent)
+
+        self.run_agent("Looked again.")
+
+        row.refresh_from_db()
+        dead.refresh_from_db()
+        entry = self.updates(UpdateTypeChoices.TOOL_EXECUTED)[0]
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
+        self.assertTrue(dead.error.endswith(mcp_service.CUT_CHANGE_ERROR))
+        self.assertIn(mcp_service.CUT_CHANGE_ERROR, entry.message)
+
+    def test_a_dead_run_with_no_unfinished_call_keeps_its_error(self):
+        """AC-15 - no call, no warning and no trail entry."""
+        dead = self.run_agent_dead()
+
+        self.assertNotIn("might be in effect", dead.error)
+        self.assertEqual(self.updates(UpdateTypeChoices.TOOL_EXECUTED), [])
+
+    def run_agent_dead(self):
+        """Bury a dead run with no calls by launching again, and return the buried run."""
+        dead = self.dead_run()
+        self.run_agent("Looked again.")
+        dead.refresh_from_db()
+        return dead
+
     def test_a_run_still_within_its_time_limit_is_left_alone(self):
         """The sweep must not declare a live run dead: two agents on one ticket is worse."""
         from datetime import timedelta  # pylint: disable=import-outside-toplevel
@@ -970,6 +1030,37 @@ class TestResumption(AgentTestCase):
         entry = self.updates(UpdateTypeChoices.TOOL_EXECUTED)[-1]
         self.assertIn("push_config", entry.message)
 
+    def test_a_resumption_with_no_time_for_the_approved_call_is_refused(self):
+        """AC-16, edge case (d) - the call stays approved and no run opens."""
+        agent_service.approve_tool_call(tool_call=self.proposal, user=self.user)
+        caller = fixtures.FakeToolCaller()
+
+        with self.assertRaises(AgentConfigurationError) as caught:
+            self.run_agent("Done.", call_tool=caller, soft_time_limit=80)
+
+        self.proposal.refresh_from_db()
+        self.parent.refresh_from_db()
+        self.assertEqual(
+            str(caught.exception),
+            "The run time limit of 80 seconds leaves no time for the approved call, which can take 60 seconds. "
+            "The call stays approved. Raise the time limits of the Job or lower `tool_timeout_seconds`, "
+            "then run the agent again.",
+        )
+        self.assertEqual(AgentRun.objects.count(), 1)
+        self.assertEqual(self.parent.status, AgentRunStatusChoices.WAITING_APPROVAL)
+        self.assertEqual(self.proposal.status, AgentToolCallStatusChoices.APPROVED)
+        self.assertEqual(caller.calls, [])
+
+    def test_a_resumption_with_exactly_enough_time_makes_the_approved_call(self):
+        """AC-16 - two tool timeouts and the reserve fit in 90 seconds."""
+        caller = fixtures.FakeToolCaller(text="config applied")
+        agent_service.approve_tool_call(tool_call=self.proposal, user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=caller, soft_time_limit=90)
+
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertEqual(len(caller.calls), 1)
+
     def test_a_denied_proposal_does_not_resume(self):
         """A denial ends the chain, and the next launch is a fresh run rather than a resumption."""
         agent_service.deny_tool_call(tool_call=self.proposal, user=self.user)
@@ -1483,6 +1574,46 @@ class TestTheSoftTimeLimit(AgentTestCase):
         self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
         self.assertTrue(run.error.startswith(self.CUT.format(limit=600, activity="a model call")))
         self.assertIn("The run was already ending for this cause: The model call failed: boom", run.error)
+
+
+class TestACutCall(AgentTestCase):
+    """AC-14 - a call that a stop cut gets an entry in the ticket's trail."""
+
+    def setUp(self):
+        """One read-only tool and one writable tool."""
+        super().setUp()
+        fixtures.create_mcptool(name="look", enabled=True, writable=False)
+        fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
+
+    def test_a_read_only_call_that_the_signal_cut_is_in_the_trail(self):
+        """The entry names the call, says it failed, and carries the error of the row."""
+        self.run_agent([fixtures.fake_tool_call("look")], call_tool=_wire_with(SoftTimeLimitExceeded()))
+
+        entries = self.updates(UpdateTypeChoices.TOOL_EXECUTED)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("Called 'look'", entries[0].message)
+        self.assertIn("(failed,", entries[0].message)
+        self.assertIn(mcp_service.SOFT_TIME_LIMIT_CALL_ERROR, entries[0].message)
+
+    def test_a_cut_approved_call_is_in_the_trail_with_the_warning(self):
+        """The entry of a writable call carries the text that the change might be in effect."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        self.run_agent("Done.", call_tool=_CuttingToolCaller())
+
+        entries = self.updates(UpdateTypeChoices.TOOL_EXECUTED)
+        self.assertEqual(len(entries), 1)
+        self.assertIn(mcp_service.CUT_CHANGE_ERROR, entries[0].message)
+
+    def test_a_call_that_the_signal_did_not_cut_has_no_entry(self):
+        """A row that is still approved was not cut, so the trail does not say it failed."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        self.run_agent("Done.", call_tool=_SignalToolCaller())
+
+        self.assertEqual(self.updates(UpdateTypeChoices.TOOL_EXECUTED), [])
 
 
 class TestFailure(AgentTestCase):

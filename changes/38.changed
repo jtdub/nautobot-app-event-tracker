@@ -1,0 +1,2 @@
+Changed the ticket trail. It now has an entry for each tool call that a time limit or a stopped worker cut off.
+Changed the agent. It does not make an approved call when the time limit of the Job leaves no time for it. The call stays approved.
