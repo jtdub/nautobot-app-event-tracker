@@ -13,6 +13,7 @@ import json
 import pathlib
 from unittest import mock
 
+from celery.exceptions import SoftTimeLimitExceeded
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from nautobot_ai_models.choices import MCPTransportChoices
@@ -202,6 +203,30 @@ class TestCallingATool(CallToolTestCase):
         self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
         self.assertIn("connection refused", self.call.error)
 
+    def test_the_soft_time_limit_is_recorded_and_raised_as_itself(self):
+        """AC-9 - the row says what happened, and the signal goes on to the loop."""
+        with self.assertRaises(SoftTimeLimitExceeded):
+            self.call_tool(client=fixtures.FakeMCPCaller(error=SoftTimeLimitExceeded()))
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(self.call.error, mcp_service.SOFT_TIME_LIMIT_CALL_ERROR)
+
+    def test_the_soft_time_limit_in_a_writable_call_says_the_change_might_be_in_effect(self):
+        """AC-13 - a cut call of a tool that changes the network gets the warning."""
+        self.tool.writable = True
+        self.tool.validated_save()
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.APPROVED
+        )
+
+        with self.assertRaises(SoftTimeLimitExceeded):
+            self.call_tool(client=fixtures.FakeMCPCaller(error=SoftTimeLimitExceeded()))
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(self.call.error, mcp_service.CUT_CHANGE_ERROR)
+
     def test_no_sdk_exception_escapes(self):
         """The L4 arrangement, applied to the other kind of call this app makes."""
         with self.assertRaises(MCPCallError):
@@ -244,6 +269,60 @@ class TestCallingATool(CallToolTestCase):
         self.call_tool()
 
         self.assertEqual(self.caller.calls[0]["connection"].timeout, self.server.external_integration.timeout)
+
+
+class TestUnfinishedCalls(TestCase):
+    """AC-11, AC-13 - the sweep that marks the calls a stop left unfinished."""
+
+    def setUp(self):
+        """A parent run and its resumption, with one read-only tool and one writable tool."""
+        self.server = fixtures.create_mcpserver()
+        self.reader = fixtures.create_mcptool(server=self.server, name="look", enabled=True, writable=False)
+        self.writer = fixtures.create_mcptool(server=self.server, name="push_config", enabled=True, writable=True)
+        self.parent = fixtures.create_agentrun()
+        self.child = fixtures.create_agentrun(ticket=self.parent.ticket, parent=self.parent)
+        self.other = fixtures.create_agentrun()
+
+    def call(self, run, tool, status):
+        """One row on this run in this status."""
+        return fixtures.create_agenttoolcall(run=run, tool=tool, status=status)
+
+    def test_executing_and_unfinished_read_only_rows_of_the_chain_become_failed(self):
+        executing = self.call(self.parent, self.reader, AgentToolCallStatusChoices.EXECUTING)
+        proposed = self.call(self.child, self.reader, AgentToolCallStatusChoices.PROPOSED)
+
+        changed = mcp_service.fail_unfinished_calls([self.parent.pk, self.child.pk], "Stopped.")
+
+        self.assertCountEqual([row.pk for row in changed], [executing.pk, proposed.pk])
+        for row in (executing, proposed):
+            row.refresh_from_db()
+            self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+            self.assertEqual(row.error, "Stopped.")
+            self.assertIsNotNone(row.called_at)
+
+    def test_a_writable_row_gets_the_warning(self):
+        executing = self.call(self.parent, self.writer, AgentToolCallStatusChoices.EXECUTING)
+
+        mcp_service.fail_unfinished_calls([self.parent.pk], "Stopped.")
+
+        executing.refresh_from_db()
+        self.assertEqual(executing.error, mcp_service.CUT_CHANGE_ERROR)
+
+    def test_the_other_rows_do_not_change(self):
+        proposal = self.call(self.parent, self.writer, AgentToolCallStatusChoices.PROPOSED)
+        done = self.call(self.parent, self.reader, AgentToolCallStatusChoices.EXECUTED)
+        elsewhere = self.call(self.other, self.reader, AgentToolCallStatusChoices.EXECUTING)
+
+        changed = mcp_service.fail_unfinished_calls([self.parent.pk], "Stopped.")
+
+        self.assertEqual(changed, [])
+        for row, status in (
+            (proposal, AgentToolCallStatusChoices.PROPOSED),
+            (done, AgentToolCallStatusChoices.EXECUTED),
+            (elsewhere, AgentToolCallStatusChoices.EXECUTING),
+        ):
+            row.refresh_from_db()
+            self.assertEqual(row.status, status)
 
 
 class TestShorteningAResult(CallToolTestCase):
