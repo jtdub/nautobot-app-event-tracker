@@ -9,6 +9,8 @@ Nothing here opens a socket: the client seam is the boundary, and no test mocks 
 internals.
 """
 
+import json
+import pathlib
 from unittest import mock
 
 from django.core.exceptions import ImproperlyConfigured
@@ -21,6 +23,11 @@ from nautobot_event_tracker.models import AgentToolCall
 from nautobot_event_tracker.services import mcp as mcp_service
 from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError
 from nautobot_event_tracker.tests import fixtures
+
+
+def _recorded(name):
+    """Return one recorded SR Linux tool result from the data directory."""
+    return (pathlib.Path(__file__).parent / "data" / name).read_text(encoding="utf-8")
 
 
 class MCPTestCase(TestCase):
@@ -237,6 +244,138 @@ class TestCallingATool(CallToolTestCase):
         self.call_tool()
 
         self.assertEqual(self.caller.calls[0]["connection"].timeout, self.server.external_integration.timeout)
+
+
+class TestShorteningAResult(CallToolTestCase):
+    """M8: separator runs and the cell spaces of `|` rows are made short before the cap."""
+
+    def stored(self, text, **kwargs):
+        """Return the stored result for a call that answers with this text."""
+        structured = kwargs.pop("structured_content", None)
+        result = fixtures.FakeCallToolResult(text, structured_content=structured)
+        return self.call_tool(client=fixtures.FakeMCPCaller(result), **kwargs).result
+
+    def test_a_long_separator_run_becomes_three_characters(self):
+        """A run of ten or more of one separator character shrinks and a shorter run does not."""
+        lines = ["=" * 10, "-" * 10, "+" * 10, "-" * 9, "-----BEGIN CERTIFICATE-----", "--flag"]
+
+        result = self.stored("\n".join(lines))
+
+        self.assertEqual(
+            result["text"].split("\n"),
+            ["===", "---", "+++", "-" * 9, "-----BEGIN CERTIFICATE-----", "--flag"],
+        )
+
+    def test_the_cell_spaces_of_a_bar_row_become_one_space(self):
+        """Spaces after text in a row that starts with a bar shrink. The indent and other lines stay."""
+        row = "  | a" + " " * 6 + "|" + " " * 10 + "| c" + " " * 4 + "|" + " " * 3
+        other = "Gi0/1" + " " * 8 + "unassigned"
+
+        result = self.stored(f"{row}\n{other}")
+
+        self.assertEqual(result["text"], f"  | a | | c | \n{other}")
+
+    def test_the_recorded_table_shows_more_rows_inside_a_small_limit(self):
+        """With a limit of 1,000 the shortened table reaches a row that the raw text never reaches."""
+        raw = _recorded("srlinux_interface_table.txt")
+        self.assertEqual(len(raw), 8000)
+
+        result = self.stored(raw, max_result_chars=1000)
+
+        self.assertNotIn("truncated", result)
+        self.assertEqual(len(result["text"]), 688)
+        self.assertIn("ethernet-1/13", result["text"])
+        self.assertNotIn("ethernet-1/1", raw[:1000])
+
+    def test_the_recorded_detail_fits_the_default_limit_after_shortening(self):
+        """The first 8,000 characters of an interface detail shrink to 1,727."""
+        raw = _recorded("srlinux_interface_detail.txt")
+        self.assertEqual(len(raw), 8000)
+
+        result = self.stored(raw)
+
+        self.assertEqual(len(result["text"]), 1727)
+        self.assertNotIn("truncated", result)
+        self.assertTrue(result["separators_shortened"])
+
+    def test_a_result_still_over_the_limit_is_cut_from_the_shortened_text(self):
+        """The cap applies to the shortened text and the result says that the app cut it."""
+        raw = _recorded("srlinux_interface_detail.txt")
+
+        result = self.stored(raw, max_result_chars=500)
+
+        self.assertTrue(result["truncated"])
+        self.assertEqual(len(result["text"]), 500)
+        self.assertEqual(result["text"], mcp_service._shortened(raw)[:500])  # pylint: disable=protected-access
+        self.assertTrue(result["text"].startswith("===\nInterface: ethernet-1/2"))
+
+    def test_the_marker_is_set_when_the_text_changed(self):
+        """Changed text carries the key."""
+        self.assertTrue(self.stored("x" + "-" * 10)["separators_shortened"])
+
+    def test_the_marker_is_absent_when_the_text_did_not_change(self):
+        """Unchanged text has no key."""
+        self.assertNotIn("separators_shortened", self.stored("ok"))
+
+    def test_the_marker_is_absent_for_a_non_text_block(self):
+        """The app does not change a named content block."""
+        result = fixtures.FakeCallToolResult(None)
+        result.content = [object()]
+
+        stored = self.call_tool(client=fixtures.FakeMCPCaller(result)).result
+
+        self.assertEqual(stored["text"], "<content>")
+        self.assertNotIn("separators_shortened", stored)
+
+    def test_the_marker_is_absent_for_an_empty_text(self):
+        """The app does not change an empty text."""
+        self.assertNotIn("separators_shortened", self.stored(""))
+
+    def test_the_marker_does_not_cause_a_cut(self):
+        """A result that fits only after shortening has no truncated key, even with the marker added."""
+        limit = len(json.dumps({"is_error": False, "text": "a---"}))
+
+        result = self.stored("a" + "-" * 10, max_result_chars=limit)
+
+        self.assertNotIn("truncated", result)
+        self.assertEqual(result["text"], "a---")
+        self.assertTrue(result["separators_shortened"])
+
+    def test_the_marker_does_not_drop_structured_content(self):
+        """The marker key is outside the size check that drops structured content."""
+        limit = len(json.dumps({"is_error": False, "text": "a---", "structured_content": {"k": "v"}}))
+
+        result = self.stored("a" + "-" * 10, structured_content={"k": "v"}, max_result_chars=limit)
+
+        self.assertNotIn("truncated", result)
+        self.assertEqual(result["structured_content"], {"k": "v"})
+        self.assertTrue(result["separators_shortened"])
+
+    def test_an_error_text_is_shortened_too(self):
+        """The text of a server error gets the same rules."""
+        raw = fixtures.FakeCallToolResult("bad " + "-" * 40, is_error=True)
+
+        record = self.call_tool(client=fixtures.FakeMCPCaller(raw))
+
+        self.assertEqual(record.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(record.error, "bad ---")
+
+    def test_structured_content_is_not_shortened(self):
+        """Structured content is data and keeps its text."""
+        structured = {"line": "-" * 50}
+
+        result = self.stored("ok", structured_content=structured)
+
+        self.assertEqual(result["structured_content"], structured)
+        self.assertNotIn("separators_shortened", result)
+
+    def test_windows_line_ends_stay(self):
+        """Each carriage return stays on its line."""
+        raw = "| a" + " " * 4 + "| b" + " " * 4 + "|\r\n" + "-" * 12 + "\r\n"
+
+        result = self.stored(raw)
+
+        self.assertEqual(result["text"], "| a | b |\r\n---\r\n")
 
 
 class TestCallRefusals(CallToolTestCase):

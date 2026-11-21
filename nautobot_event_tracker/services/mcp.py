@@ -29,13 +29,14 @@ Rules implemented here, referenced by number from the Phase 4B spec:
 * **M7** - every call is on the record - arguments, result, latency, error - before its caller
   sees any of it. Rule L1's promise, made about the other kind of call this app makes.
 * **M8** - every call is bounded in both directions: a timeout going out, and a cap on the result
-  coming back.
+  coming back. Long separator runs and the cell spaces of `|` rows are made short before the cap.
 """
 
 import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field, replace
 
@@ -54,6 +55,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 30
 """The timeout of a call when the integration gives none (M8)."""
+
+SEPARATOR_RUN = re.compile(r"([=+-])\1{9,}")
+"""Ten or more of one separator character in a row (M8)."""
+
+SHORT_SEPARATOR_LENGTH = 3
+
+TABLE_ROW_SPACE_RUN = re.compile(r"(?<=\S)[ \t]{2,}")
+"""Two or more spaces or tabs after a character that is not whitespace (M8)."""
 
 #: How long the read side of a session may wait. The transport keeps a server-sent-event stream
 #: open, so the read deadline is not the request deadline and must not be set from it. Matches what
@@ -311,6 +320,14 @@ def _finish(tool_call, *, latency_ms, result=None, error=None):
     return tool_call
 
 
+def _shortened(text):
+    """Return the text with long separator runs and the cell spaces of `|` rows made short (M8)."""
+    text = SEPARATOR_RUN.sub(lambda run: run.group(1) * SHORT_SEPARATOR_LENGTH, text)
+    return "\n".join(
+        TABLE_ROW_SPACE_RUN.sub(" ", line) if line.lstrip().startswith("|") else line for line in text.split("\n")
+    )
+
+
 def _capped_result(raw, cap):
     """M8 - what came back, rendered as plain JSON and bounded. True when something was dropped.
 
@@ -322,25 +339,35 @@ def _capped_result(raw, cap):
     The text is capped first, because it is what a model and a person both read. Structured content
     is dropped only when capping the text was not enough, which is the case where a tool answered
     with a megabyte of JSON and the alternative to dropping it is storing it.
+
+    The function shortens the text before it applies the cap. It sets the key `separators_shortened`
+    after every size check, so the key never causes a cut.
     """
     blocks = []
     for block in getattr(raw, "content", None) or []:
         text = getattr(block, "text", None)
         blocks.append(text if isinstance(text, str) else f"<{getattr(block, 'type', None) or 'content'}>")
-    text = "\n".join(blocks)
+    original = "\n".join(blocks)
+    text = _shortened(original)
 
     result = {"is_error": bool(getattr(raw, "is_error", False)), "text": text}
     structured = getattr(raw, "structured_content", None)
     if structured is not None:
         result["structured_content"] = structured
 
+    shortened = text != original
+
     if len(json.dumps(result, default=str)) <= cap:
+        if shortened:
+            result["separators_shortened"] = True
         return result, False
 
     result["text"] = text[:cap]
     result["truncated"] = True
     if len(json.dumps(result, default=str)) > cap:
         result.pop("structured_content", None)
+    if shortened:
+        result["separators_shortened"] = True
     return result, True
 
 

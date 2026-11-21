@@ -26,7 +26,7 @@ the MCP Tool it names, which lives in the AI Models app — nothing else.
 | Arguments | What the model asked for, as it asked. Frozen at proposal. |
 | Tool Fingerprint | The tool's definition digest when this was proposed. |
 | Decided By / Decided At | Who approved or denied it, and when. |
-| Result | What came back, capped. |
+| Result | What came back, capped. `truncated` shows that the app cut the text at the limit. `separators_shortened` shows that the app made separator runs or table spaces short, so the text is not the exact text of the device. |
 | Error | Why it failed, when it did. |
 | Latency | How long the call took. |
 | Proposed At / Called At | When the model asked, and when the call reached the server. |

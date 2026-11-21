@@ -34,11 +34,15 @@ Everything else has a default:
 | --- | --- | --- |
 | `max_iterations` | 8 | Model calls in one run. |
 | `max_tool_calls` | 20 | Tool calls across a whole chain, resumptions included. |
-| `max_tool_result_chars` | 8000 | How much of one tool's answer is kept. |
+| `max_tool_result_chars` | 8000 | How much of one tool's answer is kept, after the app makes separator lines and table spaces short. |
 | `max_context_chars` | 8000 | How much of the ticket's raw payload goes into the prompt. |
 | `max_transcript_chars` | 60000 | How large a run's transcript may grow. |
 | `timeout_seconds` | 60 | One model call. |
 | `tool_timeout_seconds` | 30 | One tool call. |
+
+Before the app applies `max_tool_result_chars`, it makes padding short. A run of 10 or more `=`, `-` or `+`
+becomes 3 characters. In a table row that starts with `|`, a run of 2 or more spaces becomes one space. The
+agent tells the model when this occurred.
 
 Reaching any of the four size bounds ends the run cleanly, with what it found and a line on the
 ticket saying which bound it hit.
