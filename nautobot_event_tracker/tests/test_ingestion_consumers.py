@@ -23,7 +23,7 @@ from nautobot_event_tracker.ingestion.consumers import (
 )
 from nautobot_event_tracker.ingestion.consumers import kafka as kafka_module
 from nautobot_event_tracker.ingestion.consumers.base import BrokerConnection
-from nautobot_event_tracker.ingestion.consumers.redis import _redacted, _tls_options
+from nautobot_event_tracker.ingestion.consumers.redis import _redacted, tls_options
 from nautobot_event_tracker.tests import fixtures
 
 
@@ -412,7 +412,7 @@ class TestTheBrokerTlsOptions(SimpleTestCase):
 
     def _options(self, url, **overrides):
         """The TLS keywords for this URL and integration settings."""
-        return _tls_options(url, BrokerConnection(url=url, **overrides))
+        return tls_options(url, BrokerConnection(url=url, **overrides))
 
     def test_a_plaintext_url_takes_none_of_them(self):
         """`redis://` builds a Connection, which accepts no SSL keyword at all."""
