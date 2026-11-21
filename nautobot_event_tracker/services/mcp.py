@@ -340,8 +340,8 @@ def _capped_result(raw, cap):
     is dropped only when capping the text was not enough, which is the case where a tool answered
     with a megabyte of JSON and the alternative to dropping it is storing it.
 
-    The text is shortened before it is capped. The key `separators_shortened` is set after every
-    size check, so it never causes a cut.
+    The function shortens the text before it applies the cap. It sets the key `separators_shortened`
+    after every size check, so the key never causes a cut.
     """
     blocks = []
     for block in getattr(raw, "content", None) or []:

@@ -299,7 +299,7 @@ class TestShorteningAResult(CallToolTestCase):
         self.assertTrue(result["separators_shortened"])
 
     def test_a_result_still_over_the_limit_is_cut_from_the_shortened_text(self):
-        """The cap applies to the shortened text and the result says it was cut."""
+        """The cap applies to the shortened text and the result says that the app cut it."""
         raw = _recorded("srlinux_interface_detail.txt")
 
         result = self.stored(raw, max_result_chars=500)
@@ -318,7 +318,7 @@ class TestShorteningAResult(CallToolTestCase):
         self.assertNotIn("separators_shortened", self.stored("ok"))
 
     def test_the_marker_is_absent_for_a_non_text_block(self):
-        """A named content block is not changed."""
+        """The app does not change a named content block."""
         result = fixtures.FakeCallToolResult(None)
         result.content = [object()]
 
@@ -328,7 +328,7 @@ class TestShorteningAResult(CallToolTestCase):
         self.assertNotIn("separators_shortened", stored)
 
     def test_the_marker_is_absent_for_an_empty_text(self):
-        """An empty text is not changed."""
+        """The app does not change an empty text."""
         self.assertNotIn("separators_shortened", self.stored(""))
 
     def test_the_marker_does_not_cause_a_cut(self):
