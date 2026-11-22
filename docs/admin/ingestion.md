@@ -1,6 +1,6 @@
 # Running the event consumer
 
-Tickets can arrive on their own. A standalone process reads network events from a broker. The
+The app can open tickets with no action from a person. A standalone process reads network events from a broker. The
 process decides which events need a ticket. It opens each ticket through the same service layer that
 a person uses.
 
@@ -32,11 +32,12 @@ See [ADR 0005](../decisions/0005-standalone-consumer-process.md).
 The consumer uses these exit codes:
 
 - **0**: The consumer stopped when asked.
-- **1**: The consumer refused to start.
+- **1**: The consumer refused to start, or it received a second stop signal.
 - **2**: The consumer could not continue.
 
-Set the supervisor to restart the consumer after each exit code. Exit code **2** also needs action
-from a person.
+Set the supervisor to restart the consumer after each exit code. After exit code **1** for a
+configuration fault, the consumer refuses to start again until you correct the configuration. After
+exit code **2**, correct the database.
 
 ### A systemd unit
 
@@ -78,7 +79,7 @@ important. Redis pub/sub delivers a message only to the consumers that listen at
 setting changes this. See [ADR 0004](../decisions/0004-pluggable-event-broker-consumers.md).
 
 If you run two Redis consumers, each message arrives twice. The dedup rule joins the second copy to
-the ticket as a recurrence, so this does no harm. Do not use it to scale.
+the ticket as a recurrence, so this does no harm. Do not run two Redis consumers to scale.
 
 ## Configuration
 
@@ -169,7 +170,7 @@ The `bootstrap_servers` and `url` settings are for a lab. They have no TLS setti
     External Integration for each credential.
 
 The consumer removes the credential from the URL before it writes the URL to the log. This limits
-the harm, but the app does not support this practice.
+the harm, but the app does not support a credential in a URL.
 
 For Kafka, two settings control how the consumer sends the credentials:
 
@@ -246,7 +247,7 @@ hits. An unknown host name that arrives 10,000 times therefore does not cause 10
 ## What becomes a ticket
 
 Each message passes through the same six checks, from the cheapest to the most expensive. The first
-check that decides the outcome wins:
+check that decides the outcome applies:
 
 1. **Is the topic configured?** If not, the consumer drops the message.
 2. **Is the event type known?** The consumer changes an unknown event type to `defaults.event_type`.
@@ -257,9 +258,9 @@ check that decides the outcome wins:
 4. **Is the severity at or above `minimum_severity`?** If not, the consumer drops the event.
 5. **Does one of your `rules` fire?** The `when` of a rule is a map of paths to regular
    expressions. Every clause must match.
-    - `action: drop` discards the event.
-    - `action: suppress` opens the ticket and transitions it to **Suppressed**. The noise is on the
-      record, but it is not work.
+    - `action: drop` drops the event.
+    - `action: suppress` opens the ticket and transitions it to **Suppressed**. The ticket stays in the
+      record, but nobody must work on it.
 6. **Is the topic within its `rate_limit`?** The limit is a token bucket for each process. Three
    instances admit three times as many events.
 
@@ -267,10 +268,11 @@ An event that passes all six checks opens a ticket. If its dedup key matches an 
 event joins that ticket instead. The consumer attaches to the ticket the objects that the `resolve`
 rules found.
 
-Note these two limits of suppression rules:
+Note these two limits:
 
 - A suppression rule applies only to a ticket that the event opened. A rule that fires on a later
-  event does not transition the ticket that already exists, even if triage already acted on that ticket.
+  event does not transition the ticket that already exists. Thus a suppression rule cannot change a
+  ticket that a person already works on.
 - A rate limit that drops a burst also drops the recurrences in that burst. The consumer does not
   count them, so `event_count` is too low during a burst of events.
 
@@ -304,7 +306,7 @@ of the newest message.
 The consumer also counts each drop under the rule or filter that refused the event
 (`drops_by_reason`). Look there first when events do not become tickets.
 
-The counters follow this equation: `received = errored + dropped + opened + joined`. The counter
+The counters follow this equation: `received = errored + dropped + tickets_opened + tickets_joined`. The counter
 `suppressed` is not in the equation, because a suppressed message also opened or joined a ticket.
 
 The consumer keeps the counters in memory. It writes them every `stats_flush_seconds`, so the
@@ -315,7 +317,7 @@ the counters of one flush interval at most. The consumer prunes the rows that ar
 ## When something is wrong
 
 **No tickets at all.** Make sure that the consumer runs. Then open **Ingestion Stats**. If `received`
-is zero, no messages arrive from the broker. If `received` rises and all messages land in `dropped`,
+is zero, no messages arrive from the broker. If `received` rises and all messages go to `dropped`,
 a filter drops them. `drops_by_reason` names the filter.
 
 **`errored` rises.** Messages arrive that are not JSON objects, or that the consumer cannot decode.
@@ -324,8 +326,9 @@ logs it and discards it. It never retries the message, because the message does 
 time. A consumer that retries a bad message cannot read any other message.
 
 **The process exits with code 2.** The database did not accept a message after `max_retries`
-attempts. The consumer did **not** acknowledge the message, and the broker delivers it again, so no
-message is lost. Fix the database. The restart by the supervisor then continues from that message.
+attempts. The consumer did **not** acknowledge the message. With Kafka, the broker delivers it
+again, so no message is lost. With Redis pub/sub, the message is lost. Fix the database. With Kafka,
+the restart by the supervisor then continues from that message.
 
 **The consumer attaches no objects to the tickets.** Look at `enrichment_misses` on the **Ingestion
 Stats** list. If it rises and `enriched` stays at zero, the rules run but find nothing. Then one of
@@ -340,5 +343,5 @@ topic.
 
 **Two tickets exist for the same problem.** Two open tickets for the same problem mean that the
 dedup key does not resolve. The usual cause is a path in `dedup_key_template` that the payload does
-not carry. To check, open the ticket list. Each of these tickets has an **Event count** of 1 and an
-empty `dedup_key`.
+not carry. To check, open the ticket list. Each of these tickets has an **Event count** of 1. In the
+REST API, the `dedup_key` field of each of these tickets is empty.
