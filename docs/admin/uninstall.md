@@ -4,7 +4,7 @@ Use these steps to remove the app from your Nautobot environment.
 
 ## Database Cleanup
 
-Do this step before you remove the app from `nautobot_config.py`. Stop the consumer first.
+Do this step before you remove the app from `nautobot_config.py`. Stop the [consumer](ingestion.md) first.
 
 !!! warning "This deletes your data"
     The next command deletes each ticket and each other record of the app. This includes the update
@@ -35,3 +35,13 @@ $ pip3 uninstall nautobot-event-tracker
 ```
 
 Then remove the `nautobot-event-tracker` line from `local_requirements.txt`.
+
+## Restart Nautobot
+
+Restart Nautobot, its workers and its scheduler:
+
+```shell
+sudo systemctl restart nautobot nautobot-worker nautobot-scheduler
+```
+
+Keep the consumer stopped. Remove its service unit, because the `eventconsumer` command does not exist after the uninstall.
