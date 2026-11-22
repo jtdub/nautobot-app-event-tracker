@@ -422,13 +422,6 @@ class TestCallParameters(TestCase):
         call(model, client)
         self.assertNotIn("max_retries", client.calls[0])
 
-    def test_an_embedding_call_sends_no_retry(self):
-        """AC-2 - `embed()` sends `max_retries=0` on each call."""
-        model = fixtures.create_embedding_model()
-        client = FakeEmbeddingClient()
-        llm_service.embed(model=model, text="hello", client=client)
-        self.assertEqual(client.calls[0]["max_retries"], 0)
-
     def test_max_tokens_falls_back_to_the_models_cap(self):
         """The registry's cap applies when the caller sets none, and the caller's wins when set."""
         model = fixtures.create_llmmodel(name="capped-model", num_predict=128)
@@ -655,6 +648,17 @@ class TestCallParameters(TestCase):
         self.assertEqual(client.calls[0]["tools"], definitions)
         self.assertEqual(client.calls[0]["reasoning_effort"], "none")
         self.assertEqual(client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
+
+
+class TestEmbeddingCallParameters(TestCase):
+    """What `embed()` sends to the client."""
+
+    def test_an_embedding_call_sends_no_retry(self):
+        """AC-2 - `embed()` sends `max_retries=0` on each call."""
+        model = fixtures.create_embedding_model()
+        client = FakeEmbeddingClient()
+        llm_service.embed(model=model, text="hello", client=client)
+        self.assertEqual(client.calls[0]["max_retries"], 0)
 
 
 class TestRefusals(TestCase):
