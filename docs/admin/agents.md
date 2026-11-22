@@ -11,7 +11,7 @@ The agent is off until you turn it on. A person starts each run. An event never 
    [Configuring LLM Providers](llm.md).
 2. **The `mcp` extra and at least one enabled tool**, if the agent must check a system. See
    [Registering MCP Servers](mcp.md). An agent with no enabled tool still works. It reads the ticket and
-   its comments. It cannot check a system.
+   writes a comment. It cannot check a system.
 
 ## Turn on the agent {#switching-it-on}
 
@@ -69,7 +69,7 @@ agent stopped at the run time limit".
 You can lower the limits of the Job. A higher limit does not give a run more time.
 
 !!! warning
-    A limit above the default can start a second run on a ticket while an earlier run is still alive.
+    If a limit is above its default, a run can start on a ticket while an earlier run is alive.
     Do not set the soft time limit of this Job above 600 seconds. Do not set the hard time limit above 660
     seconds.
 
@@ -77,8 +77,9 @@ To lower the limits:
 
 1. In **Jobs > Jobs**, open the row menu of **Investigate an Event Ticket**.
 2. Click **Edit job**.
-3. Change **Soft time limit** or **Time limit**.
-4. Click **Update**.
+3. Next to the limit that you change, select **Override default value**.
+4. Change **Soft time limit** or **Time limit**.
+5. Click **Update**.
 
 Sometimes `timeout_seconds` plus 30 seconds do not fit in the run time limit. Then each run stops before its
 first model call. The Job log has a warning.
@@ -94,7 +95,8 @@ earlier run and its calls Failed.
 
 A resumption run makes an approved call. It does not start if two times `tool_timeout_seconds` plus 30
 seconds do not fit in the run time limit. The call stays approved. Set the limits of the Job back to their
-defaults, or lower `tool_timeout_seconds`. Then run the agent again.
+defaults, or lower `tool_timeout_seconds`. To restore a default, clear **Override default value** for the
+limit. Then run the agent again.
 
 ## Run the agent {#running-it}
 
@@ -107,10 +109,14 @@ Nautobot `run` permission on that Job.
 
 !!! note "Enable the Job first"
     Nautobot registers a newly installed Job as **disabled**. This is true for each app. Enable the Job
-    once, or the button leads to a Job that does not start. In **Jobs > Jobs**, open the row menu of the Job
-    and click **Edit job**. Select **Enabled**. Click **Update**.
+    once, or the button leads to a Job that does not start.
 
-A ticket has one run at a time. The Job refuses a new run while a run is working on the ticket. It also
+    1. In **Jobs > Jobs**, open the row menu of the Job.
+    2. Click **Edit job**.
+    3. Select **Enabled**.
+    4. Click **Update**.
+
+A ticket has one run at a time. The Job refuses a new run while an earlier run on the ticket is still alive. It also
 refuses a new run while a run waits for a decision. The refusal message gives the reason.
 
 ## What the agent may do to a ticket
@@ -159,13 +165,13 @@ makes the approved call.
 
 ## What this does not protect you from
 
-The controls above limit the effect of a mistake. They do not check the reasoning of the model.
+The controls above limit the effect of a mistake. They do not check whether the conclusions of the model are correct.
 
 Anyone who can put a line on a topic that you consume writes the payload of a ticket. That person can steer an
 agent that reads the payload.
 
 - An attacker **cannot** make the agent call a tool that nobody enabled. An attacker **cannot** make the agent
-  run a writable tool without a person who clicks **Approve Tool Call**.
+  run a writable tool without the approval of a person.
 - An attacker **can** try to steer which read-only tools the agent calls, and with which arguments. An
   attacker can also try to influence the comment of the agent. One model answer can cause up to
   `max_tool_calls` read-only calls. A lower `max_tool_calls` lowers that number. A read-only tool is not
