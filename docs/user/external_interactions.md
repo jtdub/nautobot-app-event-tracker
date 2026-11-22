@@ -33,7 +33,7 @@ Event triage is optional. When it is on, the consumer asks a language model what
 | **Endpoint** | The `ExternalIntegration.remote_url` of the AI Provider. No model parameter can change it. To change it, you need `nautobot_ai_models.change_aiprovider`, or the right to edit that integration |
 | **Credential** | The secrets group of that integration, read when the call starts. The app uses secret type `token`, or `secret` when no token exists |
 | **TLS** | The app does not apply **Verify SSL** and **CA file path** of the integration to the call. See [Configuring LLM Providers](../admin/llm.md) |
-| **Headers and timeout** | The app applies Headers and Timeout of the integration to the call. It does not apply Extra Config |
+| **Headers and timeout** | The app applies Headers and Timeout of the integration to the call. It does not apply Extra config |
 | **What is sent** | A fixed system prompt. The event payload, cut to `max_context_chars`. The titles and severities of up to `attach_candidates` open tickets. A Headers template that uses `session_id` also sends the consumer name. By default, this name holds the host name and the process number |
 | **What is recorded** | One `LLMUsageRecord` for each call, also for a failed call. It holds the token counts, the cost and the latency |
 | **Configured by** | The `llm` block and `ingestion.triage`. See [Configuring LLM Providers](../admin/llm.md) |
