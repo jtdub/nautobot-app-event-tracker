@@ -17,7 +17,7 @@ Event Tracker turns network events into tickets in Nautobot. A consumer process 
 
 Each ticket keeps an update trail. Every change to a ticket adds one entry to the trail. The app never changes or deletes an entry, so the trail is a complete record of the ticket.
 
-You can also turn on four optional features:
+The app also has four optional features. The dashboard is on by default. You turn on the other three with settings:
 
 - LLM triage decides if an event needs a ticket.
 - An agent reads a ticket and writes its findings on the ticket. A person must approve each action that can change the network.
@@ -48,4 +48,4 @@ Pull requests with fixes or improvements are welcome.
 
 ## Questions
 
-First, read the [FAQ](https://nautobot-app-event-tracker.readthedocs.io/en/latest/user/faq/). Then ask in the [Network to Code Slack](https://networktocode.slack.com/), in the channel `#nautobot`. If you have no account, [sign up here](http://slack.networktocode.com/).
+First, read the [FAQ](https://nautobot-app-event-tracker.readthedocs.io/en/latest/user/faq/). Then ask in the [Network to Code Slack](https://networktocode.slack.com/), in the channel `#nautobot`. If you have no account, [sign up here](https://slack.networktocode.com/).
