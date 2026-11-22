@@ -1,6 +1,6 @@
 # Agent Run
 
-An Agent Run is one pass of the agent over one ticket. It is a record of what happened. Nobody edits it. The web interface has no add form and no edit form. The REST endpoint accepts no write method.
+An Agent Run is one pass of the agent over one ticket. It is a record of what happened. Nobody edits it. The web interface has no add form and no edit form. The REST endpoint is read-only.
 
 The **Investigate an Event Ticket** Job starts a run. Click **Investigate with Agent** on the ticket page, or start the Job in **Jobs > Jobs**. See [Running the Agent](../admin/agents.md).
 
@@ -27,7 +27,7 @@ The detail page of a run shows the bold labels below. The list shows **Started**
 | --- | --- |
 | **Started At** (`started_at`) | The time when the run started. |
 | **Ticket** (`ticket`) | The ticket that the run is about. If you delete the ticket, the app deletes its runs. |
-| **Status** (`status`) | Where the run got to. See the table above. |
+| **Status** (`status`) | The status of the run at its end. See the table above. |
 | **Started By** (`started_by`) | The person who started the run. This person is not the actor. The app records each decision of the model on the ticket as `ai`, with no user. |
 | **Iterations** (`iterations`) | The number of model calls that the run used. |
 | **Finished At** (`finished_at`) | The time when the run ended. The field is empty while the status is **Running**. |
@@ -52,7 +52,7 @@ The payload cannot make the agent call a tool that is not enabled. The payload c
 
 A run has five bounds. Four bounds are settings in the `agent` block. The fifth bound is the run time limit, which comes from the time limits of the Job. See [The run time limit](../admin/agents.md#the-run-time-limit).
 
-If a run reaches one of these bounds, the run is **Completed** with what the agent found. The agent writes a line on the ticket that names the bound. If the Job reaches its soft time limit in the middle of a call, the run is **Failed**.
+If a run reaches one of these bounds, the run is **Completed** with what the agent found. The agent writes a line on the ticket that names the bound. If the Job reaches its soft time limit, the run is **Failed**.
 
 | Setting | Bound |
 | --- | --- |

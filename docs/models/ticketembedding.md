@@ -2,7 +2,7 @@
 
 A Ticket Embedding is one closed ticket, as a vector. The retrieval corpus is these rows. The [Similar Tickets](../admin/rag.md) panel reads them.
 
-Only `services/rag.py` writes these rows. The web interface has no add form and no edit form. The REST endpoint accepts no write method.
+Only `services/rag.py` writes these rows. The web interface has no add form and no edit form. The REST endpoint is read-only.
 
 ## Fields
 
@@ -19,7 +19,7 @@ The detail page of an embedding shows the bold labels below. The list shows **In
 
 The vector itself does not show in the UI or the API. It has thousands of numbers. It means nothing without the model that made it. A list endpoint that returned it would be hard for the client to use.
 
-## Why the app stores the document
+## Why the app stores the document {#why-the-document-is-stored}
 
 A similarity score with no visible input is not possible to check. When two tickets match and the match looks wrong, read the document. Often one ticket has the resolution "closed, no action", and the vector holds that text.
 
@@ -29,13 +29,13 @@ A similarity score with no visible input is not possible to check. When two tick
 
 **The document does not have the raw event payload.** The payload is machine data. Whoever emits your events writes half of it. Its volume would dominate the vector. Two unrelated tickets from one device that sends many events would look alike.
 
-**The document does not have the comments that the AI wrote.** The corpus must hold what people concluded. If the app indexed the investigation notes of an agent, the app would use its own output as a source. A guess would become a precedent, and a reader would think that a person checked it.
+**The document does not have the comments that the AI wrote.** The corpus must hold what people concluded. If the app indexed the investigation notes of an agent, the app would use its own output as a source. The app would use a guess as a precedent, and a reader would think that a person checked it.
 
 ## One model at a time {#one-model-at-a-time}
 
 The app compares a vector only with vectors from the same model. The cosine distance between vectors of two different models is a number with no meaning.
 
-If you change the embedding model, the panel shows nothing. It does not show wrong results. Each existing row belongs to the old model, and the app does not compare it again. Run `nautobot-server indexclosedtickets --reindex` to build the corpus again.
+If you change the embedding model, the panel shows nothing. It does not show wrong results. Each row that exists belongs to the old model, and the app does not compare it again. Run `nautobot-server indexclosedtickets --reindex` to build the corpus again.
 
 ## Who can read an embedding {#who-can-read-one}
 
@@ -45,4 +45,4 @@ A user can read an embedding if the user can read **its ticket**. The `view_tick
 
 The REST API serves embeddings at `/api/plugins/event-tracker/ticket-embeddings/`. It is read-only and has no vector.
 
-**TicketEmbedding is not on GraphQL, on purpose.** Nautobot restricts a GraphQL type with the permission of that type only. It has no hook for a restriction by the parent object. A filter on an unrestricted queryset also leaks data, because it filters on the field without it returning the field. The REST API restricts the rows correctly. Use it.
+**TicketEmbedding is not on GraphQL, on purpose.** Nautobot restricts a GraphQL type with the permission of that type only. It has no hook for a restriction by the parent object. A filter on an unrestricted queryset also leaks data. The filter tests the field, but the result does not show the field. The REST API restricts the rows correctly. Use it.
