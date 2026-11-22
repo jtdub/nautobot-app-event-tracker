@@ -1,6 +1,6 @@
 # Using the App
 
-Event Tracker turns network events into tickets. Each ticket keeps its own history. This page describes the ticket lifecycle: the states of a ticket, the moves between them, and the fields that you cannot edit.
+Event Tracker turns network events into tickets. Each ticket keeps its own history. This page describes the ticket lifecycle: the states of a ticket, the transitions between them, and the fields that you cannot edit.
 
 ## The ticket lifecycle
 
@@ -15,7 +15,7 @@ A ticket is always in one of six states.
 | **Resolved** | The problem is fixed. Nobody confirmed the fix yet. |
 | **Closed** | The work is finished. This state is final. |
 
-The workflow does not allow all moves between the states:
+The workflow does not allow all transitions between the states:
 
 ```mermaid
 stateDiagram-v2
@@ -39,25 +39,25 @@ stateDiagram-v2
 
 Read these three rules before you start:
 
-**Closed is final.** No move leaves it. You cannot reopen a closed ticket. If you closed a ticket by mistake, open a new ticket. This rule keeps the limits on AI actors simple.
+**Closed is final.** No transition leaves it. You cannot reopen a closed ticket. If you closed a ticket by mistake, open a new ticket. This rule keeps the limits on AI actors simple.
 
-**Resolved is not final.** A resolved ticket can go back to In Progress when the fix did not hold. The move clears the resolution and the resolved time. The ticket then shows no old answer.
+**Resolved is not final.** A resolved ticket can go back to In Progress when the fix did not hold. The transition clears the resolution and the resolved time. The ticket then shows no old answer.
 
-**New cannot go directly to Resolved.** Triage the ticket or work on it first. If the event is not a problem, move the ticket to Suppressed or Closed.
+**New cannot go directly to Resolved.** Triage the ticket or work on it first. If the event is not a problem, transition the ticket to Suppressed or Closed.
 
-## Move a ticket {#moving-a-ticket}
+## Transition a ticket {#moving-a-ticket}
 
-Use the **Transition** menu on the ticket page. The menu shows only the moves that the workflow allows from the current state. If a move is not in the menu, the workflow does not allow it now. A user without the transition permission sees no move in the menu.
+Use the **Transition** menu on the ticket page. The menu shows only the transitions that the workflow allows from the current state. If a transition is not in the menu, the workflow does not allow it now. A user without the transition permission sees no move in the menu.
 
-You must give a resolution when you move a ticket to Resolved. The form does not accept the move without a resolution. The resolution tells the next reader how the problem ended.
+You must give a resolution when you transition a ticket to Resolved. The form does not accept the transition without a resolution. The resolution tells the next reader how the problem ended.
 
 ### Why Status is not on the edit form
 
 The ticket edit form has no Status field. A REST `PATCH` that sets the status fails with an error. The app does not ignore it. This is intentional.
 
-Each move must follow the diagram. Each move must add an entry to the update trail. The app must also stop an AI actor when it tries to change a finished ticket. The app can give these guarantees only when each move goes through one place. That place is the transition. You use the **Transition** menu or the REST transition action.
+Each transition must follow the diagram. Each transition must add an entry to the update trail. The app must also stop an AI actor when it tries to change a finished ticket. The app can give these guarantees only when each transition goes through one place. That place is the transition. You use the **Transition** menu or the REST transition action.
 
-The same rule applies to Resolved At, Closed At, Resolution and Event Count. The app sets these fields when a ticket moves.
+The same rule applies to Resolved At, Closed At, Resolution and Event Count. The app sets these fields when a ticket transitions.
 
 You can edit severity and assignee on the ticket like other fields. The app adds an entry to the update trail for each change. The entry shows who made the change and the old value. This is true for the edit form and for a REST `PATCH`.
 
@@ -65,7 +65,7 @@ The bulk edit form of the web interface has no severity field and no assignee fi
 
 ### Permissions
 
-To move a ticket, a user needs the **Can transition event ticket status** permission (`transition_eventticket`). This permission is separate from the ordinary change permission. Use this to let a first-line team move tickets without a right to change ticket content.
+To transition a ticket, a user needs the **Can transition event ticket status** permission (`transition_eventticket`). This permission is separate from the ordinary change permission. Use this to let a first-line team transition tickets without a right to change ticket content.
 
 ## Comments and the update trail
 
@@ -74,7 +74,7 @@ The **Update Trail** panel of a ticket page lists each change to the ticket.
 ![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_light.png#only-light)
 ![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_dark.png#only-dark)
 
-The update trail is the complete history of the ticket. It shows when somebody opened the ticket. It also shows each comment, move, assignment and attachment.
+The update trail is the complete history of the ticket. It shows when somebody opened the ticket. It also shows each comment, transition, assignment and attachment.
 
 **Nobody can edit or delete an entry.** No route of the app can change or delete an entry. If an entry is wrong, add a comment that says so. The app never erases an event.
 
@@ -114,13 +114,13 @@ An automatic ticket holds the raw event in its payload. You can see what the dev
 
 Some events open directly in **Suppressed**. A rule does this for events that are known noise. The ticket stays on the record, and nobody works on it. For example, a link goes down and up again and again on a device that a person already repairs. The update trail shows which rule did it.
 
-A rule never changes a ticket after the ticket exists. Assume that you triage a suppressed ticket and start work. A later event that matches the rule does not move the ticket back.
+A rule never changes a ticket after the ticket exists. Assume that you triage a suppressed ticket and start work. A later event that matches the rule does not transition the ticket back.
 
 **Apps > Event Tracker > Ingestion Stats** shows what the consumer did lately. It shows how many events arrived and how many became tickets. It also shows how many events each rule discarded. Look at this page when you expected a ticket and did not get one.
 
 ## Repeat events
 
-A ticket can have a **dedup key**. A new event can have the same key as an open ticket. The app then does not open a second ticket. It adds one to the event count of the open ticket and moves its Last Seen forward. It also adds a recurrence entry to the update trail.
+A ticket can have a **dedup key**. A new event can have the same key as an open ticket. The app then does not open a second ticket. It adds one to the event count of the open ticket and updates its Last Seen. It also adds a recurrence entry to the update trail.
 
 This stops when the ticket is resolved or closed. The next event with the same key opens a new ticket. A problem that comes back after a fix is new information. It is not a continuation of the old problem.
 

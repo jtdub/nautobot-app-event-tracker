@@ -99,7 +99,7 @@ curl -H "Authorization: Token $NAUTOBOT_TOKEN" \
 
 The routes `ai-providers`, `ai-models`, `mcp-servers` and `mcp-tools` are at `/api/plugins/ai-models/`, in the AI Models app.
 
-To move a ticket through the workflow, post to the transition action. Do not patch `status`:
+To transition a ticket, post to the transition action. Do not patch `status`:
 
 ```bash
 curl -X POST \
