@@ -175,6 +175,15 @@ class TestRunningTheJob(JobRunTestCase):
         self.assertEqual(self.run_agent_calls[0].kwargs["time_limit"], 660)
         self.assertNotIn("before its first model call", self.log_text(job_result))
 
+    def test_a_raised_hard_limit_on_the_job_row_is_stored_on_the_run(self):
+        """AC-3 - the limit goes from the Job edit page to the row that the dead-run check reads."""
+        self.set_job_limits(soft=600, hard=1200)
+
+        self.run_job()
+
+        self.assertEqual(self.run_agent_calls[0].kwargs["time_limit"], 1200)
+        self.assertEqual(AgentRun.objects.get().time_limit_seconds, 1200)
+
     def test_a_lower_limit_on_the_job_row_stops_the_run_at_that_limit(self):
         """AC-4 - an operator who lowers the limit on the Job edit page gets a clean stop at the new number."""
         self.set_job_limits(soft=80, hard=120)
