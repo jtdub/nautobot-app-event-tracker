@@ -2,6 +2,7 @@
 # You can also edit it by hand. Every key has a default, so you can delete a key
 # that you do not need.
 
+---
 version: 1
 
 # Who uses the workflow. This changes how much the personas explain.
@@ -9,7 +10,7 @@ version: 1
 #   some         - explain uncommon terms only
 #   professional - assume a software developer
 person:
-  experience: professional
+  experience: "professional"
 
 # Where the work items live.
 #   local     - a BACKLOG.md file in this repository (no account needed)
@@ -18,7 +19,7 @@ person:
 #   jira      - Jira Cloud or Jira Server; tracker.url and tracker.project are required
 #   bitbucket - Bitbucket Cloud issues of the repository in forge.repo
 tracker:
-  kind: github
+  kind: "github"
   url: ""
   project: ""
   statuses:
@@ -34,7 +35,7 @@ tracker:
 # worktree_dir is where the crew makes one git worktree for each pull request.
 # The crew never changes the branch or the files of your own checkout.
 forge:
-  kind: github
+  kind: "github"
   repo: "jtdub/nautobot-app-event-tracker"
   default_branch: "develop"
   branch_pattern: "sdlc/{id}-{slug}"
@@ -48,17 +49,17 @@ forge:
 #   build  - the engineer
 #   review - QA, UX, and the sdlc-review skill
 models:
-  plan: fable
-  build: sonnet
-  review: opus
+  plan: "fable"
+  build: "sonnet"
+  review: "opus"
 
 # How to run and test the project. Leave a value empty if the project has none yet.
 project:
   run_command: "invoke start"
   test_command: "invoke tests"
   app_url: "http://localhost:8080"
-  changelog: towncrier
-  screenshots: pr-comment
+  changelog: "towncrier"
+  screenshots: "pr-comment"
   # Local files that git ignores and that the app or the tests need, such as .env.
   # The crew copies them into each new worktree. It never commits them.
   local_files: ["invoke.yml", "development/creds.env"]
@@ -69,7 +70,7 @@ project:
 #   egm   - the EGM reviewers
 #   fresh - the built-in reviewer
 #   none  - no review
-plan_review: auto
+plan_review: "auto"
 
 # Limits that keep a change reviewable.
 limits:
