@@ -76,11 +76,11 @@ The app now knows the server. The app can call no tool on it yet.
 
 ## 3. Discover its tools
 
-Before the first run, go to **Jobs > Jobs > MCP Server Discovery > Edit** and select **Enabled**.
+Before the first run, go to **Jobs > Jobs > MCP Server Discovery > Edit**. Select **Enabled**.
 
 Run the **MCP Server Discovery** Job. Use one of these ways:
 
-- Go to **Jobs > Jobs** and run the Job.
+- Go to **Jobs > Jobs**. Run the Job.
 - Click **Run Discovery** on the page of the server. This button selects the server in the Job form.
 
 Leave **Remove stale tools** (`remove_stale`) cleared, unless you want the table to match the server
@@ -151,7 +151,7 @@ needs:
 | Show the **Run Discovery** button | `extras.run_job` and `nautobot_ai_models.change_mcptool` |
 | Enable a tool | `nautobot_ai_models.change_mcptool` |
 
-Nautobot installs a Job disabled. Before the first run, go to **Jobs > Jobs > MCP Server Discovery > Edit** and select **Enabled**. The **Run Discovery** button shows only when the Job is enabled.
+Nautobot installs a Job disabled. Before the first run, go to **Jobs > Jobs > MCP Server Discovery > Edit**. Select **Enabled**. The **Run Discovery** button shows only when the Job is enabled.
 
 The Job does not check `nautobot_ai_models.add_mcptool`. A user who can run the Job can add, disable, and
 delete tool records. The Job writes them with the rights of the worker. With the default
