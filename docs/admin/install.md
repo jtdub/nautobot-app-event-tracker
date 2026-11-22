@@ -162,7 +162,7 @@ Two guarantees hold in each configuration. The service layer enforces them, and 
 
 !!! note "The agent needs no account"
     The [agent](agents.md) runs as a Nautobot Job. Like triage, it writes to a ticket through the
-    service layer, as source *AI* with no user, so it needs no service account and no permissions
+    service layer, as source *AI* with no user. It needs no service account and no permissions
     on Event Ticket. The person who starts a run needs the `run` permission on the Job. The agent
     uses no Nautobot token. It uses the credential of the AI provider and the credential of each
     MCP server, each in its secrets group. Give the MCP server credential only the rights that its
