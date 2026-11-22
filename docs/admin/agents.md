@@ -1,20 +1,19 @@
 # Running the Agent
 
-The agent works one ticket. It reads the ticket, calls the read-only MCP tools you have enabled,
-writes what it found back onto the ticket, and stops dead at anything that would change the
-network.
+The agent works on one ticket. It reads the ticket and calls the read-only MCP tools that you enabled. It
+writes what it found on the ticket. It stops before any action that changes the network.
 
-It is off until you turn it on, and it is started by a person — never by an event.
+The agent is off until you turn it on. A person starts each run. An event never starts a run.
 
 ## What you need first
 
 1. **A provider and a model**, registered and enabled. See
    [Configuring LLM Providers](llm.md).
-2. **The `mcp` extra and at least one enabled tool**, if you want the agent to be able to look at
-   anything. See [Registering MCP Servers](mcp.md). An agent with no enabled tools still works —
-   it reads the ticket and comments — it just cannot go and check.
+2. **The `mcp` extra and at least one enabled tool**, if the agent must check a system. See
+   [Registering MCP Servers](mcp.md). An agent with no enabled tool still works. It reads the ticket and
+   writes a comment. It cannot check a system.
 
-## Switching it on
+## Turn on the agent {#switching-it-on}
 
 ```python
 PLUGINS_CONFIG = {
@@ -28,138 +27,172 @@ PLUGINS_CONFIG = {
 }
 ```
 
-Everything else has a default:
+Each other setting has a default:
 
 | Key | Default | What it bounds |
 | --- | --- | --- |
-| `max_iterations` | 8 | Model calls in one run. |
-| `max_tool_calls` | 20 | Tool calls across a whole chain, resumptions included. |
-| `max_tool_result_chars` | 8000 | How much of one tool's answer is kept, after the app makes separator lines and table spaces short. |
-| `max_context_chars` | 8000 | How much of the ticket's raw payload goes into the prompt. |
-| `max_transcript_chars` | 60000 | How large a run's transcript may grow. |
-| `timeout_seconds` | 60 | One model call. The agent does not try it again. |
-| `tool_timeout_seconds` | 30 | One step of a tool call. A call can take two times this value or more. |
+| `max_iterations` | 8 | The number of model calls in one run. |
+| `max_tool_calls` | 20 | The number of tool calls in a whole chain, with the resumption runs. |
+| `max_tool_result_chars` | 8000 | The size of one tool answer that the app keeps. The app makes separator lines and table spaces short first. |
+| `max_context_chars` | 8000 | The size of the raw payload of the ticket that goes into the prompt. |
+| `max_transcript_chars` | 60000 | The maximum size of the transcript of a run. |
+| `timeout_seconds` | 60 | The time limit of one model call. The agent does not try the call again. |
+| `tool_timeout_seconds` | 30 | The time limit of one step of a tool call. A call can take two times this value or more. |
 
 Before the app applies `max_tool_result_chars`, it makes padding short. A run of 10 or more `=`, `-` or `+`
 becomes 3 characters. In a table row that starts with `|`, a run of 2 or more spaces becomes one space. The
-agent tells the model when this occurred.
+agent tells the model when the app does this.
 
-Reaching any of the five bounds ends the run cleanly, with what it found and a line on the
-ticket saying which bound it hit.
+A run ends when it reaches one of its five bounds. The run is Completed with what it found. The agent writes
+a line on the ticket that names the bound.
 
-One model answer can ask for many tool calls. Each call counts against `max_tool_calls`, so a run
-can reach `max_tool_calls` before `max_iterations`. The agent checks the transcript limit before
-each model call, so the results of one answer can take the transcript past `max_transcript_chars`.
+One model answer can ask for many tool calls. Each call counts against `max_tool_calls`. A run can reach
+`max_tool_calls` before it reaches `max_iterations`. The agent checks the transcript limit before each model
+call. The results of one answer can take the transcript past `max_transcript_chars`.
 
-There is no spend cap: a run is bounded individually, and a
-deployment that launches many runs can still spend a great deal.
+The app has no cost limit. Each run has its own bounds. A deployment that starts many runs can spend a large
+amount.
 
-A value that cannot work — a bound of zero, agents enabled with no model named — is refused at the
-first run with a message naming every fault at once.
+The first run refuses a value that cannot work. Two examples are a bound of zero and an enabled agent with no
+model name. The refusal message names each fault.
 
 ### The run time limit
 
-A run stops before the time limit of the Job. The limit of the run is the lowest of the soft time limit of
-the Job, its hard time limit, and 600 seconds. The agent starts a model call only if `timeout_seconds` plus
-30 seconds fit before that limit. It starts a read-only tool call only if two times `tool_timeout_seconds`
-plus 30 seconds fit. With the defaults, no call starts after 510 seconds. A run that stops this way is
-Completed, and the ticket comment starts with "The agent stopped at the run time limit".
+A run stops before the time limit of the Job. The run time limit is the lowest of three values. These are the
+soft time limit of the Job, its hard time limit, and 600 seconds.
 
-You can lower the limits on the Job edit page: **Jobs > Jobs > Investigate an Event Ticket > Edit**.
+The agent starts a model call only if `timeout_seconds` plus 30 seconds fit before the run time limit. It
+starts a read-only tool call only if two times `tool_timeout_seconds` plus 30 seconds fit. With the defaults,
+no call starts after 510 seconds. A run that stops this way is Completed. The ticket comment starts with "The
+agent stopped at the run time limit".
 
-WARNING: With limits above the defaults, a second run can start on a ticket beside a run that is still alive.
-Do not set the limits of this Job above 600 and 660 seconds. A higher value gives a run no more time.
+You can lower the limits of the Job. A higher limit does not give a run more time.
 
-If `timeout_seconds` plus 30 seconds do not fit in the limit, each run stops before its first model call. The
-Job log then has a warning.
+!!! warning
+    If a limit is above its default, a run can start on a ticket while an earlier run still has the status **Running**.
+    Do not set the soft time limit of this Job above 600 seconds. Do not set the hard time limit above 660
+    seconds.
 
-If the Job still reaches its soft time limit in the middle of a call, the run is Failed. The ticket comment
-starts with "The agent run failed: The Job reached its soft time limit". Each tool call that did not finish is
-Failed. If a tool that changes the network was cut, its error says that the change might be in effect. Check
-the device before you approve the same change again.
+To lower the limits:
 
-The ticket's trail gets an entry for each call that was cut. The same applies after a worker died in the
-middle of a run: the next launch on the ticket marks the run and its calls Failed. A run that waits to make an
-approved call does not start if two times `tool_timeout_seconds` plus 30 seconds do not fit in the limit. The
-call stays approved. Set the limits of the Job back to their defaults, or lower `tool_timeout_seconds`, then run
-the agent again.
+1. In **Jobs > Jobs**, open the row menu of **Investigate an Event Ticket**.
+2. Click **Edit job**.
+3. Next to the limit that you change, select **Override default value**.
+4. Change **Soft time limit** or **Time limit**.
+5. Click **Update**.
 
-## Running it
+Sometimes `timeout_seconds` plus 30 seconds do not fit in the run time limit. Then each run stops before its
+first model call. The Job log has a warning.
 
-**Investigate with Agent**, on a ticket's page. It leads to the Job's own run form with the ticket
-filled in, so you see the Job, its description and its time limit before anything starts.
+If the Job reaches its soft time limit in the middle of a call, the run is Failed. The ticket comment starts
+with "The agent run failed: The Job reached its soft time limit". Each tool call that did not finish is Failed.
+If the call changes the network, its error says that the change might be in effect. Check the device before
+you approve the same change again.
 
-The same Job is in **Jobs → Event Tracker → Investigate an Event Ticket**, and it can be scheduled
-there like any other. Running it needs Nautobot's `run` permission on that Job.
+The update trail of the ticket has an entry for each call that the soft time limit cut off. The same thing
+happens after a worker dies in the middle of a run. The next run that you start on the ticket marks the
+earlier run and its calls Failed.
+
+A resumption run makes an approved call. It does not start if two times `tool_timeout_seconds` plus 30
+seconds do not fit in the run time limit. The call stays approved. Set the limits of the Job back to their
+defaults, or lower `tool_timeout_seconds`. To restore a default, clear **Override default value** for the
+limit. Then run the agent again.
+
+## Run the agent {#running-it}
+
+Click **Investigate with Agent** on the ticket page. The button opens the run form of the Job with the ticket
+filled in. Before the run starts, you can read the Job, its description, and its time limit.
+
+You can also start the same Job in **Jobs > Jobs**. It has the name **Investigate an Event Ticket** and
+the group **Event Tracker**. You can schedule it there, as you schedule any other Job. To run it, you need the
+Nautobot `run` permission on that Job.
 
 !!! note "Enable the Job first"
-    Nautobot registers a newly installed Job **disabled**, as it does for every app. Tick
-    **Enabled** on it once, in the Jobs list, or the button leads to a Job that will not start.
+    Nautobot registers a newly installed Job as **disabled**. This is true for each app. Enable the Job
+    once, or the button leads to a Job that does not start.
 
-One run per ticket at a time. Launching again while one is running, or while one is waiting on a
-decision, is refused with a message pointing at the run that holds it.
+    1. In **Jobs > Jobs**, open the row menu of the Job.
+    2. Click **Edit job**.
+    3. Select **Enabled**.
+    4. Click **Update**.
+
+A ticket has one run at a time. The Job refuses a new run while an earlier run on the ticket has the status
+**Running**. It also refuses a new run while a run waits for a decision. The refusal message gives the reason.
 
 ## What the agent may do to a ticket
 
 | It may | It may not |
 | --- | --- |
 | Comment | Resolve or close |
-| Move a `new` ticket to `triaged` | Assign, or change severity |
-| Propose a mutating tool call | Make one |
+| Transition a `new` ticket to `triaged` | Assign, or change severity |
+| Propose a call of a writable tool | Make the call |
 
-Everything it does is recorded as `ai` with no user. The person who launched the run is on the run,
-not on the ticket's trail — they started an investigation, they did not make its findings.
+The app records each action of the agent as `ai`, with no user. The run shows the person who started it. The
+update trail of the ticket does not show that person. The person started an investigation. The person did not
+make its findings.
 
-An agent cannot touch a resolved or closed ticket at all. That is rule S3, the same rule that
-governs triage, and it is checked before a model is called.
+The agent cannot change a resolved or closed ticket (rule S3). Triage follows the same rule. The app checks
+the rule before it makes a model call.
 
 ## The approval gate
 
-A ticket with a proposed call shows **Waiting for Your Decision**, **Approve Tool Call** and **Deny Tool Call**.
+When a ticket has a proposed call, its page shows the panel **Waiting for Your Decision**. It also shows the
+buttons **Approve Tool Call** and **Deny Tool Call**.
 
 ![A ticket page with the Waiting for Your Decision panel and the Approve Tool Call and Deny Tool Call buttons](../media/ss_agent_approval_light.png#only-light)
 ![A ticket page with the Waiting for Your Decision panel and the Approve Tool Call and Deny Tool Call buttons](../media/ss_agent_approval_dark.png#only-dark)
 
-When the agent asks for a tool marked **Mutating**, three things happen and then the run ends:
+When the agent asks for a tool that has **Writable** selected, the app does three things:
 
-1. An **Agent Tool Call** is written in `proposed`, carrying the exact arguments.
-2. A `tool_proposed` entry appears on the ticket's trail, naming the server, the tool and those
-   arguments in full.
-3. The run finishes as **Waiting for Approval** and gives its worker back.
+1. It writes an **Agent Tool Call** in `proposed`, with the exact arguments.
+2. It adds a `tool_proposed` entry to the update trail of the ticket. The entry names the server, the tool,
+   and all the arguments.
+3. It ends the run as **Waiting for Approval** and gives the worker back.
 
-Nothing has been called for this tool. The proposal can sit over a weekend at no cost.
+At this point, the app does not call the tool. The proposal can wait over a weekend at no cost.
 
-The agent runs each read-only call of one model answer, in order, until it reaches a Mutating call.
-A call that comes after a Mutating call in the same answer does not run.
+The agent runs the read-only calls of one model answer in order. It stops at the first call of a writable
+tool. A call after that call, in the same answer, does not run.
 
-**Approve** or **Deny** on the ticket page. Approving records the decision and enqueues a
-resumption run, which makes the call and carries on from where the first run stopped. Denying ends
-the chain.
+Click **Approve Tool Call** or **Deny Tool Call** on the ticket page. You can also click **Approve** or
+**Deny** on the page of the tool call. If you approve, the app records the decision and queues a resumption
+run. The resumption run makes the call. It then continues from the place where the first run stopped. If you
+deny, the chain ends.
 
-Both need the **Approve Agent Tool Call** permission, which `change` does not imply. See
-[Agent Tool Call](../models/agenttoolcall.md) for what is re-checked when the approved call
-actually runs.
+Each button needs the permission "Can approve or deny a proposed agent tool call". The `change` permission
+does not include it. See [Agent Tool Call](../models/agenttoolcall.md) for what the app checks again when it
+makes the approved call.
+
+To give the permission to a person:
+
+1. In the user menu at the top right, click **Admin**.
+2. Click **Permissions**.
+3. Click **Add Permission**.
+4. Enter a name in **Name**.
+5. In **Object types**, select `nautobot_event_tracker > Agent Tool Call`.
+6. In **Additional actions**, enter `approve`.
+7. In **Users** or **Groups**, select the people who may decide.
+8. Click **Save**.
 
 ## What this does not protect you from
 
-Worth stating plainly, because the controls above are about blast radius rather than about
-reasoning.
+The controls above limit the effect of a mistake. They do not check whether the conclusions of the model are correct.
 
-A ticket's payload is written by whoever can put a line on a topic you consume. An agent reading it
-can be steered.
+Anyone who can put a line on a topic that you consume writes the payload of a ticket. That person can steer an
+agent that reads the payload.
 
-- An attacker **cannot** make the agent call a tool nobody enabled, or run a mutating tool without
-  a person pressing Approve.
-- An attacker **can** try to steer which read-only tools get called and with what arguments, and to
-  influence the comment the agent leaves. One model answer can cause up to `max_tool_calls`
-  read-only calls. A lower `max_tool_calls` lowers that number. A read-only tool is not a harmless
-  tool if it reads something sensitive.
-- An attacker **can** try to make a mutating proposal look reasonable to a tired approver at 03:00.
-  The gate is only as good as the person reading it, which is why the proposal shows the server,
-  the tool and the exact arguments rather than the model's summary of them.
+- An attacker **cannot** make the agent call a tool that nobody enabled. An attacker **cannot** make the agent
+  run a writable tool without the approval of a person.
+- An attacker **can** try to steer which read-only tools the agent calls, and with which arguments. An
+  attacker can also try to influence the comment of the agent. One model answer can cause up to
+  `max_tool_calls` read-only calls. A lower `max_tool_calls` lowers that number. A read-only tool is not
+  harmless if it reads sensitive data.
+- An attacker **can** try to make a writable proposal look reasonable to a tired approver at 03:00. The gate
+  depends on the person who reads the proposal. For this reason, the proposal shows the server, the tool, and
+  the exact arguments. It does not show a summary of the arguments from the model.
 
-A deployment that cannot accept the third of these enables no mutating tools at all. That is a
-supported configuration, and the agent is still useful in it.
+A deployment that cannot accept the third risk enables no writable tool. The app supports this configuration.
+The agent is still useful with it.
 
 ## Where to look afterwards
 
@@ -168,10 +201,12 @@ An agent run page shows the **Transcript** of the run.
 ![An agent run page with the Transcript panel, which holds the messages of the run](../media/ss_agent_run_light.png#only-light)
 ![An agent run page with the Transcript panel, which holds the messages of the run](../media/ss_agent_run_dark.png#only-dark)
 
-- The ticket's **Update Trail** — proposed, decided, executed, and the agent's conclusion.
-- The ticket's **Agent Runs** panel, and each run's **Transcript**: exactly what the model was told
-  and exactly what it asked for.
-- The ticket's **LLM Usage** panel — every model call the agent made, priced, alongside triage's.
+- The **Update Trail** of the ticket shows each proposal, each decision, each execution, and the conclusion of
+  the agent.
+- The **Agent Runs** panel of the ticket lists each run. The **Transcript** of a run shows exactly what the
+  model received and exactly what it asked for.
+- The **LLM Usage** panel of the ticket shows each model call of the agent, with its price. It also shows the
+  model calls of triage.
 
 ## Further reading
 
