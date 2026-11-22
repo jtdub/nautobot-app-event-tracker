@@ -1,33 +1,44 @@
 # Ticket Update
 
-A Ticket Update is one entry in a ticket's history. Every change to a ticket writes one: the ticket being opened, a comment, a status change, an assignment, a severity change, an object being attached or detached, and a repeat occurrence of the same event.
+A Ticket Update is one entry in the update trail of a ticket. The app writes one entry for each of these changes:
+
+- The ticket opens.
+- An actor adds a comment.
+- A ticket transitions to a new status.
+- The assigned user changes.
+- The severity changes.
+- An actor attaches or detaches an object.
+- The same event occurs again.
+- An agent proposes, decides or runs a tool call.
 
 ## Append-only
 
-Updates cannot be edited or deleted. There is no edit form, no delete button, and the REST endpoint accepts no write method at all — `POST`, `PATCH`, `PUT` and `DELETE` all return `405 Method Not Allowed`. The model refuses in-place modification even from code.
+You cannot edit or delete an update. The web interface has no edit form and no delete button. The REST endpoint accepts no write method. `POST`, `PATCH`, `PUT` and `DELETE` all return `405 Method Not Allowed`. The model refuses to change a saved update, also from code.
 
-If something in the trail is wrong, add a comment saying so. The record of what happened stays intact.
+If an entry is wrong, add a comment that says so. Use the REST API action `tickets/<id>/comment/`. The original entry stays.
 
-The one exception: deleting a ticket deletes its updates along with it, because the trail belongs to the ticket.
+One exception exists. When you delete a ticket, the app deletes its updates. The trail belongs to the ticket.
 
 ## Fields
 
-| Field | Description |
-| --- | --- |
-| Ticket | The ticket this entry belongs to. |
-| Update Type | What kind of change this was. |
-| Source | Whether a person, AI, or automation made the change. |
-| User | The person who acted. Empty for AI and automation entries — those are never attributed to a person. |
-| Message | Human-readable description of the change. |
-| From Status / To Status | Filled in for status changes only. |
-| Related Object | Filled in for attach and detach entries only. |
-| Created | When the entry was written. |
+The web interface has no page for one update. The **Update Trail** panel of the ticket page shows the updates in these columns.
 
-## Reading the trail
+| Field | Column | Description |
+| --- | --- | --- |
+| `ticket` | None | The ticket that this entry belongs to. |
+| `update_type` | **Type** | The kind of change. The value is **Created**, **Comment**, **Status Change**, **Assignment**, **Severity Change**, **Object Attached**, **Object Detached**, **Recurrence**, **Tool Proposed**, **Tool Decided** or **Tool Executed**. |
+| `source` | **Source** | The kind of actor that made the change: **Human**, **AI** or **System**. **System** means automation. |
+| `user` | **User** | The person who acted. The field is empty for an **AI** entry and for a **System** entry. The app never shows a person as the actor of these entries. |
+| `message` | **Message** | A text that describes the change. |
+| `from_status`, `to_status` | None | The status before and after a transition. The app sets them on **Status Change** entries only. |
+| `related_object` | **Object** | The object that the app attached or detached. The app sets it on **Object Attached** and **Object Detached** entries only. |
+| `created` | **When** | The time when the app wrote the entry. |
 
-The trail appears at the bottom of every ticket, oldest first. It is also queryable through `/api/plugins/event-tracker/ticket-updates/` and through GraphQL, where it can be filtered by ticket, type, source, user, or date.
+## Read the trail {#reading-the-trail}
 
-In GraphQL, the attached object's type is a nested relation:
+The **Update Trail** panel of the ticket page shows the entries, oldest first. The REST endpoint `/api/plugins/event-tracker/ticket-updates/` and GraphQL also serve them. You can filter them by ticket, type, source, user or date.
+
+In GraphQL, the type of the attached object is a nested relation:
 
 ```graphql
 {
@@ -39,4 +50,4 @@ In GraphQL, the attached object's type is a nested relation:
 }
 ```
 
-The REST API returns the same information as a flat `app_label.model` string.
+The REST API returns the same data as one flat string in the form `app_label.model`.
