@@ -1,24 +1,37 @@
 # Uninstall the App from Nautobot
 
-Here you will find any steps necessary to cleanly remove the App from your Nautobot environment.
+Use these steps to remove the app from your Nautobot environment.
 
 ## Database Cleanup
 
-Prior to removing the app from the `nautobot_config.py`, run the following command to roll back any migration specific to this app.
+Do this step before you remove the app from `nautobot_config.py`. Stop the consumer first.
+
+!!! warning "This deletes your data"
+    The next command deletes each ticket and each other record of the app. This includes the update
+    trail of each ticket. You cannot undo it. Make a database backup before you run the command.
+
+Run this command to roll back each migration of the app:
 
 ```shell
 nautobot-server migrate nautobot_event_tracker zero
 ```
 
-!!! warning "Developer Note - Remove Me!"
-    Any other cleanup operations to ensure the database is clean after the app is removed. Is there anything else that needs cleaning up, such as CFs, relationships, etc. if they're no longer desired?
+The app makes no custom field and no relationship, so you do not need to remove either.
+
+The command does not remove the `pgvector` extension from the database. The app does not drop it,
+because other tables can use a vector column.
 
 ## Remove App configuration
 
-Remove the configuration you added in `nautobot_config.py` from `PLUGINS` & `PLUGINS_CONFIG`.
+Remove the configuration that you added in `nautobot_config.py` from `PLUGINS` and `PLUGINS_CONFIG`.
+Keep `nautobot_ai_models` in `PLUGINS` if a different app uses it.
 
 ## Uninstall the package
+
+Remove the package:
 
 ```bash
 $ pip3 uninstall nautobot-event-tracker
 ```
+
+Then remove the `nautobot-event-tracker` line from `local_requirements.txt`.

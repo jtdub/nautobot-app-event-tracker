@@ -1,0 +1,2 @@
+Changed the install, upgrade and uninstall pages to short steps.
+Fixed the upgrade command on the Upgrade page. The command is `nautobot-server post_upgrade`.
