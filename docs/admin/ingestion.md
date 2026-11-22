@@ -1,8 +1,8 @@
 # Running the event consumer
 
-The app can open tickets with no action from a person. A standalone process reads network events from a broker. The
-process decides which events need a ticket. It opens each ticket through the same service layer that
-a person uses.
+The app can open tickets with no action from a person. A standalone process reads network events
+from a broker. The process decides which events need a ticket. It opens each ticket through the same
+service layer that a person uses.
 
 You do not have to run the consumer. An installation with no `ingestion` setting consumes no events.
 Everything else in the app works as before.
@@ -259,8 +259,8 @@ check that decides the outcome applies:
 5. **Does one of your `rules` fire?** The `when` of a rule is a map of paths to regular
    expressions. Every clause must match.
     - `action: drop` drops the event.
-    - `action: suppress` opens the ticket and transitions it to **Suppressed**. The ticket stays in the
-      record, but nobody must work on it.
+    - `action: suppress` opens the ticket and transitions it to **Suppressed**. The app keeps the
+      ticket, but a person does not need to work on it.
 6. **Is the topic within its `rate_limit`?** The limit is a token bucket for each process. Three
    instances admit three times as many events.
 
@@ -271,7 +271,7 @@ rules found.
 Note these two limits:
 
 - A suppression rule applies only to a ticket that the event opened. A rule that fires on a later
-  event does not transition the ticket that already exists. Thus a suppression rule cannot change a
+  event does not transition the ticket that already exists. Therefore, a suppression rule cannot change a
   ticket that a person already works on.
 - A rate limit that drops a burst also drops the recurrences in that burst. The consumer does not
   count them, so `event_count` is too low during a burst of events.
