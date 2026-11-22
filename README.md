@@ -1,20 +1,10 @@
 # Event Tracker
 
-<!--
-Developer Note - Remove Me!
-
-The README will have certain links/images broken until the PR is merged into `develop`. Update the GitHub links with whichever branch you're using (main etc.) if different.
-
-The logo of the project is a placeholder (docs/images/icon-nautobot-event-tracker.png) - please replace it with your app icon, making sure it's at least 200x200px and has a transparent background!
-
-To avoid extra work and temporary links, make sure that publishing docs (or merging a PR) is done at the same time as setting up the docs site on RTD, then test everything.
--->
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/jtdub/nautobot-app-event-tracker/develop/docs/images/icon-nautobot-event-tracker.png" class="logo" height="200px">
   <br>
   <a href="https://github.com/jtdub/nautobot-app-event-tracker/actions"><img src="https://github.com/jtdub/nautobot-app-event-tracker/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="https://docs.nautobot.com/projects/event-tracker/en/latest/"><img src="https://readthedocs.org/projects/nautobot-app-event-tracker/badge/"></a>
+  <a href="https://nautobot-app-event-tracker.readthedocs.io/en/latest/"><img src="https://readthedocs.org/projects/nautobot-app-event-tracker/badge/"></a>
   <a href="https://pypi.org/project/nautobot-event-tracker/"><img src="https://img.shields.io/pypi/v/nautobot-event-tracker"></a>
   <a href="https://pypi.org/project/nautobot-event-tracker/"><img src="https://img.shields.io/pypi/dm/nautobot-event-tracker"></a>
   <br>
@@ -23,44 +13,39 @@ To avoid extra work and temporary links, make sure that publishing docs (or merg
 
 ## Overview
 
-> Developer Note: Add a long (2-3 paragraphs) description of what the App does, what problems it solves, what functionality it adds to Nautobot, what external systems it works with etc.
+Event Tracker turns network events into tickets in Nautobot. A consumer process reads events from a message broker. It keeps the events that matter and opens a ticket for each one. Repeat events join the open ticket.
 
-### Screenshots
+Each ticket keeps an update trail. Every change to a ticket adds one entry to the trail. The app never changes or deletes an entry, so the trail is a complete record of the ticket.
 
-> Developer Note: Add any representative screenshots of the App in action. These images should also be added to the `docs/user/app_use_cases.md` section.
+You can also turn on four optional features:
 
-> Developer Note: Place the files in the `docs/images/` folder and link them using only full URLs from GitHub, for example: `![Overview](https://raw.githubusercontent.com/jtdub/nautobot-app-event-tracker/develop/docs/images/app-overview.png)`. This absolute static linking is required to ensure the README renders properly in GitHub, the docs site, and any other external sites like PyPI.
+- LLM triage decides if an event needs a ticket.
+- An agent reads a ticket and writes its findings on the ticket. A person must approve each action that can change the network.
+- Retrieval shows closed tickets that look like the open ticket.
+- A dashboard shows ticket counts and the cost of model calls.
 
-More screenshots can be found in the [Using the App](https://docs.nautobot.com/projects/event-tracker/en/latest/user/app_use_cases/) page in the documentation. Here's a quick overview of some of the app's added functionality:
+![A ticket page of Event Tracker with the Update Trail panel](https://raw.githubusercontent.com/jtdub/nautobot-app-event-tracker/develop/docs/images/ticket-detail.png)
 
-![](https://raw.githubusercontent.com/jtdub/nautobot-app-event-tracker/develop/docs/images/placeholder.png)
-
-## Try it out!
-
-> Developer Note: Only keep this section if appropriate. Update link to correct sandbox.
-
-This App is installed in the Nautobot Community Sandbox found over at [demo.nautobot.com](https://demo.nautobot.com/)!
-
-> For a full list of all the available always-on sandbox environments, head over to the main page on [networktocode.com](https://www.networktocode.com/nautobot/sandbox-environments/).
+The [Using the App](https://nautobot-app-event-tracker.readthedocs.io/en/latest/user/app_use_cases/) page shows more screenshots.
 
 ## Documentation
 
-Full documentation for this App can be found over on the [Nautobot Docs](https://docs.nautobot.com) website:
+The full documentation is on the [Read the Docs](https://nautobot-app-event-tracker.readthedocs.io/en/latest/) site:
 
-- [User Guide](https://docs.nautobot.com/projects/event-tracker/en/latest/user/app_overview/) - Overview, Using the App, Getting Started.
-- [Administrator Guide](https://docs.nautobot.com/projects/event-tracker/en/latest/admin/install/) - How to Install, Configure, Upgrade, or Uninstall the App.
-- [Developer Guide](https://docs.nautobot.com/projects/event-tracker/en/latest/dev/contributing/) - Extending the App, Code Reference, Contribution Guide.
-- [Release Notes / Changelog](https://docs.nautobot.com/projects/event-tracker/en/latest/admin/release_notes/).
-- [Frequently Asked Questions](https://docs.nautobot.com/projects/event-tracker/en/latest/user/faq/).
+- [User Guide](https://nautobot-app-event-tracker.readthedocs.io/en/latest/user/app_overview/) - Overview, Using the App, Getting Started.
+- [Administrator Guide](https://nautobot-app-event-tracker.readthedocs.io/en/latest/admin/install/) - Install, configure, upgrade, or uninstall the App.
+- [Developer Guide](https://nautobot-app-event-tracker.readthedocs.io/en/latest/dev/contributing/) - Extend the App, Code Reference, Contribution Guide.
+- [Release Notes / Changelog](https://nautobot-app-event-tracker.readthedocs.io/en/latest/admin/release_notes/).
+- [Frequently Asked Questions](https://nautobot-app-event-tracker.readthedocs.io/en/latest/user/faq/).
 
 ### Contributing to the Documentation
 
-You can find all the Markdown source for the App documentation under the [`docs`](https://github.com/jtdub/nautobot-app-event-tracker/tree/develop/docs) folder in this repository. For simple edits, a Markdown capable editor is sufficient: clone the repository and edit away.
+The Markdown source of the documentation is in the [`docs`](https://github.com/jtdub/nautobot-app-event-tracker/tree/develop/docs) folder of this repository. For a small change, edit the files in a Markdown editor.
 
-If you need to view the fully-generated documentation site, you can build it with [MkDocs](https://www.mkdocs.org/). A container hosting the documentation can be started using the `invoke` commands (details in the [Development Environment Guide](https://docs.nautobot.com/projects/event-tracker/en/latest/dev/dev_environment/#docker-development-environment)) on [http://localhost:8001](http://localhost:8001). Using this container, as your changes to the documentation are saved, they will be automatically rebuilt and any pages currently being viewed will be reloaded in your browser.
+To see the built site, start the documentation container with the `invoke` commands. The [Development Environment Guide](https://nautobot-app-event-tracker.readthedocs.io/en/latest/dev/dev_environment/#docker-development-environment) has the details. The site is at [http://localhost:8001](http://localhost:8001). The container rebuilds each page when you save it.
 
-Any PRs with fixes or improvements are very welcome!
+Pull requests with fixes or improvements are welcome.
 
 ## Questions
 
-For any questions or comments, please check the [FAQ](https://docs.nautobot.com/projects/event-tracker/en/latest/user/faq/) first. Feel free to also swing by the [Network to Code Slack](https://networktocode.slack.com/) (channel `#nautobot`), sign up [here](http://slack.networktocode.com/) if you don't have an account.
+First, read the [FAQ](https://nautobot-app-event-tracker.readthedocs.io/en/latest/user/faq/). Then ask in the [Network to Code Slack](https://networktocode.slack.com/), in the channel `#nautobot`. If you have no account, [sign up here](http://slack.networktocode.com/).
