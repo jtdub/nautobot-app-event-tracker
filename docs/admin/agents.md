@@ -163,6 +163,15 @@ Each button needs the permission "Can approve or deny a proposed agent tool call
 does not include it. See [Agent Tool Call](../models/agenttoolcall.md) for what the app checks again when it
 makes the approved call.
 
+To give the permission to a person:
+
+1. In **Admin > Permissions**, click **Add permission**.
+2. Enter a name in **Name**.
+3. In **Object types**, select `nautobot_event_tracker > Agent Tool Call`.
+4. In **Additional actions**, enter `approve`.
+5. In **Users** or **Groups**, select the people who may decide.
+6. Click **Save**.
+
 ## What this does not protect you from
 
 The controls above limit the effect of a mistake. They do not check whether the conclusions of the model are correct.
