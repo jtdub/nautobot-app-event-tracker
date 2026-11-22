@@ -165,12 +165,14 @@ makes the approved call.
 
 To give the permission to a person:
 
-1. In **Admin > Permissions**, click **Add permission**.
-2. Enter a name in **Name**.
-3. In **Object types**, select `nautobot_event_tracker > Agent Tool Call`.
-4. In **Additional actions**, enter `approve`.
-5. In **Users** or **Groups**, select the people who may decide.
-6. Click **Save**.
+1. In the user menu at the top right, click **Admin**.
+2. Click **Permissions**.
+3. Click **Add Permission**.
+4. Enter a name in **Name**.
+5. In **Object types**, select `nautobot_event_tracker > Agent Tool Call`.
+6. In **Additional actions**, enter `approve`.
+7. In **Users** or **Groups**, select the people who may decide.
+8. Click **Save**.
 
 ## What this does not protect you from
 
