@@ -314,6 +314,14 @@ AI Provider can use the same External Integration. The two rows then have their 
 token limit. If you increase the token limit for a reasoning model, also check `timeout_seconds`.
 When a call reaches one of the two limits, triage accepts the event.
 
+A triage call makes one attempt. The app does not send the call again.
+
+- Before, the SDK sent a call again after a timeout, a connection error, or an HTTP 408, 409, 429, or 5xx answer. On an
+  OpenAI or OpenAI-compatible provider, one call took about three times `timeout_seconds`.
+- Now such a fault fails the call at once. Triage accepts the event with no answer from the model, and `triage_errors`
+  counts it. While the fault lasts, the pre-filter (the dedup window and `rate_limit`) is the only filter. Tickets
+  can open for noise.
+
 Read these points before you turn on triage:
 
 - **Cost and privacy.** Each event that the pre-filter accepts makes one model call. The prompt of

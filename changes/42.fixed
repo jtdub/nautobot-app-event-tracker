@@ -1,0 +1,2 @@
+Fixed event triage on OpenAI and OpenAI-compatible providers. A triage call now makes one attempt, also after an HTTP 429 or 5xx answer.
+Fixed embedding calls on OpenAI and OpenAI-compatible providers. A call now makes one attempt and stops after one `timeout_seconds`.
