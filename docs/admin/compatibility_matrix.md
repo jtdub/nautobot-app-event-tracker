@@ -26,14 +26,15 @@ bound is the next major version, where Nautobot can remove a public API.
 
 Every Nautobot API that the app uses comes from `nautobot.apps.*`. Nautobot keeps this surface
 stable across minor releases. There is one deliberate exception: `TokenPermissions`, noted in
-`nautobot_event_tracker/api/views.py`. Core models are a second exception that Nautobot allows.
-Nautobot does not re-export `Device`, `Status`, `ExternalIntegration` or `Secret`
-through `nautobot.apps.models`. It tells you to import them from their own apps. A Nautobot minor
-upgrade needs no change here. If one does, check `TokenPermissions` first.
+`nautobot_event_tracker/api/views.py`. A Nautobot minor upgrade must not need a change here. If one
+does, check `TokenPermissions` first.
+
+Core models are a second exception that Nautobot allows. Nautobot does not re-export `Device`, `Status`, `ExternalIntegration` or `Secret`
+through `nautobot.apps.models`. It tells you to import them from their own apps.
 
 ## Support and deprecation
 
-Event Tracker supports only the most recent release. A new Nautobot minor release needs no
+Only the most recent release of Event Tracker has support. A new Nautobot minor release needs no
 version change, because `3.99.99` and `<4.0.0` already allow each 3.x release. The app supports the
 new release only after the test suite passes against it. A new Nautobot major release is the point
 where the three declarations change together. When the app drops support for a Nautobot version, it
@@ -49,9 +50,9 @@ and does not plan to.
 
 `nautobot-ai-models` owns the registry that this app reads. The pin is a floor with a major-version
 ceiling. It is in `pyproject.toml` only. The `min_version` mechanism of Nautobot checks Nautobot and
-not a sibling app. Because of this, you keep no second place in step.
+not a sibling app. Because of this, there is no second place to update.
 
-The floor is 1.1, not 1.0, and each part of this is needed. Version 1.1 is the release that records
+The floor is 1.1, not 1.0, and each part of this is necessary. Version 1.1 is the release that records
 these facts:
 
 - The dialect of a provider, and whether the provider is enabled.

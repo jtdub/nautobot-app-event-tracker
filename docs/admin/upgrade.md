@@ -30,5 +30,5 @@ these changes.
 
 !!! note
     On a managed PostgreSQL, a migration can fail because the database user cannot create the
-    `pgvector` extension. If this happens, ask a superuser to run `CREATE EXTENSION vector;` and
-    run step 2 again. See [Prerequisites](install.md#prerequisites).
+    `pgvector` extension. If this happens, ask a superuser to run `CREATE EXTENSION vector;`.
+    Then run step 2 again. See [Prerequisites](install.md#prerequisites).

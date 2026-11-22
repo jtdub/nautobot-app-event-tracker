@@ -11,10 +11,10 @@ Use these instructions to **install** and **configure** the app in your Nautobot
   later. `pip` installs it with the app.
 
 !!! warning "PostgreSQL is required"
-    Event Tracker does not support MySQL, unlike most Nautobot apps. The app indexes closed
-    tickets as vector embeddings with the `pgvector` extension. MySQL has no equivalent that is
-    worth a second code path. A Nautobot deployment on MySQL cannot install this app. For the full
-    reasoning, see [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md).
+    Event Tracker does not support MySQL, unlike most Nautobot apps. When retrieval is on, the app
+    indexes closed tickets as vector embeddings with the `pgvector` extension. MySQL has no equivalent that is
+    worth a second code path. A Nautobot deployment on MySQL cannot install this app. For the
+    reasons, see [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md).
 
     The `pgvector` extension is **required** in the database. The first migration that needs it
     creates it when it is not there. On a managed PostgreSQL, the database user can fail to create
@@ -138,12 +138,12 @@ A typical operator role needs these permissions:
 - `change` on **Event Ticket**.
 - `transition_eventticket`.
 
-Two permissions are easy to forget. When one is missing, a page shows less and does not block you:
+Two permissions are easy to forget. If one of these permissions is not there, a page shows less and does not block you:
 
-- **`view_ticketupdate`**: without it, the ticket page opens, but the **Update Trail** panel is
-  hidden. A user who can see tickets but not their update trail is usually not what you intend.
+- **`view_ticketupdate`**: without it, the ticket page opens, but it does not show the
+  **Update Trail** panel. A user who can see tickets but not their update trail is usually not what you intend.
 - **`view_eventtype`**: without it, the event type picker on the ticket form has no choices, so
-  nobody can create a ticket.
+  nobody can open a ticket.
 
 ### The AI actor, and why triage has no account
 
@@ -160,10 +160,9 @@ Two guarantees hold in each configuration. The service layer enforces them, and 
 - The app never records an AI action against the user name of a person. The app stores the actor
   kind on each update, and AI entries have no user.
 
-!!! note "Service account for the agent"
-    An [agent](agents.md) can reach Nautobot over its REST API or through MCP tools. In that case,
-    a token must authenticate the transport. The recorded actor stays AI with no user. Give the
-    service account these permissions on Event Ticket: `view`, `add`, `change` and
-    `transition_eventticket`. Also give it `view` on Event Type and Ticket Update. Give it no
-    `delete` on any model, because the AI path never needs to remove a record. Restrict its token
-    like any service credential.
+!!! note "The agent needs no account"
+    The [agent](agents.md) runs as a Nautobot Job. Like triage, it writes to a ticket through the
+    service layer, as source *AI* with no user. It needs no service account and no permissions on
+    Event Ticket. The person who starts a run needs the `run` permission on the Job. The only token
+    is the credential of each MCP server, in its secrets group. Give that token only the rights
+    that its tools need. See [Registering MCP Servers](mcp.md).
