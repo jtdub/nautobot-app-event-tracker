@@ -18,8 +18,8 @@ nautobot-server migrate nautobot_event_tracker zero
 
 The app makes no custom field and no relationship, so you do not need to remove either.
 
-The command does not remove the `pgvector` extension from the database. The app does not drop it,
-because other tables can use a vector column.
+The command does not remove the `pgvector` extension from the database. Other tables in the
+database can use a vector column.
 
 ## Remove App configuration
 
