@@ -30,7 +30,7 @@ agent that asks for a tool and the approval gate that a person answers. It also 
 
     Without these settings, the registry still works and the approval gate still works. A writable tool
     needs a decision from a person for each call. The app refuses a call when its tool changed after the
-    agent proposed the call. You lose the protection that keeps an unreviewed tool from reaching a model.
+    agent proposed the call. But a model can get a tool that no person reviewed.
 
 ## What you need first {#before-you-start}
 
@@ -44,15 +44,14 @@ pip install nautobot-event-tracker[mcp]
 The AI Models app needs its own `discovery` extra to read the tool list of a server. This app depends on
 that extra, so the install includes it. You do not need to do anything.
 
-The server must use **streamable HTTP**. The registry also records `sse` and `stdio` as transports. The
+The server must use *Streamable HTTP*. The registry also records `sse` and `stdio` as transports. The
 registry can list a server with one of these transports, but the app cannot call it. The app refuses each
-call to it before any network request. To use a stdio server, put an HTTP bridge in front of it. The
-refusal is deliberate. ADR 0007 gives the reason.
+call to it before any network request. To use a stdio server, put an HTTP bridge in front of it. ADR 0007 gives the reason for this refusal.
 
 ## 1. Create an External Integration
 
 A Nautobot **External Integration** holds the address and the credentials of the server. The app uses the
-same record type for each other outbound connection. Set these fields:
+same record type for all its other outbound connections. Set these fields:
 
 | Field | Use |
 | --- | --- |
@@ -67,9 +66,9 @@ The app stores no key on a registry record or in `PLUGINS_CONFIG`.
 ## 2. Register the server
 
 1. Go to **AI Tools > MCP Models > MCP Servers**.
-2. Select **Add**.
+2. Click **Add**.
 3. Enter a name.
-4. Select the integration.
+4. Select the **External Integration** from step 1.
 5. Leave **Transport** at *Streamable HTTP*.
 6. Leave **Enabled** selected.
 
@@ -80,7 +79,7 @@ The app now knows the server. The app can call no tool on it yet.
 Run the **MCP Server Discovery** Job. Use one of these ways:
 
 - Go to **Jobs > Jobs** and run the Job.
-- Select **Run Discovery** on the page of the server. This button selects the server in the Job form.
+- Click **Run Discovery** on the page of the server. This button selects the server in the Job form.
 
 Leave **Remove stale tools** (`remove_stale`) cleared, unless you want the table to match the server
 exactly.
@@ -106,8 +105,8 @@ This step is the main work. Make two decisions for each tool in the list:
 A read-only tool is not always a safe tool. The author of an event can be a person that you do not trust.
 Your decision sets what that author can cause the app to read.
 
-Filter the tool list by server. Sort it by **Writable**. Use bulk edit. If you review forty tools one row
-at a time, you can select **Enabled** on all forty to finish. ADR 0007 states this friction.
+Filter the tool list by server. Sort it by **Writable**. Use bulk edit. A review of forty tools, one row
+at a time, is slow. A person can then enable all forty only to finish. ADR 0007 accepts this problem.
 
 ## Re-discovery
 
@@ -123,8 +122,8 @@ Run the Job again when the server changes. You can also run it on a schedule. Th
   review stay. If you select **Remove stale tools**, the Job deletes the tool instead. A short fault of the
   server must not undo your decisions.
 
-With `new_tools_enabled: False`, discovery never turns on a tool. Discovery never changes **Writable** on
-an existing tool.
+With `new_tools_enabled: False`, discovery never enables a tool. Discovery never changes **Writable** on
+a tool that is already in the registry.
 
 The app also refuses a call when its tool changed after the agent proposed the call. The change can be in
 the definition, the name, or the endpoint of the tool. This check always runs. It does not depend on the
@@ -141,10 +140,25 @@ two settings.
 
 ## Permissions
 
-The AI Models app holds the registry, so it also holds the permissions. Discovery writes tool records. The
-Job needs `nautobot_ai_models.add_mcptool`, not only `view_mcpserver`. To enable a tool, a user needs
-`nautobot_ai_models.change_mcptool`. Treat both permissions as privileged. Together they decide which
-tools this deployment can call.
+The AI Models app holds the registry, so it also holds the permissions. This list shows what each action
+needs:
+
+| Action | Permission |
+| --- | --- |
+| Run the **MCP Server Discovery** Job | `extras.run_job` on that Job |
+| Show the **Run Discovery** button | `extras.run_job` and `nautobot_ai_models.change_mcptool` |
+| Enable a tool | `nautobot_ai_models.change_mcptool` |
+
+Nautobot installs a Job disabled. Select **Enabled** on the **MCP Server Discovery** Job once, in
+**Jobs > Jobs**, before the first run. The **Run Discovery** button shows only when the Job is enabled.
+
+The Job does not check `nautobot_ai_models.add_mcptool`. A user who can run the Job can add, disable, and
+delete tool records. The Job writes them with the rights of the worker. With the default
+`new_tools_enabled`, the Job also adds tools that are enabled. Treat `extras.run_job` on this Job as
+privileged.
+
+Treat `nautobot_ai_models.change_mcptool` as privileged too. Together, these permissions decide which tools
+this deployment can call.
 
 The permission to approve a proposed call is `nautobot_event_tracker.approve_agenttoolcall`. It is
 separate from the two permissions above.
