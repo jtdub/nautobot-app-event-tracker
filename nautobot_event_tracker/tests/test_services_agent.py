@@ -189,7 +189,7 @@ class TestTheDeadRunCheck(TestCase):
 
     def test_a_stored_limit_that_a_timedelta_cannot_hold_is_not_known(self):
         """AC-2 - an infinite or huge value is a fault of the configuration, and the ticket must not hold forever."""
-        for limit in (float("inf"), 1e300):
+        for limit in (float("inf"), 1e300, float("nan")):
             with self.subTest(limit=limit):
                 self.assertFalse(self.is_dead_after(limit, 960))
                 self.assertTrue(self.is_dead_after(limit, 961))
@@ -349,7 +349,7 @@ class TestStartingARun(AgentTestCase):  # pylint: disable=too-many-public-method
         run, _ = self.run_agent("Done.")
         self.assertIsNone(run.time_limit_seconds)
 
-        for limit in (0, -1, True, "660", float("inf"), 1e300):
+        for limit in (0, -1, True, "660", float("inf"), 1e300, float("nan")):
             with self.subTest(limit=limit):
                 run, _ = self.run_agent("Done.", ticket=fixtures.create_ticket(), time_limit=limit)
                 self.assertIsNone(run.time_limit_seconds)
