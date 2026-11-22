@@ -1,61 +1,66 @@
 # Retrieval over Closed Tickets
 
-When a ticket closes it becomes a document: what happened, and what was done about it. New tickets
-are matched against those documents, and the closest few appear on the ticket page under **Similar
-Tickets**.
+When a ticket closes, the app turns it into a document. The document holds what happened and what a person did
+about it. The app matches each new ticket against these documents. The panel **Similar Tickets** on the ticket
+page shows the closest few.
 
-The point is the three-in-the-morning case. Somebody solved this exact thing in March and wrote
-down what they did. Nobody now on shift knows that.
+The panel helps when a person on shift sees a fault that a colleague already solved. The colleague wrote down
+the fix. The person on shift does not know about it.
 
 ## What this does not do
 
-**Nothing retrieved is ever put into a prompt.** Not triage's, not the [agent's](agents.md). A
-person reads the panel and decides what it is worth.
+**The app never puts retrieved text in a prompt.** This applies to triage and to the [agent](agents.md). A person
+reads the panel and decides what a result is worth.
 
-That is a deliberate refusal, and it costs something real — an agent that knew how this was fixed
-last time would be a better agent. The reason is reach. Your corpus is built from tickets whose
-payloads were written by whoever can put a line on a topic you consume. One ticket being read by a
-model was already true. Indexing changes it: a document that steers one investigation becomes a
-document that can be retrieved for *every future ticket that resembles it*, and neither you nor the
-model can see that it happened. Somebody being noisy enough that a ticket gets closed to clear the
-board is all it takes.
+The refusal is on purpose. An agent that knew the last fix would be a better agent. The corpus comes from tickets.
+Whoever can write a line to a topic that you consume also writes the payload of a ticket. A model already reads
+one ticket at a time. Indexing makes the reach larger. A document that steers one investigation can come back for
+every future ticket that looks like it. Neither you nor the model can see that this happened.
 
-A panel keeps a person in the loop, for the price of them having to read it. The app asserts this in
-its test suite rather than trusting itself to remember.
+A noisy source is enough. A person closes the ticket to clear the board, and the ticket enters the corpus.
 
-## Before you start
+The panel keeps a person in the loop. The person must read the panel. The test suite of the app checks this
+rule (R9).
+
+## What you need first {#before-you-start}
 
 ### 1. The database extension
 
-This needs the `pgvector` extension, which [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md)
-has required since Phase 1 and this is the phase that spends.
+Retrieval needs the `pgvector` extension. [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md) requires
+PostgreSQL with this extension.
 
-The app's migration creates it. **On a managed PostgreSQL that will probably fail**, because
-`CREATE EXTENSION` needs superuser or `pg_database_owner` and most managed services grant the
-application user neither. If your database is managed, have a superuser run this **before** you
-upgrade:
+The migration of the app creates the extension.
+
+!!! warning
+    On a managed PostgreSQL, the migration can fail. `CREATE EXTENSION` needs superuser or `pg_database_owner`,
+    and most managed services give the application user neither. Before you upgrade, ask a superuser to run the
+    command below.
 
 ```sql
 CREATE EXTENSION vector;
 ```
 
-The migration checks first and does nothing when the extension is already there, so doing this is
-always safe. If you skip it and the migration cannot create it, the upgrade stops with a message
-telling you this — which is better than the alternative, but it stops mid-upgrade.
+The migration first checks for the extension. If the extension exists, the migration does nothing. It is safe to
+run the command before the upgrade.
+
+If you skip the command and the migration cannot create the extension, the upgrade stops at that migration. The
+message names the command to run.
 
 ### 2. An embedding model
 
-Register it like any other, with **Kind** set to *Embedding*:
+Register the model like any other model, with **Kind** set to **Embedding**:
 
-- **AI Provider** — an existing one is fine; embeddings and chat can share a provider.
-- **AI Model** — the model name, Kind *Embedding*. Set the input cost; leave the output cost at
-  zero, since an embedding has no output side to price.
+- **AI Provider**: Use an existing provider. Embeddings and chat can share a provider.
+- **AI Model**: Enter the model name and set **Kind** to **Embedding**. Set **Input cost per million tokens**.
+  Leave **Output cost per million tokens** at zero, because an embedding has no output to price.
 
-Kind is enforced in both directions. Point triage at an embedding model and it refuses before any
-network traffic, rather than handing you a provider error about token limits at three in the
-morning.
+The app checks **Kind** in both directions. If you point triage at an embedding model, the app refuses before it
+sends any network traffic. The app does not wait for a provider error about token limits.
 
-## Switching it on
+## Turn on retrieval {#switching-it-on}
+
+Set `enabled`, `provider`, and `model`. The value of `provider` is the name of an **AI Provider**. The value of
+`model` is the name of an **AI Model** on that provider, with **Kind** set to **Embedding**.
 
 ```python
 PLUGINS_CONFIG = {
@@ -69,25 +74,25 @@ PLUGINS_CONFIG = {
 }
 ```
 
-Everything else has a default:
+Each other setting has a default:
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `max_document_chars` | 8000 | How much of a ticket gets embedded. |
-| `similar_count` | 5 | How many neighbours the panel shows. |
-| `max_distance` | 0.15 | Cosine distance past which the answer is "we have not seen this". |
-| `timeout_seconds` | 30 | One embedding call. |
+| `max_document_chars` | 8000 | The number of characters of a ticket that the app embeds. |
+| `similar_count` | 5 | The number of similar tickets that the panel shows. |
+| `max_distance` | 0.15 | The cosine distance above which the panel does not show a ticket. |
+| `timeout_seconds` | 30 | The time limit, in seconds, of one embedding call. |
 
-### Tuning `max_distance`
+### Tune `max_distance` {#tuning-max_distance}
 
-This is the one worth measuring rather than guessing, and the default is low on purpose.
+Measure this setting. Do not guess it. The default is low on purpose.
 
-A nearest-neighbour search always has a nearest neighbour. Without a threshold the panel
-confidently shows the five least-unlike tickets in your database, and everybody learns to ignore
-it. Short network tickets sit closer together in embedding space than intuition suggests, because
-they share vocabulary — device names, "down", "alarm" — even when the problems are unrelated.
+A nearest-neighbour search always finds a nearest neighbour. Without a threshold, the panel shows the five
+least-different tickets in your database. Then everyone learns to ignore the panel. Short network tickets are
+closer together in embedding space than you expect. They share words, such as device names, "down", and "alarm",
+even when the problems are not related.
 
-Measured against `nomic-embed-text` with real tickets:
+The table shows distances that the app measured with `nomic-embed-text` and real tickets:
 
 | Query | Nearest match |
 | --- | --- |
@@ -96,29 +101,41 @@ Measured against `nomic-embed-text` with real tickets:
 | A billing query, against a corpus of network faults | 0.22 |
 | "The coffee machine in the London office is broken" | 0.23 |
 
-So on this model the useful band ends around 0.15, and a first draft of this feature shipped 0.6 —
-which would have shown the coffee machine and called it very similar.
+On this model, the useful band ends at about 0.15. A value of 0.6 would show the coffee machine ticket and call it
+very similar.
 
-**Your numbers will differ**, because the distribution is a property of the embedding model. To
-find yours: index a handful of closed tickets, open a ticket you know matches one of them and one
-you know matches none, and look at the distances in the run's log or via
-`services.rag.similar_tickets`. Put the threshold between the two clusters, and err low — a quiet
-panel is ignored far less often than one that cries wolf.
+**Your numbers can differ.** The distances depend on the embedding model. To find your numbers:
 
-## Indexing on close
+1. Index a few closed tickets.
+2. Open a ticket that you know matches one of them. Open a ticket that you know matches none of them.
+3. Read the distances in the log of the run, or with `services.rag.similar_tickets`.
+4. Set the threshold between the two groups of distances.
 
-Create a **Job Hook** so tickets are indexed as they close:
+Prefer a low value. People ignore a panel that shows wrong matches far more often than a panel that shows few
+matches.
 
-**Extensibility → Job Hooks → Add.** Content type *Event Ticket*, check **Type update**, and choose
-the **Index a Closed Event Ticket** job. Enable the job itself first, under **Jobs** — Nautobot
-registers newly installed jobs disabled.
+## Index tickets when they close {#indexing-on-close}
 
-Indexing never prevents a close. If the model endpoint is down the close happens anyway and the
-failure is logged; the ticket can be indexed later with the backfill below.
+Create a **Job Hook**. Then the app indexes each ticket when it closes.
 
-## Backfilling
+1. Enable the **Index a Closed Event Ticket** Job. Nautobot registers a newly installed Job as disabled.
+    1. In **Jobs > Jobs**, open the row menu of the Job.
+    2. Click **Edit job**.
+    3. Select **Enabled**.
+    4. Click **Update**.
+2. Go to **Jobs > Jobs > Job Hooks**.
+3. Click **Add Job Hook**.
+4. In **Content Type(s)**, select **Event Tracker | Event Ticket**.
+5. In **Job**, select **Index a Closed Event Ticket**.
+6. Select **Type update**.
+7. Click **Create**.
 
-For the year of closed tickets you already have:
+Indexing never prevents a close. If the model endpoint is down, the ticket closes and the app logs the failure.
+Index the ticket later with the backfill below.
+
+## Backfill the corpus {#backfilling}
+
+Use the command to index the closed tickets that you already have:
 
 ```shell
 nautobot-server indexclosedtickets            # everything not yet indexed
@@ -126,38 +143,40 @@ nautobot-server indexclosedtickets --limit 20 # try a few first
 nautobot-server indexclosedtickets --reindex  # everything, again
 ```
 
-`--reindex` is what you want after changing embedding model. Every existing row belongs to the old
-model and will never be compared with a new one, so the panel goes quiet until the corpus is
-rebuilt. That is the safe failure of the two available, and it is why the model is recorded on
-every row.
+Use `--reindex` after you change the embedding model. Every existing row belongs to the old model. The app never
+compares these rows with the new model, so the panel shows nothing until the corpus is rebuilt. This is the safe
+result, because the panel shows nothing instead of wrong matches. It is also the reason that the app records the
+model on every row.
 
-## Reading the panel
+## Read the panel {#reading-the-panel}
 
 A ticket page shows the closed tickets that look like the open ticket.
 
 ![A ticket page with the Similar Tickets panel, which lists two closed tickets that look like the open ticket](../media/ss_similar_tickets_light.png#only-light)
 ![A ticket page with the Similar Tickets panel, which lists two closed tickets that look like the open ticket](../media/ss_similar_tickets_dark.png#only-dark)
 
-**Similar Tickets** appears on open tickets only — a closed ticket's neighbours are of historical
-interest at best. Each entry shows the ticket, how close it is in words rather than a number, and
-its resolution.
+**Similar Tickets** shows only on a ticket that is not resolved or closed. It shows only when the app finds a
+match. Each entry shows the ticket, a word and a number that tell how close it is, and its resolution.
 
-When it shows nothing, that is an answer: nothing in the corpus is within `max_distance`.
+If the panel does not show on an open ticket, one of these is true:
 
-## Where to look when it is quiet
+- No closed ticket is within `max_distance`.
+- Retrieval is off.
+- The app could not embed the ticket.
 
-- **AI Tools → Event Tracker AI → Ticket Embeddings** — what is in the corpus, and under which model.
-- **AI Tools → Event Tracker AI → LLM Usage** — filter on purpose *Embedding* to see the calls and what
-  they cost.
-- The Job Hook's own results, under **Jobs → Job Results**.
+## Where to look when the panel shows nothing {#where-to-look-when-it-is-quiet}
+
+- **AI Tools > Event Tracker AI > Ticket Embeddings**: the corpus, and the model of each row.
+- **AI Tools > Event Tracker AI > LLM Usage**: Filter **Purpose** on **Embedding** to see the calls and their cost.
+- **Jobs > Jobs > Job Results**: the results of the Job Hook.
 
 ## When the corpus gets large
 
-There is no index on the vector column. Every similarity query is a sequential scan, which is the
-right choice while the corpus is small and stops being one at some size this app has not yet met.
+The vector column has no index. Every similarity query is a sequential scan. This is the right choice while the
+corpus is small. At some size, it stops being the right choice. This app has not reached that size.
 
-Measure before you change that. The panel's query is one `ORDER BY embedding <=> %s LIMIT n` per
-render, so time it against your own corpus:
+Measure before you change it. The query of the panel is one `ORDER BY embedding <=> %s LIMIT n` for each render.
+Time it against your own corpus:
 
 ```sql
 EXPLAIN ANALYZE
@@ -166,14 +185,16 @@ ORDER BY embedding <=> (SELECT embedding FROM nautobot_event_tracker_ticketembed
 LIMIT 5;
 ```
 
-If that is comfortably under the time you are willing to add to a ticket page, do nothing. If it is
-not, an HNSW index is the next step — and note two things before adding one. It needs a fixed
-dimensionality, so it can only be built once you have settled on an embedding model and re-indexed
-everything under it. And it is approximate: it will sometimes miss a genuine neighbour, which for a
-panel that suggests rather than decides is a fair trade, but is a trade.
+If the time is low enough for a ticket page, do nothing. If it is not, the next step is an HNSW index. Note two
+things before you add one:
+
+- An HNSW index needs a fixed number of dimensions. Build it only after you choose an embedding model and index
+  everything again with that model.
+- An HNSW index is approximate. It can miss a real neighbour. For a panel that suggests and does not decide, this
+  is a fair trade, but it is a trade.
 
 ## Further reading
 
-- [Ticket Embedding](../models/ticketembedding.md) — the record
-- [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md) — why PostgreSQL only
-- [Running the Agent](agents.md) — the other AI surface, and the one this deliberately does not feed
+- [Ticket Embedding](../models/ticketembedding.md): the record
+- [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md): why PostgreSQL only
+- [Running the Agent](agents.md): the other AI surface. Retrieval does not feed it
