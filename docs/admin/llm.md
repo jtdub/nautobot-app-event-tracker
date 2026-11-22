@@ -121,7 +121,7 @@ refuses the call before any network traffic. This applies to each feature of the
 time.
 
 The app sends these values with each chat call: the **Default parameters** of the model, its
-**Temperature**, and its **num_predict**. **Default parameters** accepts generation parameters only.
+**Temperature**, and its **Num_predict**. **Default parameters** accepts generation parameters only.
 The endpoint and the credentials come from the integration. The model and the messages come from
 the call. The AI Models app refuses any other key when you save the row.
 
