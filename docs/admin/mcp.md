@@ -161,7 +161,7 @@ Treat `nautobot_ai_models.change_mcptool` as privileged too. Together, these per
 this deployment can call.
 
 The permission to approve a proposed call is `nautobot_event_tracker.approve_agenttoolcall`. It is
-separate from the two permissions above.
+separate from the permissions above.
 
 !!! note "Upgrade from a release before ADR 0010"
     A role can carry `nautobot_event_tracker.change_mcptool` or `add_mcptool`. Replace each one with the
