@@ -14,7 +14,7 @@ These steps use the Nautobot web interface. You need the permission to add and t
 2. Open **Apps > Event Tracker > Tickets**.
 3. Click **Add Event Ticket**.
 4. Enter a **Title**.
-5. Choose an **Event Type**.
+5. Choose an **Event type**.
 6. Choose a **Severity**.
 7. Click **Create**.
 8. Read the new ticket page. The ticket has the status **New**. The **Update Trail** panel shows one entry that says the ticket opened.
