@@ -1,21 +1,18 @@
 # Registering MCP Servers and Tools
 
-An MCP server is somewhere Event Tracker can go and ask a question — a device inventory, a
-monitoring system, a change-management API. This page is how you register one and decide what, if
-anything, this deployment may call on it.
+An MCP server is a system that the app can ask for data. Examples are a device inventory, a monitoring
+system, and a change-management API. This page shows how to register a server and how to decide which of
+its tools this deployment can call.
 
-The registry itself belongs to the [AI Models app](https://github.com/jtdub/nautobot-app-ai-models),
-which this app depends on ([ADR 0010](../decisions/0010-ai-registry-lives-in-nautobot-ai-models.md)).
-Servers and tools are managed under **AI Tools → MCP Models**, and discovery is that app's Job. What
-this app contributes is everything that happens after: the agent that asks for a tool, the approval
-gate a person answers, and the record of every call.
+The registry belongs to the [AI Models app](https://github.com/jtdub/nautobot-app-ai-models). This app
+depends on it ([ADR 0010](../decisions/0010-ai-registry-lives-in-nautobot-ai-models.md)). Manage servers
+and tools under **AI Tools > MCP Models**. Discovery is a Job of the AI Models app. This app adds the
+agent that asks for a tool and the approval gate that a person answers. It also adds the record of each call.
 
 !!! warning "Set the two registry policy settings first"
-    The AI Models app is a catalogue, and its defaults are a catalogue's: a newly discovered tool
-    arrives **enabled**, and a tool whose definition changes stays enabled. That is the wrong
-    posture for a registry an agent calls from, and
-    [ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md) requires the other
-    one. Set both before you register anything:
+    By default, the AI Models app enables each new tool and keeps a changed tool enabled. An agent can then
+    offer a tool that no person reviewed. [ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md)
+    requires the opposite. Set both settings before you register a server:
 
     ```python
     PLUGINS_CONFIG = {
@@ -31,124 +28,135 @@ gate a person answers, and the record of every call.
     }
     ```
 
-    Without them the registry still works and the approval gate still holds — a writable tool
-    needs a human decision per call, and a call whose tool changed after it was proposed is
-    refused. What you lose is the part that stops an unreviewed tool being offered to a model at
-    all.
+    Without these settings, the registry still works and the approval gate still works. A writable tool
+    needs a decision from a person for each call. The app refuses a call when its tool changed after the
+    agent proposed the call. You lose the protection that keeps an unreviewed tool from reaching a model.
 
-## Before you start
+## What you need first {#before-you-start}
 
-Install this app with the `mcp` extra, or every tool call refuses with a line telling you so:
+Install this app with the `mcp` extra. Without the extra, the app refuses each tool call. The message
+names the extra:
 
 ```shell
 pip install nautobot-event-tracker[mcp]
 ```
 
-The AI Models app needs its own `discovery` extra to read a server's tool list; it is installed
-with this app's dependency already, so there is nothing extra to do.
+The AI Models app needs its own `discovery` extra to read the tool list of a server. This app depends on
+that extra, so the install includes it. You do not need to do anything.
 
-The server must speak **streamable HTTP**. The registry records `sse` and `stdio` as transports too,
-so a server this app cannot reach can still be catalogued — but a call against either is refused
-before any network I/O. stdio servers cannot be used without an HTTP bridge in front of them. That
-is a deliberate refusal, not an omission: ADR 0007 says why.
+The server must use **streamable HTTP**. The registry also records `sse` and `stdio` as transports. The
+registry can list a server with one of these transports, but the app cannot call it. The app refuses each
+call to it before any network request. To use a stdio server, put an HTTP bridge in front of it. The
+refusal is deliberate. ADR 0007 gives the reason.
 
 ## 1. Create an External Integration
 
-The server's address and credentials live in a Nautobot **External Integration**, the same as every
-other outbound connection this app makes:
+A Nautobot **External Integration** holds the address and the credentials of the server. The app uses the
+same record type for each other outbound connection. Set these fields:
 
 | Field | Use |
 | --- | --- |
-| Remote URL | The server's streamable HTTP endpoint. Jinja2 templating works here. |
-| Secrets Group | The credential, under access type *generic*, secret type *token* (or *secret*). Sent as `Authorization: Bearer …`. |
-| HTTP Headers | Anything else the server wants. An `Authorization` header you write yourself wins over the secret, for a server that authenticates some other way. |
-| SSL Verification / CA File Path | Honoured. Unticking verification wins over a CA path. |
-| Timeout | Applied to discovery and to every tool call. |
+| **Remote URL** | The streamable HTTP endpoint of the server. You can use Jinja2 templates in this field. |
+| **Secrets group** | The credential. Use access type **Generic** and secret type **Token** (or **Secret**). The app sends it as `Authorization: Bearer …`. |
+| **Headers** | Other headers that the server needs. A header `Authorization` that you write takes priority over the secret. Use it for a server with a different authentication method. |
+| **Verify SSL** and **CA file path** | Discovery and each tool call use both. If you clear **Verify SSL**, the app does not verify the server, and it ignores the CA path. |
+| **Timeout** | The number of seconds that discovery waits. A tool call from the agent uses the setting `tool_timeout_seconds` (see [Running the Agent](agents.md)). |
 
-Nothing key-shaped is stored on a registry record or in `PLUGINS_CONFIG`.
+The app stores no key on a registry record or in `PLUGINS_CONFIG`.
 
 ## 2. Register the server
 
-**AI Tools → MCP Models → MCP Servers → Add.** Name it, point it at the integration, leave the
-transport at *Streamable HTTP*, leave it enabled.
+1. Go to **AI Tools > MCP Models > MCP Servers**.
+2. Select **Add**.
+3. Enter a name.
+4. Select the integration.
+5. Leave **Transport** at *Streamable HTTP*.
+6. Leave **Enabled** selected.
 
-At this point the server is *known*. Nothing on it is callable.
+The app now knows the server. The app can call no tool on it yet.
 
 ## 3. Discover its tools
 
-Run the **MCP Server Discovery** Job — from **Jobs**, or from the *Run Discovery* button on the
-server's own page, which pre-selects it. Leave `remove_stale` unticked unless you want the table to
-mirror the server exactly.
+Run the **MCP Server Discovery** Job. Use one of these ways:
 
-Discovery reads the advertised tool list and writes one **MCP Tool** record per tool. With
-`new_tools_enabled: False` set, every new tool arrives **disabled** and marked **writable** —
-whatever the server says about it. A server advertising forty tools has granted access to none of
-them, and cannot classify any of them for you.
+- Go to **Jobs > Jobs** and run the Job.
+- Select **Run Discovery** on the page of the server. This button selects the server in the Job form.
 
-## 4. Review, which is the actual work
+Leave **Remove stale tools** (`remove_stale`) cleared, unless you want the table to match the server
+exactly.
 
-Go through the tool list and make two decisions per tool:
+Discovery reads the tool list that the server advertises. It writes one **MCP Tool** record for each tool.
+With `new_tools_enabled: False`, each new tool starts disabled, with **Writable** selected. The server
+cannot change this. A server that advertises forty tools gives access to none of them. It cannot classify
+a tool for you.
 
-- **Is it writable?** Does calling it change something — on a device, in another system, anywhere?
-  If it only reads, untick **Writable**. If you are not sure, leave it ticked. The **Advertised
-  Read Only** column shows what the server says about itself; it is a place to start looking, not
-  an answer. A server that could set this field could hand you a config-push tool filed under
-  "safe", and the MCP specification says in as many words that a client must not decide from it.
-- **Should this deployment be able to call it at all?** If yes, tick **Enabled**.
+## 4. Review the tools {#4-review-which-is-the-actual-work}
 
-A read-only tool is not automatically a harmless tool. It is a decision about what the author of an
-event — who may not be someone you trust — can eventually cause to be read.
+This step is the main work. Make two decisions for each tool in the list:
 
-Filter the tool list by server, sort by **Writable**, and use bulk edit. Reviewing forty tools one
-row at a time is how people end up enabling all forty to be done with it, and ADR 0007 admits this
-friction rather than pretending it away.
+- **Is the tool writable?** Decide if a call changes something, on a device or in another system. If the
+  tool only reads, clear **Writable**. If you are not sure, leave **Writable** selected.
+
+    The **Advertised Read Only** column shows the claim of the server. Use it as a place to start. Do not
+    use it as the answer. A server can mark a configuration-push tool as safe. The MCP specification says
+    that a client must treat these annotations as untrusted.
+
+- **Can this deployment call the tool at all?** If yes, select **Enabled**.
+
+A read-only tool is not always a safe tool. The author of an event can be a person that you do not trust.
+Your decision sets what that author can cause the app to read.
+
+Filter the tool list by server. Sort it by **Writable**. Use bulk edit. If you review forty tools one row
+at a time, you can select **Enabled** on all forty to finish. ADR 0007 states this friction.
 
 ## Re-discovery
 
-Run the Job again whenever the server changes, or on a schedule. Three things can happen:
+Run the Job again when the server changes. You can also run it on a schedule. Three events can occur:
 
-- **A new tool appears.** With `new_tools_enabled: False` it arrives disabled. It is named in the
-  Job result so you can go and look.
-- **A tool's definition changed** — its title, its description, or either of its schemas. With
-  `disable_on_definition_change: True` an enabled tool is **disabled again** and named. Those
-  fields together are what you reviewed; if any has changed, the thing you allowed is not the thing
-  now on offer. The description counts because it is what tells an agent what the tool is for.
-- **A tool is no longer advertised.** It is disabled and reported, keeping its row and its review.
-  A server having a bad minute must not silently undo your decisions.
+- **A new tool appears.** With `new_tools_enabled: False`, the tool starts disabled. The Job result names
+  the tool, so you can review it.
+- **The definition of a tool changes.** The definition is the title, the description, and the two schemas.
+  With `disable_on_definition_change: True`, the Job disables an enabled tool and names it. You reviewed
+  these parts together, so a change makes the tool different from the tool that you allowed. The
+  description counts because it tells an agent what the tool is for.
+- **The server no longer advertises a tool.** The Job disables the tool and reports it. The row and your
+  review stay. If you select **Remove stale tools**, the Job deletes the tool instead. A short fault of the
+  server must not undo your decisions.
 
-Nothing discovery does ever enables a tool or sets **Writable** on a tool the server still offers.
+With `new_tools_enabled: False`, discovery never turns on a tool. Discovery never changes **Writable** on
+an existing tool.
 
-Independently of all of the above, this app refuses at execution any approved call whose tool has
-changed since the call was proposed — its definition, its name, or the endpoint it is reached at.
-That check is unconditional and does not depend on the two settings.
+The app also refuses a call when its tool changed after the agent proposed the call. The change can be in
+the definition, the name, or the endpoint of the tool. This check always runs. It does not depend on the
+two settings.
 
 ## The off switches
 
 | Switch | Effect |
 | --- | --- |
-| **Enabled** on a tool | That tool becomes uncallable. |
-| **Enabled** on a server | Every tool on it becomes uncallable at once, whatever the tools say. |
-| A transport other than *Streamable HTTP* | Every tool on that server is refused before any network I/O. |
-| Uninstalling the `mcp` extra | Nothing can be called, with a message naming the extra. |
+| Clear **Enabled** on a tool | The app cannot call that tool. |
+| Clear **Enabled** on a server | The app cannot call any tool on that server, whatever the tools say. |
+| A transport other than *Streamable HTTP* | The app refuses each call to a tool on that server before any network request. |
+| Uninstall the `mcp` extra | The app cannot call any tool. The message names the extra. |
 
 ## Permissions
 
-The registry moved, and so did its permissions. Discovery writes tool records, so the Job needs
-`nautobot_ai_models.add_mcptool` — not merely `view_mcpserver`. Enabling a tool is
-`nautobot_ai_models.change_mcptool`. Treat both as privileged: between them they decide what this
-deployment can be made to do.
+The AI Models app holds the registry, so it also holds the permissions. Discovery writes tool records. The
+Job needs `nautobot_ai_models.add_mcptool`, not only `view_mcpserver`. To enable a tool, a user needs
+`nautobot_ai_models.change_mcptool`. Treat both permissions as privileged. Together they decide which
+tools this deployment can call.
 
-Approving a proposed call is this app's own `nautobot_event_tracker.approve_agenttoolcall`, and it
-is a separate right from either of the above.
+The permission to approve a proposed call is `nautobot_event_tracker.approve_agenttoolcall`. It is
+separate from the two permissions above.
 
-!!! note "Upgrading from a release before ADR 0010"
-    Roles that carried `nautobot_event_tracker.change_mcptool` or `add_mcptool` need the
-    `nautobot_ai_models` equivalents instead. A migration cannot do this for you: object
+!!! note "Upgrade from a release before ADR 0010"
+    A role can carry `nautobot_event_tracker.change_mcptool` or `add_mcptool`. Replace each one with the
+    `nautobot_ai_models` permission of the same name. A migration cannot do this, because object
     permissions are deployment data.
 
 ## Further reading
 
-- [ADR 0010](../decisions/0010-ai-registry-lives-in-nautobot-ai-models.md) — why the registry lives elsewhere
-- [ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md) — transport and default-deny, and its amendment
-- [Running the Agent](agents.md) — the thing that calls what you enable here
-- [ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) — how the approval gate works
+- [ADR 0010](../decisions/0010-ai-registry-lives-in-nautobot-ai-models.md): why the registry is in another app
+- [ADR 0007](../decisions/0007-mcp-tools-streamable-http-and-default-deny.md): the transport, the default-deny rule, and the amendment
+- [Running the Agent](agents.md): the agent that calls the tools that you enable here
+- [ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md): how the approval gate works
