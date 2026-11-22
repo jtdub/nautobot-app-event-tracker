@@ -69,7 +69,7 @@ The app adds two custom permissions:
 
 | Permission | Allows |
 | --- | --- |
-| **Can transition event ticket status** (`transition_eventticket`) | Move a ticket from one status to another. |
+| **Can transition event ticket status** (`transition_eventticket`) | Make a transition of a ticket from one status to another. |
 | **Can approve or deny a proposed agent tool call** (`approve_agenttoolcall`) | Decide a tool call that the agent proposed. |
 
 ### API

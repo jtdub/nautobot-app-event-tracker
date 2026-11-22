@@ -2,15 +2,15 @@
 
 ## Why does the ticket edit form have no status field?
 
-Every status change must follow the workflow and leave an entry in the update trail. The **Transition** menu on the ticket page is the only way to change a status. A REST `PATCH` that sets the status fails with an error. See [Using the App](app_use_cases.md).
+Every transition must follow the workflow and leave an entry in the update trail. In the web interface, the **Transition** menu on the ticket page is the only way to change a status. The REST API uses the action `tickets/<id>/transition/`. A REST `PATCH` that sets the status fails with an error. See [Using the App](app_use_cases.md).
 
 ## Why can I not reopen a closed ticket?
 
-**Closed** is the final status. No move leaves it. If you close a ticket by mistake, open a new ticket. A **Resolved** ticket can go back to **In Progress**.
+**Closed** is the final status. No transition leaves it. If you close a ticket by mistake, open a new ticket. A **Resolved** ticket can go back to **In Progress**.
 
 ## Why did an event not become a ticket?
 
-Open **Apps > Event Tracker > Ingestion Stats**. The page counts the events that the consumer received, opened, dropped, and had errors on. It also counts each drop under the rule that refused it. See [Running the event consumer](../admin/ingestion.md).
+Open **Apps > Event Tracker > Ingestion Stats**. The page counts the events that the consumer received, and the tickets that they opened or joined. It also counts the events that the consumer dropped, and each drop under the rule that refused it. An event that matches an open ticket with the same dedup key joins that ticket and makes no new ticket. Event triage can also suppress an event. See [Running the event consumer](../admin/ingestion.md) and [Configuring LLM Providers](../admin/llm.md).
 
 ## Does the app need a language model?
 
@@ -26,7 +26,7 @@ The app supports PostgreSQL only. It does not support MySQL. See [Installing the
 
 ## Where do I register AI providers and models?
 
-The AI Models app owns the registry. Open **AI Tools > AI Models**. Event Tracker only reads the registry. See [Configuring LLM Providers](../admin/llm.md).
+The AI Models app owns the registry. Open **AI Tools > AI Models > AI Providers**. Event Tracker only reads the registry. See [Configuring LLM Providers](../admin/llm.md).
 
 ## Why does a dashboard panel show a shorter window than I asked?
 
