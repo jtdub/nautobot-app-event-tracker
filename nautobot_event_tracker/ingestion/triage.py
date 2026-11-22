@@ -146,6 +146,7 @@ class TriageFilter:  # pylint: disable=too-few-public-methods,too-many-instance-
                 max_tokens=self._output_limit(model),
                 response_format={"type": "json_object"},
                 session_id=self._session_id,
+                max_retries=0,
             )
         except LLMError as error:
             # T4 - fail open. The call is already on the usage record (L1); the counter and the

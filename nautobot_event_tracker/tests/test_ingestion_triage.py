@@ -180,6 +180,7 @@ class TestTheVerdicts(TriageTestCase):
         result = self.decide(triage)
         self.assertEqual(result.decision.action, ACTION_ACCEPT)
         self.assertTrue(result.errored)
+        self.assertEqual(self.fake.calls[0]["max_retries"], 0)
         record = LLMUsageRecord.objects.get()
         self.assertFalse(record.success)
         self.assertEqual(result.usage_record_ids, (record.pk,))
@@ -285,6 +286,11 @@ class TestThePrompt(TriageTestCase):
         self.assertEqual(kwargs["max_tokens"], 99)
         self.assertEqual(kwargs["response_format"], {"type": "json_object"})
         self.assertEqual(kwargs["purpose"], "triage")
+
+    def test_the_call_asks_for_no_retry(self):
+        """AC-1 - the SDK does not send a timed-out triage call again."""
+        kwargs = self.call_kwargs()
+        self.assertEqual(kwargs["max_retries"], 0)
 
     def test_the_call_carries_the_consumer_name_as_the_session_id(self):
         """AC-3 - the calls of one consumer share one session."""
