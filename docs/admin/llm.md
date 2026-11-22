@@ -242,7 +242,7 @@ PLUGINS_CONFIG = {
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `usage_retention_days` | `90` | The service deletes each usage record that is older than this number of days. It does this at most one time each day for each process. |
+| `usage_retention_days` | `90` | The service layer deletes each usage record that is older than this number of days. It does this at most one time each day for each process. |
 
 Providers, models, and credentials are not settings. They are registry objects in the AI Models app
 (see [Register a provider](#registering-a-provider)). The API key does not appear in
@@ -279,7 +279,7 @@ The consumer refuses to start in these cases:
 - The named provider or model does not exist, or it is disabled.
 - You installed the app without the `llm` extra.
 
-The consumer reports these faults together with each other configuration fault. A `--dry-run`
+The consumer reports these faults in one list with all other configuration faults. A `--dry-run`
 skips the triage checks, because a dry run makes no model call.
 
 `model_cache_seconds` sets how long a running consumer keeps its copy of the model row. The
@@ -324,16 +324,18 @@ Read these points before you turn on triage:
 - **Triage is a filter, not a control.** The prompt holds text that the source of the events
   controls. An event can try to argue for its own result. The app limits the shape of the answer
   to four actions and to tickets that the app itself listed. The app does not limit the reasoning
-  of the model. A triage `drop` means that the model judged the event as noise. It is not evidence
-  that the event was harmless.
+  of the model. A triage `drop` means only that the model judged the event as noise, not that the
+  event was harmless.
 - **The app limits the parameters of a model on purpose.** **Default parameters** on an AI Model
   accepts generation parameters only: `temperature`, `top_p`, `top_k`, `frequency_penalty`,
   `presence_penalty`, `logit_bias`, `n`, `reasoning_effort`, `seed`, `stop`, `extra_body`, and
   `timeout`. The AI Models app refuses a parameter that chooses who answers, such as an endpoint,
   a key, or a header. Those values come from the External Integration of the provider and from no
   other place. If a fixture or a data migration puts a parameter outside the list in the row, the
-  app removes the parameter before the call. The app names the removed parameter in a log line. For an OpenAI-compatible provider, the app sends
-  `reasoning_effort` as written, and the endpoint decides if it accepts the value.
+  app removes the parameter before the call. The app names the removed parameter in a log line.
+
+    For an OpenAI-compatible provider, the app sends `reasoning_effort` as written. The endpoint
+    decides if it accepts the value.
 - **Failure is safe.** If a call times out, the provider returns an error, or the answer is
   unusable, triage accepts the event. The result can be one ticket too many, but the app does not
   lose an event. An answer is unusable in these cases:
@@ -356,7 +358,7 @@ Read these points before you turn on triage:
 - **A dry run is free.** `--dry-run` does not use the model. Its output says
   `(triage skipped: dry run)`.
 
-To see triage at work, open **Apps > Event Tracker > Ingestion Stats**. The page shows the
+To see the results of triage, open **Apps > Event Tracker > Ingestion Stats**. The page shows the
 counters `triaged`, `triage_attached`, and `triage_errors`. The **Drops by reason** panel shows
 triage drops under `llm_triage`.
 
@@ -378,7 +380,10 @@ A reasoning model can use all of its output tokens before it writes an answer. T
 warning to the log for an empty answer. The app also writes one warning for an answer that reached
 the limit of output tokens (`finish_reason: length`). Each warning gives the finish reason and the
 prompt and completion token counts. It also gives the reasoning token count when the provider
-reports it. An empty answer is also a failed call. The **Error** field of its usage record holds the same detail.
+reports it.
+
+An empty answer is also a failed call. The **Error** field of its usage record holds the same
+detail.
 
 If you see these warnings, increase **Num_predict** on the AI Model. For triage, you can also
 increase `max_output_tokens` in the `triage` settings. This works only when no **Num_predict**
