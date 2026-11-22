@@ -141,12 +141,12 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other 
     [usage limits of Go](https://opencode.ai/docs/en/go/#usage-limits) before you continue.
 
     The LLM Usage list does not show the Go allowance. It shows the cost from the prices on the
-    AI Model row (see [Watching the spend](#watching-the-spend)). Use the OpenCode console to see
+    AI Model row (see [Monitor the cost](#watching-the-spend)). Use the OpenCode console to see
     the allowance. If Extra Usage is on in your OpenCode account, Go does not stop at a limit.
     Go charges your account credit.
 
     When Go stops a call, triage accepts the event. See "Failure is safe" in
-    [Enabling event triage](#enabling-event-triage).
+    [Turn on event triage](#enabling-event-triage).
 
     The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
 
@@ -224,11 +224,11 @@ provider.
 **Some models need the Global region.** OpenCode says that `deepseek-v4.1-flash` is available only
 when the privacy settings of your OpenCode workspace permit the Global region. Triage sends the
 event payload to the model. Before you permit the region, read "Cost and privacy" in
-[Enabling event triage](#enabling-event-triage).
+[Turn on event triage](#enabling-event-triage).
 
 ## Settings
 
-The service layer itself has one setting, under the app's `llm` key:
+The service layer has one setting. Set it under the `llm` key in the settings of this app:
 
 ```python
 PLUGINS_CONFIG = {
@@ -242,17 +242,18 @@ PLUGINS_CONFIG = {
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `usage_retention_days` | `90` | Usage records older than this are deleted automatically, by the service itself, at most once per process per day. |
+| `usage_retention_days` | `90` | The service layer deletes each usage record that is older than this number of days. It does this at most one time each day for each process. |
 
-Providers, models and credentials are deliberately **not** settings — they are the registry
-objects above, in the AI Models app, and the API key never appears in `PLUGINS_CONFIG` or in a
-log line.
+Providers, models, and credentials are not settings. They are registry objects in the AI Models app
+(see [Register a provider](#registering-a-provider)). The API key does not appear in
+`PLUGINS_CONFIG` or in a log line.
 
-## Enabling event triage
+## Turn on event triage {#enabling-event-triage}
 
-With a provider and model registered, the event consumer can ask the model to triage every event
-the [pre-filter](ingestion.md) accepts: open a ticket, attach the event to an open ticket,
-suppress it, or drop it. Configure it inside the `ingestion` block:
+After you register a provider and a model, the event consumer can use the model to triage events.
+The consumer triages each event that the [pre-filter](ingestion.md) accepts. The model chooses one
+of four actions: open a ticket, attach the event to an open ticket, suppress the event, or drop the
+event. Set the triage settings in the `ingestion` block:
 
 ```python
 "ingestion": {
@@ -273,101 +274,128 @@ suppress it, or drop it. Configure it inside the `ingestion` block:
 },
 ```
 
-The consumer refuses to start when the named provider or model does not exist or is disabled, or
-when the app was installed without the `llm` extra, alongside every other configuration fault. A
-`--dry-run` skips that last check, because a dry run makes no model call at all.
+The consumer refuses to start in these cases:
 
-`model_cache_seconds` is how stale a running consumer's copy of the model row may be. It reads the
-row once and holds it for that long rather than joining before every event, which means unticking
-**Enabled** — or correcting a price — takes up to that long to reach a consumer that is already
-running. Lower it if you want the off switch to bite sooner; raise it on a very busy consumer.
+- The named provider or model does not exist, or it is disabled.
+- You installed the app without the `llm` extra.
 
-Triage sends a limit of output tokens with each call. It finds the limit in two steps:
+The consumer reports these faults in one list with all other configuration faults. A `--dry-run`
+skips the triage checks, because a dry run makes no model call.
 
-1. It reads *num_predict* of the AI Model. If that field is empty, it reads *Default num_predict*
-   of the AI Provider.
-2. If the value is 1 or more, that value is the limit. If the value is empty, 0 or -1, the limit
-   is `max_output_tokens` in the `triage` settings.
+`model_cache_seconds` sets how long a running consumer keeps its copy of the model row. The
+consumer reads the row one time and keeps it for this period. It does not join the tables before
+each event. A running consumer can take up to this period to use a change to **Enabled** or to a
+price. To apply the change sooner, decrease the value. On a very busy consumer,
+increase the value.
 
-A value on the AI Model hides the default of the AI Provider. For example, -1 on the model gives
-`max_output_tokens`, also when the provider has a default. A value of -1 does not remove the limit
-for triage.
+Triage sends a limit of output tokens with each call. The app finds the limit in two steps:
 
-A reasoning model uses tokens from this limit before it writes the answer, so a small limit can
-give an empty answer. The default of 1024 leaves room for that reasoning. A model that does not
-reason writes one small JSON object, and the limit does not change its cost. To give one reasoning
-model more room, set *num_predict* on its AI Model. A running consumer uses the new value within
+1. The app reads **Num_predict** of the AI Model. If this field is empty, the app reads
+   **Default num_predict** of the AI Provider.
+2. If the value is 1 or more, the app uses it as the limit. If the value is empty, 0, or -1, the
+   app uses `max_output_tokens` from the `triage` settings.
+
+A value on the AI Model takes priority over **Default num_predict** of the AI Provider. For
+example, if the model has -1, the limit is `max_output_tokens`, also when the provider has a
+default. A value of -1 does not remove the limit for triage.
+
+A reasoning model uses tokens from this limit before it writes the answer. A small limit can give
+an empty answer. The default of 1024 leaves room for the reasoning. A model that does not reason
+writes one small JSON object, and the limit does not change its cost. To give one reasoning model
+more room, set **Num_predict** on its AI Model. A running consumer uses the new value within
 `model_cache_seconds`.
 
-The agent uses the same *num_predict* value. If triage and the agent use the same AI Model, one
-value limits the two. To use different limits, register the model on a second AI Provider, which
-can use the same External Integration. The two rows then have their own prices, *Enabled* flags
-and Default parameters, and the LLM Usage list shows them as two models.
+The agent uses the same **Num_predict** value. If triage and the agent use the same AI Model, one
+value limits both. To use different limits, register the model on a second AI Provider. The second
+AI Provider can use the same External Integration. The two rows then have their own prices,
+**Enabled** checkboxes, and **Default parameters**. The LLM Usage list shows them as two models.
 
 `timeout_seconds` is the second limit. A slow model can reach the timeout before it reaches the
 token limit. If you increase the token limit for a reasoning model, also check `timeout_seconds`.
 When a call reaches one of the two limits, triage accepts the event.
 
-What to know before you turn it on:
+Read these points before you turn on triage:
 
-- **Cost and privacy.** Each surviving event makes one model call, whose prompt carries the
-  event's payload (capped at `max_context_chars`). Set `triage: False` on a topic whose payloads
-  must not leave the box, or point the provider at a self-hosted endpoint. Recurrences are free:
-  an event whose dedup key matches an open ticket joins it without a model call.
-- **Triage is a filter, not a control.** The prompt carries text that whoever emits the events
-  controls, so an event can try to argue for its own verdict. The app constrains the *shape* of
-  the answer — four actions, and a ticket the app itself shortlisted — but not its reasoning.
-  Read a triage `drop` as "the model judged this noise", never as evidence the event was harmless.
-- **A model's parameters are limited on purpose.** `Default parameters` on an AI Model takes
-  generation parameters only — `temperature`, `top_p`, `top_k`, `frequency_penalty`,
-  `presence_penalty`, `logit_bias`, `n`, `reasoning_effort`, `seed`, `stop`, `extra_body`,
-  `timeout`. Anything that would choose *who* answers, an endpoint or a key or a header above
-  all, is refused: those come from the provider's external integration and from nowhere else.
-  A parameter outside the list that reached the row another way — a fixture, a data migration —
-  is dropped before the call and named in a log line rather than silently ignored. For an
-  OpenAI-compatible provider, the app sends `reasoning_effort` as written, and the endpoint
-  decides if it accepts the value.
-- **Failure is safe.** A timeout, a provider error or an unusable answer accepts the event, so
-  the result can be one ticket too many and never a lost event. An answer is unusable when it is
-  empty, when it is not JSON, when its action is unknown, or when an `attach` does not name a
-  ticket from the list that the app offered. Each such event adds 1 to the `triage_errors`
-  counter. A failed call shows as failed on its usage record, and an empty answer is a failed call.
-  Other unusable answers show there as a successful call.
-  The consumer never exits because a model misbehaved.
-- **Latency.** The consumer handles one message at a time, so a slow model bounds throughput.
-  The pre-filter and the dedup short-circuit keep the call volume to genuinely new events.
-- **Attribution.** Actions the model decided — a suppression, an attach — appear in the ticket
-  trail with source *AI* and no user, with the model's reason in the message. Triage needs no
-  Nautobot account: it runs inside the consumer process (see the note in
-  [Install and Configure](install.md)).
-- **Dry runs stay free.** `--dry-run` never consults the model; its output says
+- **Cost and privacy.** Each event that the pre-filter accepts makes one model call. The prompt of
+  the call holds the payload of the event, up to `max_context_chars`. If the payloads of a topic
+  must not leave your network, set `triage: False` on that topic. You can also point the provider
+  at a self-hosted endpoint. A repeated event costs nothing: an event with a dedup key that matches
+  an open ticket joins that ticket with no model call.
+
+- **Triage is a filter, not a control.** The prompt holds text that the source of the events
+  controls. An event can try to argue for its own result. The app limits the shape of the answer
+  to four actions and to tickets that the app itself listed. The app does not limit the reasoning
+  of the model. A triage `drop` means only that the model judged the event as noise, not that the
+  event was harmless.
+
+- **The app limits the parameters of a model on purpose.** **Default parameters** on an AI Model
+  accepts generation parameters only: `temperature`, `top_p`, `top_k`, `frequency_penalty`,
+  `presence_penalty`, `logit_bias`, `n`, `reasoning_effort`, `seed`, `stop`, `extra_body`, and
+  `timeout`. The AI Models app refuses a parameter that chooses who answers, such as an endpoint,
+  a key, or a header. Those values come from the External Integration of the provider and from no
+  other place. If a fixture or a data migration puts a parameter outside the list in the row, the
+  app removes the parameter before the call. The app names the removed parameter in a log line.
+
+    For an OpenAI-compatible provider, the app sends `reasoning_effort` as written. The endpoint
+    decides if it accepts the value.
+
+- **Failure is safe.** If a call times out, the provider returns an error, or the answer is
+  unusable, triage accepts the event. The result can be one ticket too many, but the app does not
+  lose an event. An answer is unusable in these cases:
+
+    - The answer is empty.
+    - The answer is not JSON.
+    - The action is unknown.
+    - An `attach` does not name a ticket from the list that the app offered.
+
+    Each such event adds 1 to the `triage_errors` counter. A failed call shows as failed on its
+    usage record, and an empty answer is a failed call. Other unusable answers show there as a
+    successful call. The consumer does not exit because of a model fault.
+
+- **Latency.** The consumer handles one message at a time, so a slow model limits the throughput.
+  The pre-filter and the dedup check keep the number of calls to events that are new.
+
+- **Attribution.** The update trail of a ticket shows each action of the model, for example a
+  suppression or an attach. The entry has the source **AI** and no user. The message of the entry
+  holds the reason of the model. Triage needs no Nautobot account, because it runs inside the
+  consumer process. See the note **The agent needs no account** in
+  [Install and Configure](install.md).
+
+- **A dry run is free.** `--dry-run` does not use the model. Its output says
   `(triage skipped: dry run)`.
 
-Watch it work on the ingestion stats page: `triaged`, `triage_attached` and `triage_errors`
-counters, and triage drops under `llm_triage` in the drop breakdown.
+To see the results of triage, open **Apps > Event Tracker > Ingestion Stats**. The list shows the
+counters `triaged`, `triage_attached`, and `triage_errors`. To see the triage drops, click the
+**Window** of a row. The **Drops by reason** panel of the row shows them under `llm_triage`. The
+panel shows only when the row has drops.
 
-## Watching the spend
+## Monitor the cost {#watching-the-spend}
 
 The **LLM Usage** list shows each model call with its tokens, cost and result. The image shows the triage calls only.
 
 ![The LLM Usage list, with the triage calls and the tokens, cost and result of each call](../media/ss_llm_usage_light.png#only-light)
 ![The LLM Usage list, with the triage calls and the tokens, cost and result of each call](../media/ss_llm_usage_dark.png#only-dark)
 
-Every call the app makes — including failed ones — writes a usage record with its token counts,
-computed cost and latency. Read them at AI Tools → Event Tracker AI → LLM Usage, filter by model,
-purpose or success, or query the same rows over REST and GraphQL. A ticket's detail page shows
-the calls made about that ticket.
+The app writes a usage record for each model call that it sends. This includes a failed call. The
+record holds the token counts, the computed cost, and the latency of the call.
+
+Open **AI Tools > Event Tracker AI > LLM Usage** to read the records. Filter the list by model,
+purpose, or success. You can also query the same records through REST and GraphQL. The ticket page
+has an **LLM Usage** panel with the calls about that ticket.
 
 A reasoning model can use all of its output tokens before it writes an answer. The app writes one
-warning to the log for an empty answer, and one for an answer that reached the limit of output
-tokens (`finish_reason: length`). The warning gives the finish reason, the prompt and completion
-token counts, and the reasoning token count when the provider reports it. An empty answer is also
-a failed call, and the Error field of its usage record holds the same detail.
+warning to the log for an empty answer. The app also writes one warning for an answer that reached
+the limit of output tokens (`finish_reason: length`). Each warning gives the finish reason and the
+prompt and completion token counts. It also gives the reasoning token count when the provider
+reports it.
 
-If you see these warnings, increase *num_predict* on the AI Model. For triage, you can also
-increase `max_output_tokens` in the `triage` settings when no *num_predict* value of 1 or more
-applies to the AI Model. Some providers also accept a parameter that decreases the reasoning of the
-model. Set it in the **Default parameters** of the AI Model.
+An empty answer is also a failed call. The **Error** field of its usage record holds the same
+detail.
 
-The usage list is read-only everywhere. Write permissions on it grant nothing through any shipped
-route.
+If you see these warnings, increase **Num_predict** on the AI Model. For triage, you can also
+increase `max_output_tokens` in the `triage` settings. This works only when no **Num_predict**
+value of 1 or more applies to the AI Model. Some providers also accept a parameter that decreases
+the reasoning of the model. Set this parameter in **Default parameters** of the AI Model.
+
+The usage list is read-only in the UI and in the API. A write permission on usage records gives no
+access to change them.
