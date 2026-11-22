@@ -47,7 +47,7 @@ Read these three rules before you start:
 
 ## Transition a ticket {#moving-a-ticket}
 
-Use the **Transition** menu on the ticket page. The menu shows only the transitions that the workflow allows from the current state. If a transition is not in the menu, the workflow does not allow it now. A user without the transition permission sees no move in the menu.
+Use the **Transition** menu on the ticket page. The menu shows only the transitions that the workflow allows from the current state. If a transition is not in the menu, the workflow does not allow it now. A user without the transition permission sees no transition in the menu.
 
 You must give a resolution when you transition a ticket to Resolved. The form does not accept the transition without a resolution. The resolution tells the next reader how the problem ended.
 
