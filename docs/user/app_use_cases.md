@@ -74,7 +74,7 @@ The **Update Trail** panel of a ticket page lists each change to the ticket.
 ![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_light.png#only-light)
 ![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_dark.png#only-dark)
 
-The update trail is the complete history of the ticket. It shows when somebody opened the ticket. It also shows each comment, transition, assignment and attachment.
+The update trail is the complete history of the ticket. It shows the time when the ticket opened. It also shows each comment, transition, assignment and attachment.
 
 **Nobody can edit or delete an entry.** No route of the app can change or delete an entry. If an entry is wrong, add a comment that says so. The app never erases an event.
 
@@ -96,7 +96,7 @@ A ticket points to the real object in Nautobot. It does not describe the object.
 
 First, choose the kind of object. Then choose the object in the type-ahead picker. The ticket page shows the attached objects in groups by type. Each object is a link. While the ticket is open, each object has a control to detach it.
 
-A detach does not erase the attach. The update trail shows both events. This is useful. For example, the trail can show that a person suspected an interface at 03:14 and cleared it at 04:02.
+A detach does not erase the attach. The update trail shows both events. This is useful. For example, the trail can show an attach of an interface at 03:14 and a detach of the same interface at 04:02.
 
 An administrator sets which object types you can attach. See [Install and Configure](../admin/install.md).
 
@@ -140,6 +140,6 @@ You can filter the ticket list by these fields:
 Two filters need more explanation:
 
 - **Is open** shows each ticket that is not resolved or closed.
-- **Attached object type (app_label.model)** shows tickets that have an object of this type attached now. A ticket does not match when a user attached the object and then detached it.
+- **Attached object type (app_label.model)** shows tickets that have an object of this type attached now. A ticket does not match when the object has a detach after its attach.
 
 The REST API and GraphQL have each filter of the web interface.
