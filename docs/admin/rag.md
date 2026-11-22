@@ -104,7 +104,7 @@ The table shows distances from a test with `nomic-embed-text` and real tickets:
 | A billing query, against a corpus of network faults | 0.22 |
 | "The coffee machine in the London office is broken" | 0.23 |
 
-On this model, the useful band ends at about 0.15. A value of 0.6 would show the coffee machine ticket as a
+On this model, the useful band ends at about 0.15. If `max_distance` is 0.6, the panel shows the coffee machine ticket as a
 match.
 
 **Your numbers can differ.** The distances depend on the embedding model. To find your numbers:
@@ -136,8 +136,8 @@ Create a **Job Hook**. Then the app indexes each ticket when it closes.
 7. Select **Type update**.
 8. Click **Create**.
 
-The index operation never prevents a close. If the model endpoint is down, the ticket closes and the app logs the failure.
-Index the ticket later with the backfill below.
+The index operation never prevents a close. If the model endpoint is down, the ticket closes and the app logs
+the failure. Index the ticket later with the backfill below.
 
 ## Backfill the corpus {#backfilling}
 

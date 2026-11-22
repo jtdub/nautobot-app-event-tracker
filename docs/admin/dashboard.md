@@ -62,8 +62,8 @@ missing page. Restart Nautobot after you change `enabled`, because Nautobot buil
 
 **Every number on the page covers only what the user can already read.** An aggregate can leak data even if it
 returns no record. Example: an ObjectPermission limits a user to the tickets of one tenant. A count of all
-4,812 open tickets tells this user the size of the estate that the permission hides. A severity pie shows the shape
-of it.
+4,812 open tickets tells this user how many tickets the other tenants have. A severity pie of all tickets also
+tells the user their severity.
 
 The page follows these rules:
 
@@ -129,9 +129,9 @@ Treat this as a defect. Do not raise the setting. Try these steps in this order:
 
 ## Measure the speed yourself {#measuring-it-yourself}
 
-The design goal is a page that draws in under two seconds against 100,000 tickets and 1,000,000 usage
-records. The test suite checks the number of queries, not the time. A clock check in CI fails for reasons that this code does not cause. To
-measure the time on your own hardware, run this command:
+The design goal is a page that draws in under two seconds against 100,000 tickets and 1,000,000 usage records. The
+test suite checks the number of queries, not the time. A clock check in CI fails for reasons that this code does not
+cause. To measure the time on your own hardware, run this command:
 
 ```bash
 invoke nbshell
