@@ -326,6 +326,11 @@ counters, and triage drops under `llm_triage` in the drop breakdown.
 
 ## Watching the spend
 
+The **LLM Usage** list shows each model call with its tokens, cost and result. The image shows the triage calls only.
+
+![The LLM Usage list, with the triage calls and the tokens, cost and result of each call](../media/ss_llm_usage_light.png#only-light)
+![The LLM Usage list, with the triage calls and the tokens, cost and result of each call](../media/ss_llm_usage_dark.png#only-dark)
+
 Every call the app makes — including failed ones — writes a usage record with its token counts,
 computed cost and latency. Read them at AI Tools → Event Tracker AI → LLM Usage, filter by model,
 purpose or success, or query the same rows over REST and GraphQL. A ticket's detail page shows

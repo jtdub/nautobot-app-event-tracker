@@ -13,6 +13,11 @@ The dashboard lives at **Apps → Event Tracker → Analytics**
 - **What is this costing, by model and by purpose?**
 - **Are agents being approved, or rubber-stamped?**
 
+The dashboard shows the answers in charts and tables.
+
+![The Event Tracker Analytics page, with the ingestion funnel and the open tickets by severity](../media/ss_dashboard_light.png#only-light)
+![The Event Tracker Analytics page, with the ingestion funnel and the open tickets by severity](../media/ss_dashboard_dark.png#only-dark)
+
 ## What this does not do
 
 **It writes nothing.** No model, no counter, no cache row, no migration beyond three indexes. A cache

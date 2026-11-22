@@ -15,7 +15,7 @@
         "model_class_name": "EventTrackerExampleModel",
         "open_source_license": "Apache-2.0",
         "docs_base_url": "https://docs.nautobot.com",
-        "docs_app_url": "https://docs.nautobot.com/projects/event-tracker/en/latest",
+        "docs_app_url": "https://nautobot-app-event-tracker.readthedocs.io/en/latest",
         "__commercial": false,
         "_extensions": [
             "local_extensions.camel_case_to_kebab",

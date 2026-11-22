@@ -69,6 +69,11 @@ Transitioning needs the **Can transition event ticket status** permission (`tran
 
 ## Comments and the update trail
 
+The **Update Trail** panel of a ticket page lists each change to the ticket.
+
+![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_light.png#only-light)
+![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_dark.png#only-dark)
+
 Every ticket carries a complete history at the bottom of the page: when it was opened, every comment, every status change, every assignment, every attachment.
 
 **The trail is append-only.** Entries cannot be edited or deleted, by anyone, through any route. If something in it is wrong, add a comment saying so. Nothing that happened gets erased.

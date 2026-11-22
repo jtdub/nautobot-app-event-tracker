@@ -7,7 +7,7 @@ license = "Apache-2.0"
 readme = "README.md"
 homepage = "https://github.com/jtdub/nautobot-app-event-tracker"
 repository = "https://github.com/jtdub/nautobot-app-event-tracker"
-documentation = "https://docs.nautobot.com/projects/event-tracker/en/latest/"
+documentation = "https://nautobot-app-event-tracker.readthedocs.io/en/latest/"
 keywords = ["nautobot", "nautobot-app", "nautobot-plugin"]
 classifiers = [
     "Intended Audience :: Developers",

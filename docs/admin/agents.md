@@ -115,6 +115,11 @@ governs triage, and it is checked before a model is called.
 
 ## The approval gate
 
+A ticket with a proposed call shows **Waiting for Your Decision**, **Approve Tool Call** and **Deny Tool Call**.
+
+![A ticket page with the Waiting for Your Decision panel and the Approve Tool Call and Deny Tool Call buttons](../media/ss_agent_approval_light.png#only-light)
+![A ticket page with the Waiting for Your Decision panel and the Approve Tool Call and Deny Tool Call buttons](../media/ss_agent_approval_dark.png#only-dark)
+
 When the agent asks for a tool marked **Mutating**, three things happen and then the run ends:
 
 1. An **Agent Tool Call** is written in `proposed`, carrying the exact arguments.
@@ -157,6 +162,11 @@ A deployment that cannot accept the third of these enables no mutating tools at 
 supported configuration, and the agent is still useful in it.
 
 ## Where to look afterwards
+
+An agent run page shows the **Transcript** of the run.
+
+![An agent run page with the Transcript panel, which holds the messages of the run](../media/ss_agent_run_light.png#only-light)
+![An agent run page with the Transcript panel, which holds the messages of the run](../media/ss_agent_run_dark.png#only-dark)
 
 - The ticket's **Update Trail** — proposed, decided, executed, and the agent's conclusion.
 - The ticket's **Agent Runs** panel, and each run's **Transcript**: exactly what the model was told
