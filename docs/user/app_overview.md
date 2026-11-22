@@ -7,8 +7,10 @@ This document provides an overview of the App including critical information and
 
 ## Description
 
-![Main Page](../media/ss_main_page_light.png#only-light)
-![Main Page](../media/ss_main_page_dark.png#only-dark)
+The ticket list shows each ticket with its status and severity.
+
+![The Event Tickets list of Event Tracker, with the status and severity of each ticket](../media/ss_ticket_list_light.png#only-light)
+![The Event Tickets list of Event Tracker, with the status and severity of each ticket](../media/ss_ticket_list_dark.png#only-dark)
 
 ## Audience (User Personas) - Who should use this App?
 

@@ -245,6 +245,11 @@ consumer group's offsets do not move and the same messages are still there after
 
 ## Watching it work
 
+The **Ingestion Stats** list shows one row for each consumer, topic and time window.
+
+![The Ingestion Stats list, with one row for each consumer, topic and time window](../media/ss_ingestion_stats_light.png#only-light)
+![The Ingestion Stats list, with one row for each consumer, topic and time window](../media/ss_ingestion_stats_dark.png#only-dark)
+
 **Apps → Event Tracker → Ingestion Stats** shows one row per consumer, topic and time window:
 messages received, tickets opened, tickets joined, suppressed, dropped, errored, and the time of the
 newest message. `enriched` counts events that attached at least one resolved object, and

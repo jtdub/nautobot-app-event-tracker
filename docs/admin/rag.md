@@ -133,6 +133,11 @@ every row.
 
 ## Reading the panel
 
+A ticket page shows the closed tickets that look like the open ticket.
+
+![A ticket page with the Similar Tickets panel, which lists two closed tickets that look like the open ticket](../media/ss_similar_tickets_light.png#only-light)
+![A ticket page with the Similar Tickets panel, which lists two closed tickets that look like the open ticket](../media/ss_similar_tickets_dark.png#only-dark)
+
 **Similar Tickets** appears on open tickets only — a closed ticket's neighbours are of historical
 interest at best. Each entry shows the ticket, how close it is in words rather than a number, and
 its resolution.
