@@ -1,19 +1,19 @@
 # Event Type
 
-An Event Type is a category of network event the system knows about — "Interface Down", "BGP Session Down", "Circuit Down". Every ticket belongs to exactly one.
+An Event Type is a category of network event that the app knows about, for example "Interface Down", "BGP Session Down" or "Circuit Down". Each ticket has exactly one Event Type.
 
 ## Fields
 
 | Field | Description |
 | --- | --- |
-| Name | Unique name of the event type. |
-| Description | What this kind of event means. |
-| Default Severity | Severity applied to a new ticket of this type when the caller does not specify one. |
-| Enabled | A disabled type cannot be used for new tickets. Existing tickets keep theirs. |
+| **Name** (`name`) | The unique name of the Event Type. |
+| **Description** (`description`) | What this kind of event means. |
+| **Default Severity** (`default_severity`) | The severity of a new ticket of this type when the event or the request gives no severity. The form shows the name as **Default severity**. |
+| **Enabled** (`enabled`) | You cannot use a disabled Event Type for a new ticket. Tickets that already exist keep their type. |
 
 ## Seeded types
 
-Installing the app creates ten starter types:
+When you install the app, it creates ten starter types:
 
 | Name | Default severity |
 | --- | --- |
@@ -28,8 +28,8 @@ Installing the app creates ten starter types:
 | Configuration Drift | Warning |
 | Unclassified | Info |
 
-Edit them freely — the seed only runs on install, and re-running it will not overwrite your changes. Add your own types as needed.
+You can edit the starter types. The seed runs one time, at install. A second run does not change a type that has the same name. Add your own types as you need them.
 
-## Retiring a type
+## Retire a type {#retiring-a-type}
 
-An Event Type with tickets cannot be deleted; the tickets reference it and the delete is refused. Clear the **Enabled** checkbox instead. Existing tickets keep working and reporting normally, but no new ticket can be opened against it.
+You cannot delete an Event Type that has tickets. The tickets use the type, so the app refuses the delete. To retire the type, clear the **Enabled** checkbox. This does not change tickets that already exist. The app opens no new ticket with this type.
