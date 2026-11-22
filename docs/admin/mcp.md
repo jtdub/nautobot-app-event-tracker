@@ -66,7 +66,7 @@ The app stores no key on a registry record or in `PLUGINS_CONFIG`.
 ## 2. Register the server
 
 1. Go to **AI Tools > MCP Models > MCP Servers**.
-2. Click **Add**.
+2. Click **Add MCP Server**.
 3. Enter a name.
 4. Select the **External Integration** from step 1.
 5. Leave **Transport** at *Streamable HTTP*.
@@ -76,7 +76,13 @@ The app now knows the server. The app can call no tool on it yet.
 
 ## 3. Discover its tools
 
-Before the first run, go to **Jobs > Jobs > MCP Server Discovery > Edit**. Select **Enabled**.
+Before the first run, enable the Job:
+
+1. In **Jobs > Jobs**, open the row menu of **MCP Server Discovery**.
+2. Click **Edit job**.
+3. Select **Enabled**.
+
+To run the Job, a user needs `extras.run_job`. Read [Permissions](#permissions) before you grant it.
 
 Run the **MCP Server Discovery** Job. Use one of these ways:
 
@@ -88,7 +94,7 @@ exactly.
 
 Discovery reads the tool list that the server advertises. It writes one **MCP Tool** record for each tool.
 With `new_tools_enabled: False`, each new tool starts disabled, with **Writable** selected. The server
-cannot change this. A server that advertises forty tools gives access to none of them. It cannot classify
+cannot change this. A server that advertises forty tools gives access to none of them. The server cannot classify
 a tool for you.
 
 ## 4. Review the tools {#4-review-which-is-the-actual-work}
@@ -121,8 +127,8 @@ Run the Job again when the server changes. You can also run it on a schedule. Th
   these parts together, so a change makes the tool different from the tool that you allowed. The
   description counts because it tells an agent what the tool is for.
 - **The server no longer advertises a tool.** The Job disables the tool and reports it. The row and your
-  review stay. If you select **Remove stale tools**, the Job deletes the tool instead. A short fault of the
-  server must not undo your decisions.
+  review stay. If you select **Remove stale tools**, the Job deletes the tool instead. Then a short fault of the
+  server can delete your review. Keep **Remove stale tools** cleared to protect your decisions.
 
 With `new_tools_enabled: False`, discovery never enables a tool. Discovery never changes **Writable** on
 a tool that is already in the registry.
@@ -151,7 +157,7 @@ needs:
 | Show the **Run Discovery** button | `extras.run_job` and `nautobot_ai_models.change_mcptool` |
 | Enable a tool | `nautobot_ai_models.change_mcptool` |
 
-Nautobot installs a Job disabled. Before the first run, go to **Jobs > Jobs > MCP Server Discovery > Edit**. Select **Enabled**. The **Run Discovery** button shows only when the Job is enabled.
+Nautobot installs a Job disabled. To enable it, follow the steps in [3. Discover its tools](#3-discover-its-tools). The **Run Discovery** button shows only when the Job is enabled.
 
 The Job does not check `nautobot_ai_models.add_mcptool`. A user who can run the Job can add, disable, and
 delete tool records. The Job writes them with the rights of the worker. With the default
