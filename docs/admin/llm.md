@@ -12,8 +12,8 @@ This app records the other half. It prices each model call and writes the call t
 [LLM Usage Record](../models/llmusagerecord.md). Find the records under
 **AI Tools > Event Tracker AI > LLM Usage**.
 
-No setting is required. If you register no provider, the app makes no model call. When you install
-this app, you also install the AI Models app. For the LLM features, it needs no setting of its own.
+The app needs no setting. If you register no provider, the app makes no model call. When you install
+this app, you also install the AI Models app. The AI Models app needs no setting of its own for the LLM features.
 
 The app makes each model call through [litellm](https://docs.litellm.ai/). litellm is an optional
 dependency. To get it, install the app with the `llm` extra:
@@ -32,7 +32,7 @@ where your deployment stores and rotates each other credential.
 1. Create a **Secrets Group** that holds the API key. Skip this step for an endpoint that needs no
    key.
 
-    - Add one secret. Set **Access type** to **Generic** and **Secret type** to **Token**.
+    - Add one secret. Set **Access type** to **Generic**. Set **Secret type** to **Token**.
     - A secret with **Secret type** **Secret** also works. If the group has both, the app uses
       **Token**.
 
@@ -46,19 +46,19 @@ where your deployment stores and rotates each other credential.
 3. Create an **AI Provider** under **AI Tools > AI Models > AI Providers**. In
    **External Integration**, select the integration. Then select the **Provider type**:
 
-    - **OpenAI-compatible**: Use this type for a self-hosted or third-party endpoint that speaks
+    - **OpenAI-compatible**: Use this type for a self-hosted or third-party endpoint that uses
       the OpenAI protocol. Examples are vLLM, llama.cpp, and a gateway. The integration must have a
       remote URL. This is the main path for a deployment that cannot send event data to a third
       party.
     - **Ollama (native API)**: Use this type for Ollama through its own API. This type does not use
       the OpenAI compatibility layer of Ollama. In the integration, enter the base URL of Ollama
       with no `/v1`, for example `http://ollama.example.com:11434`. Ollama does not need a key. If
-      you configure a key, the app sends it. Use this for an Ollama behind a proxy that
+      you configure a key, the app sends it. Configure a key only for an Ollama behind a proxy that
       authenticates.
 
         Use this type instead of **OpenAI-compatible** if you want the [agent](agents.md) to call
         tools. The compatibility layer of Ollama does not return tool calls in the `tool_calls`
-        field. When you ask a model for a tool, it writes the JSON call into the message content.
+        field. When the agent asks a model for a tool, the model writes the JSON call into the message content.
         Nothing can act on the call there. Triage works with either type, because triage asks for
         no tools.
     - **OpenAI** and **Anthropic**: Use these types for the hosted services. Nautobot requires a
@@ -69,10 +69,10 @@ where your deployment stores and rotates each other credential.
    AI Models app against the provider. The Job reads `GET /v1/models` from an OpenAI-compatible
    endpoint. It creates a row for each model that the endpoint offers.
 
-    With either method, you must set two things on each model:
+    Discovery does not set these values. Set them yourself:
 
-    - **Kind**: Chat or embedding. Discovery cannot know the kind, because `/v1/models` does not
-      say. Each discovered row gets the kind **Chat**. The [retrieval](rag.md) settings refuse a
+    - **Kind**: **Chat** or **Embedding**. Discovery cannot know the kind, because `/v1/models`
+      does not say. Each discovered row gets the kind **Chat**. The [retrieval](rag.md) settings refuse a
       model of the wrong kind.
     - **Input cost per million tokens** and **Output cost per million tokens**: These are your own
       prices. The usage records use them to show real prices. If you leave them empty, the app
@@ -90,9 +90,9 @@ app does not apply two more fields to model calls.
 | **CA file path** | The app does not apply this field to LLM calls. See the warning below |
 | **Timeout** | The timeout of the call. A timeout that the caller sets takes priority. For a chat call, a `timeout` in **Default parameters** of the model also takes priority |
 
-The app does not send **Extra config**. The field has no fixed format. If the app sent it with a
-call, it could change the endpoint or the key. The list of allowed model parameters blocks this
-change.
+The app does not send **Extra config**. The field has no fixed format. The app limits
+**Default parameters** to a list of allowed keys, so that no parameter can change the endpoint or
+the key. **Extra config** has no such limit.
 
 !!! warning "The app does not apply the TLS settings of an integration to model calls"
     litellm has no TLS argument for one call. It reads only the environment variables `SSL_VERIFY`
@@ -101,19 +101,19 @@ change.
     at the same time. If the app applied the setting of one provider, it could turn off
     verification for the connection of another provider.
 
-    To reach an LLM endpoint with a **private CA**, set `SSL_CERT_FILE` in the environment of each
-    process that calls a model. These processes are Nautobot, the worker, and the event consumer.
-    This adds a trust anchor. It does not weaken verification.
+    Set `SSL_CERT_FILE` in the environment of each process that calls a model. These processes are
+    Nautobot, the worker, and the event consumer. This lets the app reach an LLM endpoint with a
+    **private CA**. It adds a trust anchor. It does not weaken verification.
 
     Do not turn off verification for one provider. `SSL_VERIFY=False` turns it off for each
     provider in that process. This is a larger risk than the per-provider setting that the app does
-    not apply. If the certificate of an endpoint cannot be verified, fix the certificate or add its
+    not apply. If the app cannot verify the certificate of an endpoint, fix the certificate or add its
     CA.
 
     The app writes a warning to the log when **Verify SSL** is off or **CA file path** has a value.
     The warning names the fields that the app skipped.
 
-    MCP calls are not affected. `services/mcp.py` builds its own HTTP client for each call and
+    This does not affect MCP calls. `services/mcp.py` builds its own HTTP client for each call and
     applies both fields.
 
 If you turn off **Enabled** on a provider or a model, the app refuses each call through it. The app
@@ -141,12 +141,12 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other 
     [usage limits of Go](https://opencode.ai/docs/en/go/#usage-limits) before you continue.
 
     The LLM Usage list does not show the Go allowance. It shows the cost from the prices on the
-    AI Model row (see [Monitor the cost](#watching-the-spend)). Use the OpenCode console to see
+    AI Model row (see [Watching the spend](#watching-the-spend)). Use the OpenCode console to see
     the allowance. If Extra Usage is on in your OpenCode account, Go does not stop at a limit.
     Go charges your account credit.
 
     When Go stops a call, triage accepts the event. See "Failure is safe" in
-    [Turn on event triage](#enabling-event-triage).
+    [Enabling event triage](#enabling-event-triage).
 
     The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
 
@@ -204,8 +204,8 @@ Job "Discover AI Models" and an MCP server integration are such renderers. The `
 with single quotes, gives them a value. Do not use double quotes in the filter. Double quotes break
 the stored JSON, and the app then refuses each call.
 
-After you change **Headers**, start one agent run or send one event. Open the LLM Usage list and
-read the record of that call. If the record shows a session error, use the fixed value again.
+After you change **Headers**, start one agent run or send one event. Open the LLM Usage list.
+Read the record of that call. If the record shows a session error, use the fixed value again.
 
 If no new record appears, the app did not send the call. A template that does not render stops the
 call before the app writes a record. Look for the text "has a template that does not render" in the
@@ -224,7 +224,7 @@ provider.
 **Some models need the Global region.** OpenCode says that `deepseek-v4.1-flash` is available only
 when the privacy settings of your OpenCode workspace permit the Global region. Triage sends the
 event payload to the model. Before you permit the region, read "Cost and privacy" in
-[Turn on event triage](#enabling-event-triage).
+[Enabling event triage](#enabling-event-triage).
 
 ## Settings
 
