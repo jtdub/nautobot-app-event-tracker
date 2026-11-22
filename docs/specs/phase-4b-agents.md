@@ -182,6 +182,7 @@ posture, for the same reason: it is a record of what happened, not of what anyon
 | `transcript` | JSON, default `[]` | Every message, tool call and result (A7) |
 | `iterations` | PositiveInteger, default 0 | Model calls spent |
 | `error` | Text, blank | Capped, as the LLM service caps its own |
+| `time_limit_seconds` | Float, null | The hard time limit of the Job for this run. The dead-run check uses it plus 300 s |
 | `started_at` / `finished_at` | DateTime | |
 
 ### 4.4 AgentToolCall (PR B)
@@ -367,9 +368,9 @@ a Nautobot Approval Workflow in front of it, and the only input is a ticket. `ti
 exactly the failure A6 is trying not to have.
 
 The Job passes the limits that Celery applied to the service. An operator can lower them on the Job
-edit page. A value above 600 and 660 seconds gives a run no more time, and the check for a dead run
-assumes 660 seconds, so do not raise them. A run that ends before its first model call writes a
-warning to the Job log.
+edit page. A value above 600 and 660 seconds gives a run no more time. Each run stores the hard limit that
+applied to it, and the check for a dead run uses that limit plus 300 seconds. A run with no stored limit uses
+660 seconds. A run that ends before its first model call writes a warning to the Job log.
 
 A **Job Button** on the ticket detail page launches it, which is where a person is standing when
 they want it.
@@ -700,3 +701,7 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   lasted two times `tool_timeout_seconds` when the handshake was slow. So the agent sends `max_retries=0`, and
   the allowance of a tool call is two timeouts. A run now reads a clock before each model call and each
   read-only tool call, and stops with a comment if the call does not fit before the run time limit.
+- **The check for a dead run follows the hard limit of the run (issue 43).** The check used 660 seconds plus a
+  grace time of 300 seconds for each run. An operator who raised the limits of the Job could then get a second
+  run beside a live run. Each run now stores the hard limit that applied to it (`time_limit_seconds`), and the
+  check uses that limit plus 300 seconds. A run with no stored limit uses 660 seconds.
