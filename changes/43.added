@@ -1,0 +1,1 @@
+Added the hard time limit of the Job to the Agent Run detail page and to the REST API, as `time_limit_seconds`.

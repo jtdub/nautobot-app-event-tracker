@@ -1,0 +1,1 @@
+Changed the wait before a new run can replace a run whose worker died. It is now the hard time limit of that run plus 300 seconds.

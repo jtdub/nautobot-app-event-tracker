@@ -33,6 +33,7 @@ The detail page of a run shows the bold labels below. The list shows **Started**
 | **Finished At** (`finished_at`) | The time when the run ended. The field is empty while the status is **Running**. |
 | **Job Result** (`job_result`) | The Nautobot record of the same run. It has the log of the Job. |
 | **Parent** (`parent`) | The run that this run resumed. The field is empty if the run is not a resumption. |
+| **Hard Time Limit (seconds)** (`time_limit_seconds`) | The hard time limit of the Job when the run started, in seconds, for example `660.0`. The app uses it to find a run whose worker died. The field is empty for a run from an earlier release. |
 | **Error** (`error`) | Why the run failed, if it did. The app cuts a long text. A stop of the Job gives a text that starts with "The Job reached its soft time limit" or "The process running this agent stopped without recording an outcome". |
 | **Transcript** (`transcript`) | Each message, tool call and result, in the order that the model saw them. The detail page shows it in its own panel. |
 

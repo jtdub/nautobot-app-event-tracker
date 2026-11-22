@@ -153,10 +153,11 @@ WIRE_NAME_MAX = 64
 #: service caps its own.
 ERROR_TEXT_CAP = 1000
 
-#: The Job's hard time limit, in seconds. Defined here rather than in `jobs.py` because two things
-#: need it and they must not drift: the Job sets Celery's `time_limit` from it, and the sweep below
-#: uses it to decide when a `running` row can only be a process that died.
 JOB_TIME_LIMIT_SECONDS = 660
+"""The hard time limit that the Job declares, in seconds.
+
+The Job sets its `time_limit` from it. The dead-run check uses it for a run with no stored limit.
+"""
 
 JOB_SOFT_TIME_LIMIT_SECONDS = 600
 """The soft time limit of the Job, and the highest run time limit.
@@ -185,10 +186,11 @@ SOFT_TIME_LIMIT_FIRST_CAUSE = " The run was already ending for this cause: "
 #: loop nobody bounded.
 MAX_STALE_RUNS_BURIED = 10
 
-#: How long past the hard limit a `running` run is given before it is treated as dead. Generous:
-#: the cost of being wrong is declaring a live run dead and letting a second one start beside it,
-#: which is worse than waiting another few minutes.
 STALE_RUN_GRACE_SECONDS = 300
+"""Seconds after the hard time limit before a `running` run counts as dead.
+
+A check that is too early lets a second run start beside a live run.
+"""
 
 
 @dataclass(frozen=True)
@@ -312,7 +314,8 @@ def run_agent(  # pylint: disable=too-many-arguments
     and `time.monotonic`. No test calls a model or opens a socket.
 
     `soft_time_limit` and `time_limit` are the limits that the Job runs under, in seconds. The run
-    time limit is the lowest of the two and 600. A caller that passes nothing gets 600.
+    time limit is the lowest of the two and 600. A caller that passes nothing gets 600. The run
+    stores `time_limit` for the dead-run check.
 
     Returns the `AgentRun`, always in a finished state - `completed`, `waiting_approval` or
     `failed`. Raises `AgentConfigurationError` when agents are off, `TicketImmutableError` on a
@@ -348,7 +351,14 @@ def run_agent(  # pylint: disable=too-many-arguments
         mcp_service.require_client()
 
     limit = _run_time_limit(soft_time_limit, time_limit)
-    run = _claim_run(ticket=ticket, user=user, job_result=job_result, settings=settings, limit=limit)
+    run = _claim_run(
+        ticket=ticket,
+        user=user,
+        job_result=job_result,
+        settings=settings,
+        limit=limit,
+        time_limit=time_limit if _dead_run_wait(time_limit) is not None else None,
+    )
     return _Loop(
         run=run,
         settings=settings,
@@ -367,6 +377,17 @@ def _positive_number(value):
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
         return value
     return None
+
+
+def _dead_run_wait(time_limit):
+    """Return the time after which a run with this hard limit is dead, or None if the limit is not usable."""
+    hard_limit = _positive_number(time_limit)
+    if hard_limit is None:
+        return None
+    try:
+        return timedelta(seconds=hard_limit + STALE_RUN_GRACE_SECONDS)
+    except OverflowError:
+        return None
 
 
 def _run_time_limit(soft_time_limit, time_limit):
@@ -449,7 +470,7 @@ def _resumable_run(ticket):
             return None
         if existing.status != AgentRunStatusChoices.RUNNING:
             break
-        if not _is_dead(existing):
+        if not _is_dead(existing, timezone.now()):
             raise AgentBusyError(
                 f"An agent run started at {existing.started_at:%Y-%m-%d %H:%M:%S} is still running on this ticket."
             )
@@ -480,7 +501,7 @@ def _resumable_run(ticket):
     return existing
 
 
-def _claim_run(*, ticket, user, job_result, settings, limit):
+def _claim_run(*, ticket, user, job_result, settings, limit, time_limit):  # pylint: disable=too-many-arguments
     """Decide whether this launch starts a run or resumes one, and open it - in one step.
 
     A9 is a check followed by an act, and the two were separate: two Jobs launched together both
@@ -501,7 +522,7 @@ def _claim_run(*, ticket, user, job_result, settings, limit):
         parent = _resumable_run(ticket)
         if parent is not None:
             _require_time_for_approved_call(settings, limit)
-        return _open_run(ticket=ticket, user=user, job_result=job_result, parent=parent)
+        return _open_run(ticket=ticket, user=user, job_result=job_result, parent=parent, time_limit=time_limit)
 
 
 def _require_time_for_approved_call(settings, limit):
@@ -515,14 +536,14 @@ def _require_time_for_approved_call(settings, limit):
         )
 
 
-def _is_dead(run):
-    """Whether this `running` run has outlived any process that could still be working on it.
+def _is_dead(run, now):
+    """Return True if this `running` run is older than its hard time limit plus the grace time.
 
-    The Job's hard limit plus a grace period. Celery kills the worker at `time_limit` whatever the
-    Job is doing, so a row older than that is not slow - the process that owned it is gone.
+    A run with no usable stored limit uses `JOB_TIME_LIMIT_SECONDS`. Celery kills the worker at the
+    hard limit, so an older row has no process.
     """
-    limit = timedelta(seconds=JOB_TIME_LIMIT_SECONDS + STALE_RUN_GRACE_SECONDS)
-    return timezone.now() - run.started_at > limit
+    wait = _dead_run_wait(run.time_limit_seconds) or _dead_run_wait(JOB_TIME_LIMIT_SECONDS)
+    return now - run.started_at > wait
 
 
 def _bury(run):
@@ -565,7 +586,7 @@ def _record_cut_calls(ticket, calls):
             logger.warning("Agent call %s could not be recorded on ticket %s: %s", call.pk, ticket.pk, error)
 
 
-def _open_run(*, ticket, user, job_result, parent):
+def _open_run(*, ticket, user, job_result, parent, time_limit):
     """Open the run row, taking over the transcript when this one is a resumption (13.5).
 
     The transcript is copied rather than shared, so each run in a chain is a readable record of
@@ -579,6 +600,7 @@ def _open_run(*, ticket, user, job_result, parent):
             started_by=user,
             job_result=job_result,
             parent=parent,
+            time_limit_seconds=time_limit,
             transcript=list(parent.transcript) if parent is not None else [],
         )
         run.validated_save()

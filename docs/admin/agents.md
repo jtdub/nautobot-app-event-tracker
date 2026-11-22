@@ -66,14 +66,23 @@ starts a read-only tool call only if two times `tool_timeout_seconds` plus 30 se
 no call starts after 510 seconds. A run that stops this way is Completed. The ticket comment starts with "The
 agent stopped at the run time limit".
 
-You can lower the limits of the Job. A higher limit does not give a run more time.
+You can change the limits of the Job. A lower limit stops a run sooner. A higher limit does not give a run more
+time.
+
+A higher limit has one use. A call can be slower than its allowance. With the default limits, the Job cuts off
+such a call at 600 seconds, and the run is Failed. With higher limits, the call can finish. The run then stops
+at the run time limit, and it is Completed.
+
+The app stores the hard time limit of the Job on each run. The detail page of the run shows it as **Hard Time
+Limit (seconds)**.
 
 !!! warning
-    If a limit is above its default, a run can start on a ticket while an earlier run still has the status **Running**.
-    Do not set the soft time limit of this Job above 600 seconds. Do not set the hard time limit above 660
-    seconds.
+    A higher hard time limit makes a dead run hold its ticket for longer. If a worker dies in the middle of a
+    run, the run keeps the status **Running**. You can start a new run on the ticket only after the hard time
+    limit of that run plus 300 seconds. With the defaults, that is 960 seconds. With a hard time limit of 3060
+    seconds, it is 56 minutes.
 
-To lower the limits:
+To change the limits:
 
 1. In **Jobs > Jobs**, open the row menu of **Investigate an Event Ticket**.
 2. Click **Edit job**.
@@ -91,7 +100,8 @@ you approve the same change again.
 
 The update trail of the ticket has an entry for each call that the soft time limit cut off. The same thing
 happens after a worker dies in the middle of a run. The next run that you start on the ticket marks the
-earlier run and its calls Failed.
+earlier run and its calls Failed. The app does this only after the hard time limit of the earlier run plus 300
+seconds. Before that time, the Job refuses the new run.
 
 A resumption run makes an approved call. It does not start if two times `tool_timeout_seconds` plus 30
 seconds do not fit in the run time limit. The call stays approved. Set the limits of the Job back to their

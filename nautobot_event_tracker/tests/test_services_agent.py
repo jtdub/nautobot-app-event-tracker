@@ -7,11 +7,14 @@ behind - which is what makes the accounting assertions here mean anything.
 
 # pylint: disable=too-many-lines
 import json
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from unittest import mock
 
 from celery.exceptions import SoftTimeLimitExceeded
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
+from django.utils import timezone
 from nautobot_ai_models.choices import MCPTransportChoices
 
 from nautobot_event_tracker.choices import (
@@ -151,7 +154,48 @@ class TestTheSettings(TestCase):
             self.assertIn(fragment, message)
 
 
-class TestStartingARun(AgentTestCase):
+class TestTheDeadRunCheck(TestCase):
+    """AC-1 and AC-2 - a `running` run is dead only after its own hard time limit plus the grace time."""
+
+    START = datetime(2026, 1, 1, tzinfo=dt_timezone.utc)
+
+    def is_dead_after(self, limit, seconds):
+        """Return the check for a run that started at `START` with this stored limit, `seconds` later."""
+        run = fixtures.create_agentrun(started_at=self.START, time_limit_seconds=limit)
+        return agent_service._is_dead(run, self.START + timedelta(seconds=seconds))  # pylint: disable=protected-access
+
+    def test_a_run_with_no_stored_limit_uses_the_default_limit_of_the_job(self):
+        """AC-2 - 660 seconds and 300 of grace, so the check of an older release does not move."""
+        self.assertFalse(self.is_dead_after(None, 960))
+        self.assertTrue(self.is_dead_after(None, 961))
+
+    def test_a_raised_limit_makes_the_run_live_for_longer(self):
+        """AC-1 - the fault of issue 43: the check used 960 seconds for a run with a limit of 3060."""
+        self.assertFalse(self.is_dead_after(3060, 961))
+        self.assertFalse(self.is_dead_after(3060, 3360))
+        self.assertTrue(self.is_dead_after(3060, 3361))
+
+    def test_a_lowered_limit_makes_the_run_dead_sooner(self):
+        """AC-1 - Celery kills the process at the hard limit, so the limit and the grace time are enough."""
+        self.assertFalse(self.is_dead_after(95, 395))
+        self.assertTrue(self.is_dead_after(95, 396))
+
+    def test_a_stored_limit_that_is_not_above_zero_is_not_known(self):
+        """AC-2 - the service never writes one, and the check does not trust one that is there."""
+        for limit in (0, -5):
+            with self.subTest(limit=limit):
+                self.assertFalse(self.is_dead_after(limit, 960))
+                self.assertTrue(self.is_dead_after(limit, 961))
+
+    def test_a_stored_limit_that_a_timedelta_cannot_hold_is_not_known(self):
+        """AC-2 - an infinite or huge value is a fault of the configuration, and the ticket must not hold forever."""
+        for limit in (float("inf"), 1e300, float("nan")):
+            with self.subTest(limit=limit):
+                self.assertFalse(self.is_dead_after(limit, 960))
+                self.assertTrue(self.is_dead_after(limit, 961))
+
+
+class TestStartingARun(AgentTestCase):  # pylint: disable=too-many-public-methods
     """What is refused before any run row exists."""
 
     def test_a_disabled_agent_is_refused(self):
@@ -199,10 +243,6 @@ class TestStartingARun(AgentTestCase):
         Nothing marks the row, so it stays `running` forever: every future launch on that ticket
         was refused, and with no edit or delete route the only recovery was a database shell.
         """
-        from datetime import timedelta  # pylint: disable=import-outside-toplevel
-
-        from django.utils import timezone  # pylint: disable=import-outside-toplevel
-
         dead = fixtures.create_agentrun(
             ticket=self.ticket,
             status=AgentRunStatusChoices.RUNNING,
@@ -219,10 +259,6 @@ class TestStartingARun(AgentTestCase):
 
     def dead_run(self, **overrides):
         """Return a `running` run whose process has outlived the dead-run check."""
-        from datetime import timedelta  # pylint: disable=import-outside-toplevel
-
-        from django.utils import timezone  # pylint: disable=import-outside-toplevel
-
         age = agent_service.JOB_TIME_LIMIT_SECONDS + agent_service.STALE_RUN_GRACE_SECONDS + 60
         return fixtures.create_agentrun(
             ticket=self.ticket,
@@ -279,10 +315,6 @@ class TestStartingARun(AgentTestCase):
 
     def test_a_run_still_within_its_time_limit_is_left_alone(self):
         """The sweep must not declare a live run dead: two agents on one ticket is worse."""
-        from datetime import timedelta  # pylint: disable=import-outside-toplevel
-
-        from django.utils import timezone  # pylint: disable=import-outside-toplevel
-
         alive = fixtures.create_agentrun(
             ticket=self.ticket,
             status=AgentRunStatusChoices.RUNNING,
@@ -295,6 +327,113 @@ class TestStartingARun(AgentTestCase):
 
         alive.refresh_from_db()
         self.assertEqual(alive.status, AgentRunStatusChoices.RUNNING)
+
+    def stale_run(self, ticket, *, age, limit, status=AgentRunStatusChoices.RUNNING, **overrides):
+        """Return a run on this ticket that started `age` seconds ago with this stored limit."""
+        return fixtures.create_agentrun(
+            ticket=ticket,
+            status=status,
+            started_at=timezone.now() - timedelta(seconds=age),
+            time_limit_seconds=limit,
+            **overrides,
+        )
+
+    def test_a_run_stores_the_hard_time_limit_it_was_given(self):
+        """AC-3 - the Job passes its hard limit, and the dead-run check reads it from the row."""
+        run, _ = self.run_agent("Done.", time_limit=1200)
+
+        self.assertEqual(run.time_limit_seconds, 1200)
+
+    def test_a_run_stores_no_limit_when_none_is_usable(self):
+        """AC-3 - a value that the check could not use is not stored."""
+        run, _ = self.run_agent("Done.")
+        self.assertIsNone(run.time_limit_seconds)
+
+        for limit in (0, -1, True, "660", float("inf"), 1e300, float("nan")):
+            with self.subTest(limit=limit):
+                run, _ = self.run_agent("Done.", ticket=fixtures.create_ticket(), time_limit=limit)
+                self.assertIsNone(run.time_limit_seconds)
+
+    def test_a_live_run_under_a_raised_limit_is_not_buried(self):
+        """AC-1 - 1000 seconds is past the default check, and well inside a limit of 3060."""
+        held = self.stale_run(self.ticket, age=1000, limit=3060)
+
+        with fixtures.agent_settings():
+            with self.assertRaises(AgentBusyError) as caught:
+                agent_service.run_agent(ticket=self.ticket, user=self.user, complete=fixtures.FakeAgentComplete())
+
+        held.refresh_from_db()
+        self.assertIn("still running", str(caught.exception))
+        self.assertEqual(held.status, AgentRunStatusChoices.RUNNING)
+        self.assertEqual(held.error, "")
+
+    def test_a_dead_run_under_a_raised_limit_is_buried_after_that_limit(self):
+        """AC-1 - 3060 seconds and 300 of grace, and then the ticket is free."""
+        dead = self.stale_run(self.ticket, age=3420, limit=3060)
+
+        run, _ = self.run_agent("Done.")
+
+        dead.refresh_from_db()
+        self.assertEqual(dead.status, AgentRunStatusChoices.FAILED)
+        self.assertIn("stopped without recording an outcome", dead.error)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_a_dead_run_under_a_lowered_limit_is_buried_sooner(self):
+        """AC-1 - 95 seconds and 300 of grace is 395, so 500 seconds is dead."""
+        dead = self.stale_run(self.ticket, age=500, limit=95)
+
+        run, _ = self.run_agent("Done.")
+
+        dead.refresh_from_db()
+        self.assertEqual(dead.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_a_run_inside_a_lowered_limit_and_its_grace_time_is_left_alone(self):
+        """AC-1 - 300 seconds is under 395."""
+        held = self.stale_run(self.ticket, age=300, limit=95)
+
+        with fixtures.agent_settings():
+            with self.assertRaises(AgentBusyError):
+                agent_service.run_agent(ticket=self.ticket, user=self.user, complete=fixtures.FakeAgentComplete())
+
+        held.refresh_from_db()
+        self.assertEqual(held.status, AgentRunStatusChoices.RUNNING)
+
+    def test_an_old_run_that_waits_for_approval_is_not_buried(self):
+        """AC-4 - the check applies to `running` only, whatever the age and the stored limit."""
+        waiting = self.stale_run(self.ticket, age=5000, limit=95, status=AgentRunStatusChoices.WAITING_APPROVAL)
+        fixtures.create_agenttoolcall(run=waiting)
+
+        with fixtures.agent_settings():
+            with self.assertRaises(AgentBusyError) as caught:
+                agent_service.run_agent(ticket=self.ticket, user=self.user, complete=fixtures.FakeAgentComplete())
+
+        waiting.refresh_from_db()
+        self.assertIn("waiting for a decision", str(caught.exception))
+        self.assertEqual(waiting.status, AgentRunStatusChoices.WAITING_APPROVAL)
+        self.assertEqual(waiting.error, "")
+        self.assertIsNone(waiting.finished_at)
+
+    def test_an_old_finished_run_is_not_touched(self):
+        """AC-4 - a finished run is history, however old it is and whatever its stored limit says."""
+        finished_at = datetime(2026, 1, 1, tzinfo=dt_timezone.utc)
+        for status in (
+            AgentRunStatusChoices.COMPLETED,
+            AgentRunStatusChoices.FAILED,
+            AgentRunStatusChoices.DENIED,
+            AgentRunStatusChoices.SUPERSEDED,
+        ):
+            with self.subTest(status=status):
+                ticket = fixtures.create_ticket()
+                old = self.stale_run(ticket, age=5000, limit=95, status=status, error="kept", finished_at=finished_at)
+
+                run, _ = self.run_agent("Done.", ticket=ticket)
+
+                old.refresh_from_db()
+                self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+                self.assertEqual(old.status, status)
+                self.assertEqual(old.error, "kept")
+                self.assertEqual(old.finished_at, finished_at)
 
     def test_a_run_waiting_on_a_decision_is_refused(self):
         """The gate is a person's turn; launching again does not take it from them."""
@@ -995,6 +1134,21 @@ class TestResumption(AgentTestCase):
         self.assertEqual(len(caller.calls), 1)
         self.assertEqual(caller.calls[0]["tool_call"].pk, self.proposal.pk)
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_a_resumption_stores_its_own_limit_and_leaves_the_parent_alone(self):
+        """AC-3 - the resumption is a new row with its own limit, and the parent keeps the limit it had."""
+        other = fixtures.create_ticket()
+        parent, _ = self.run_agent(
+            [fixtures.fake_tool_call("push_config", {"device": "leaf-01"})], ticket=other, time_limit=1200
+        )
+        agent_service.approve_tool_call(tool_call=AgentToolCall.objects.get(run=parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", ticket=other, time_limit=900)
+
+        parent.refresh_from_db()
+        self.assertEqual(run.parent, parent)
+        self.assertEqual(run.time_limit_seconds, 900)
+        self.assertEqual(parent.time_limit_seconds, 1200)
 
     def test_the_result_answers_the_pending_call_in_the_transcript(self):
         """The provider requires every tool call to be answered before the next turn."""
