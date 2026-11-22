@@ -69,7 +69,7 @@ agent stopped at the run time limit".
 You can lower the limits of the Job. A higher limit does not give a run more time.
 
 !!! warning
-    If a limit is above its default, a run can start on a ticket while an earlier run is alive.
+    If a limit is above its default, a run can start on a ticket while an earlier run still has the status **Running**.
     Do not set the soft time limit of this Job above 600 seconds. Do not set the hard time limit above 660
     seconds.
 
@@ -116,8 +116,8 @@ Nautobot `run` permission on that Job.
     3. Select **Enabled**.
     4. Click **Update**.
 
-A ticket has one run at a time. The Job refuses a new run while an earlier run on the ticket is still alive. It also
-refuses a new run while a run waits for a decision. The refusal message gives the reason.
+A ticket has one run at a time. The Job refuses a new run while an earlier run on the ticket has the status
+**Running**. It also refuses a new run while a run waits for a decision. The refusal message gives the reason.
 
 ## What the agent may do to a ticket
 
