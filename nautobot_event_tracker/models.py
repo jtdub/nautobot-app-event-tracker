@@ -537,6 +537,12 @@ class AgentRun(BaseModel):
     )
     iterations = models.PositiveIntegerField(default=0, help_text="Model calls this run spent.")
     error = models.TextField(blank=True, help_text="Why the run failed, when it did. Capped by the service.")
+    time_limit_seconds = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="Hard time limit (seconds)",
+        help_text="The hard time limit of the Job for this run. Empty for a run with no known limit.",
+    )
     started_at = models.DateTimeField(default=timezone.now, db_index=True)
     finished_at = models.DateTimeField(null=True, blank=True)
 

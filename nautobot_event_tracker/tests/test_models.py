@@ -502,6 +502,15 @@ class TestAgentRun(ModelTestCases.BaseModelTestCase):
         self.assertEqual(run.iterations, 0)
         self.assertTrue(run.is_live)
 
+    def test_a_run_keeps_the_hard_time_limit_it_was_made_with(self):
+        """The dead-run check reads this value, so it must survive a save."""
+        unlimited = fixtures.create_agentrun()
+        limited = fixtures.create_agentrun(time_limit_seconds=1200.0)
+
+        limited.refresh_from_db()
+        self.assertIsNone(unlimited.time_limit_seconds)
+        self.assertEqual(limited.time_limit_seconds, 1200.0)
+
     def test_a_completed_run_is_not_live(self):
         """A9 reads this: only a live run holds a ticket."""
         run = fixtures.create_agentrun(status=AgentRunStatusChoices.COMPLETED)
