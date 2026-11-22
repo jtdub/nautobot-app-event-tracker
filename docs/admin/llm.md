@@ -1,108 +1,132 @@
 # Configuring LLM Providers
 
-The app calls language models through a registry it does not own. **AI Provider** and **AI Model**
-belong to the [AI Models app](https://github.com/jtdub/nautobot-app-ai-models), which this app
-depends on (ADR 0010): a provider is an endpoint you allow, a model is one available from it, and
-both are managed under **AI Tools → AI Models**. What this app records is the other half — every
-call it makes is priced and written to an [LLM Usage Record](../models/llmusagerecord.md), under
-**AI Tools → Event Tracker AI**.
+The app calls language models through a registry that it does not own. The
+[AI Models app](https://github.com/jtdub/nautobot-app-ai-models) owns **AI Provider** and
+**AI Model**. This app depends on the AI Models app (ADR 0010).
 
-Nothing here is required: an installation that registers no provider simply makes no model calls.
-The AI Models app is installed with this one and needs no settings of its own for the LLM half.
+- A provider is an endpoint that you allow.
+- A model is one model that a provider offers.
+- You manage both under **AI Tools > AI Models**.
 
-All calls go through [litellm](https://docs.litellm.ai/), which is an optional dependency. Install
-the app with the `llm` extra to get it:
+This app records the other half. It prices each model call and writes the call to an
+[LLM Usage Record](../models/llmusagerecord.md). Find the records under
+**AI Tools > Event Tracker AI > LLM Usage**.
+
+The app needs no setting. If you register no provider, the app makes no model call. When you install
+this app, you also install the AI Models app. The AI Models app needs no setting of its own for the LLM features.
+
+The app makes each model call through [litellm](https://docs.litellm.ai/). litellm is an optional
+dependency. To get it, install the app with the `llm` extra:
 
 ```shell
 pip install nautobot-event-tracker[llm]
 ```
 
-Without the extra, any attempt to call a model fails with a message naming that command.
+If you do not install the extra, each model call fails. The error message names this command.
 
-## Registering a provider
+## Register a provider {#registering-a-provider}
 
-A provider's connection details live in a Nautobot **External Integration**, so credentials are
-stored and rotated where every other credential in your deployment is.
+A Nautobot **External Integration** holds the connection details of a provider. Credentials stay
+where your deployment stores and rotates each other credential.
 
-1. Create a **Secrets Group** holding the API key: one secret with access type *Generic* and
-   secret type *Token* (a *Secret*-typed entry works too). Skip this for an endpoint that needs
-   no key.
-2. Create an **External Integration**: the *Remote URL* is the endpoint's base URL (for an
-   OpenAI-compatible endpoint, the URL up to and including `/v1`; for Ollama, without it), and the
-   *Secrets Group* is the one from step 1.
-3. Create an **AI Provider** (AI Tools → AI Models → AI Providers) pointing at that
-   integration, choosing the provider type:
-    - **OpenAI-compatible** — any self-hosted or third-party endpoint speaking the OpenAI
-      protocol: vLLM, llama.cpp, a gateway. The integration must carry a remote URL. This is the
-      first-class path for deployments that cannot send event data to a third party.
-    - **Ollama** — Ollama specifically, reached through its own API rather than its
-      OpenAI-compatibility layer. Give the integration Ollama's base URL with **no `/v1`**
-      (`http://ollama.example.com:11434`); a key is not needed, though one is sent if you
-      configure it, for an Ollama behind an authenticating proxy.
+1. Create a **Secrets Group** that holds the API key. Skip this step for an endpoint that needs no
+   key.
 
-        Use this rather than OpenAI-compatible if you want the [agent](agents.md) to call tools.
-        Ollama's compatibility layer does not return tool calls in the `tool_calls` field — a
-        model asked for a tool answers with the JSON call written into the message content, where
-        nothing can act on it. Triage works either way, since it asks for no tools.
-    - **OpenAI** / **Anthropic** — the hosted services. Nautobot requires a remote URL on every
-      external integration, so give it the service's own base URL
-      (`https://api.openai.com/v1`, `https://api.anthropic.com`).
-4. Create one or more **AI Models** on the provider, or run the AI Models app's
-   **Discover AI Models** Job against it, which reads `GET /v1/models` from any OpenAI-compatible
-   endpoint and creates a row per model it offers.
+    - Add one secret. Set **Access type** to **Generic**. Set **Secret type** to **Token**.
+    - A secret with **Secret type** **Secret** also works. If the group has both, the app uses
+      **Token**.
 
-    Two fields need a person either way. **Kind** says whether a model is for chat or for
-    embeddings; discovery cannot tell, because `/v1/models` does not say, so every discovered row
-    arrives as one kind and the [retrieval](rag.md) settings will refuse a model of the wrong one.
-    **Input** and **output cost per million** are what make usage records carry real prices — they
-    are your numbers, and leaving them empty records the call with a cost of zero rather than
-    guessing.
+2. Create an **External Integration**.
 
-The integration decides more than the address. Four of its fields are read on every call:
+    - In **Remote URL**, enter the base URL of the endpoint.
+    - For an OpenAI-compatible endpoint, enter the URL up to and including `/v1`.
+    - For Ollama, do not add `/v1`.
+    - In **Secrets group**, select the group from step 1.
+
+3. Create an **AI Provider** under **AI Tools > AI Models > AI Providers**. In
+   **External Integration**, select the integration. Then select the **Provider type**:
+
+    - **OpenAI-compatible**: Use this type for a self-hosted or third-party endpoint that uses
+      the OpenAI protocol. Examples are vLLM, llama.cpp, and a gateway. The integration must have a
+      remote URL. This is the main path for a deployment that cannot send event data to a third
+      party.
+    - **Ollama (native API)**: Use this type for Ollama through its own API. This type does not use
+      the OpenAI compatibility layer of Ollama. In the integration, enter the base URL of Ollama
+      with no `/v1`, for example `http://ollama.example.com:11434`. Ollama does not need a key. If
+      you configure a key, the app sends it. Configure a key only for an Ollama behind a proxy that
+      authenticates.
+
+        Use this type instead of **OpenAI-compatible** if you want the [agent](agents.md) to call
+        tools. The compatibility layer of Ollama does not return tool calls in the `tool_calls`
+        field. When the agent asks a model for a tool, the model writes the JSON call into the message content.
+        Nothing can act on the call there. Triage works with either type, because triage asks for
+        no tools.
+    - **OpenAI** and **Anthropic**: Use these types for the hosted services. Nautobot requires a
+      remote URL on each external integration. Enter the base URL of the service:
+      `https://api.openai.com/v1` or `https://api.anthropic.com`.
+
+4. Create one or more **AI Models** on the provider. Or run the **Discover AI Models** Job of the
+   AI Models app against the provider. The Job reads `GET /v1/models` from an OpenAI-compatible
+   endpoint. It creates a row for each model that the endpoint offers.
+
+    Discovery does not set these values. Set them yourself:
+
+    - **Kind**: **Chat** or **Embedding**. Discovery cannot know the kind, because `/v1/models`
+      does not say. Each discovered row gets the kind **Chat**. The [retrieval](rag.md) settings refuse a
+      model of the wrong kind.
+    - **Input cost per million tokens** and **Output cost per million tokens**: These are your own
+      prices. The usage records use them to show real prices. If you leave them empty, the app
+      records the call with a cost of zero. The app does not guess a price.
+
+The integration decides more than the address. The app reads four of its fields on each call. The
+app does not apply two more fields to model calls.
 
 | Field | What it does |
 | --- | --- |
-| *Remote URL* | The endpoint. Jinja2 templating works; `{{ obj }}` is the AI Provider |
-| *Secrets Group* | The API key, preferring the *Token* secret type and falling back to *Secret* |
-| *Headers* | Sent with every request, templated the same way. The template also knows `{{ session_id }}`: the ID of the first run of an agent investigation, the consumer name of a triage call, or a random ID of the process for each other call |
-| *SSL Verification* | **Not applied to LLM calls** — see below |
-| *CA File Path* | **Not applied to LLM calls** — see below |
-| *Timeout* | The call's timeout, unless the model row or the caller states one |
+| **Remote URL** | The endpoint. The field accepts Jinja2 templates. In a template, `{{ obj }}` is the AI Provider |
+| **Secrets group** | The API key. The app uses the **Token** secret type first. If the group has none, it uses **Secret** |
+| **Headers** | The app sends them with each request. They accept the same templates. A template can also use `{{ session_id }}`. For an agent investigation, it is the ID of the first run. For a triage call, it is the consumer name. For each other call, it is a random ID of the process |
+| **Verify SSL** | The app does not apply this field to LLM calls. See the warning below |
+| **CA file path** | The app does not apply this field to LLM calls. See the warning below |
+| **Timeout** | The timeout of the call. A timeout that the caller sets takes priority. For a chat call, a `timeout` in **Default parameters** of the model also takes priority |
 
-*Extra Config* is deliberately not sent. It is untyped, and splatting it into a call would reopen
-the hole that limiting a model's parameters closed.
+The app does not send **Extra config**. The field has no fixed format. The app limits
+**Default parameters** to a list of allowed keys, so that no parameter can change the endpoint or
+the key. **Extra config** has no such limit.
 
-!!! warning "TLS settings on an LLM provider's integration are not applied"
-    litellm takes no per-call TLS argument. It reads the `SSL_VERIFY` and `SSL_CERT_FILE`
-    environment variables, or its own process-wide global, and nothing else — so *SSL Verification*
-    and *CA File Path* on the integration cannot be honoured for one provider without changing
-    every other provider's calls in the same process. A worker runs several at once, so applying
-    one provider's setting would silently disable verification on another's connection.
+!!! warning "The app does not apply the TLS settings of an integration to model calls"
+    litellm has no TLS argument for one call. It reads only the environment variables `SSL_VERIFY`
+    and `SSL_CERT_FILE`, or its own global value for the process. Therefore, the app cannot apply
+    **Verify SSL** and **CA file path** for one provider. A worker runs calls for several providers
+    at the same time. If the app applied the setting of one provider, it could turn off
+    verification for the connection of another provider.
 
-    To reach an LLM endpoint with a **private CA**, set `SSL_CERT_FILE` in the environment of
-    every process that calls a model — Nautobot, the worker and the event consumer. That is
-    additive and safe: it adds a trust anchor without weakening anything.
+    Set `SSL_CERT_FILE` in the environment of each process that calls a model. These processes are
+    Nautobot, the worker, and the event consumer. This lets the app reach an LLM endpoint with a
+    **private CA**. It adds a trust anchor. It does not weaken verification.
 
-    There is **no recommended way to disable verification for one provider**. `SSL_VERIFY=False`
-    would work, and it turns verification off for every provider in that process — a wider blast
-    radius than the per-provider setting this app declines to apply. If an endpoint's certificate
-    cannot be verified, fix the certificate or add its CA.
+    Do not turn off verification for one provider. `SSL_VERIFY=False` turns it off for each
+    provider in that process. This is a larger risk than the per-provider setting that the app does
+    not apply. If the app cannot verify the certificate of an endpoint, fix the certificate or add its
+    CA.
 
-    The app logs a warning naming the fields it skipped whenever either is set, so this is visible
-    rather than silent.
+    The app writes a warning to the log when **Verify SSL** is off or **CA file path** has a value.
+    The warning names the fields that the app skipped.
 
-    MCP servers are not affected: `services/mcp.py` builds its own HTTP client per call and does
-    honour both fields.
+    This does not affect MCP calls. `services/mcp.py` builds its own HTTP client for each call and
+    applies both fields.
 
-Disabling a provider or a model (the *Enabled* flag on either) refuses every call through it
-before any network traffic, everywhere at once.
+If you turn off **Enabled** on a provider or a model, the app refuses each call through it. The app
+refuses the call before any network traffic. This applies to each feature of the app at the same
+time.
 
-A model's **Default parameters** and its *Temperature* and *num_predict* columns are passed on
-every chat call. The parameters field takes generation parameters only — the endpoint and the
-credentials come from the integration, and the model and the messages come from the call — and the
-AI Models app refuses anything else at save time. Where both are set, an entry in *Default
-parameters* wins over the column of the same name, and a model's own value wins over the
-provider's default.
+The app sends these values with each chat call: the **Default parameters** of the model, its
+**Temperature**, and its **Num_predict**. **Default parameters** accepts generation parameters only.
+The endpoint and the credentials come from the integration. The model and the messages come from
+the call. The AI Models app refuses any other key when you save the row.
+
+If **Default parameters** has a `temperature` entry, it takes priority over the **Temperature**
+column. A value on the model takes priority over the default of the provider.
 
 ## OpenCode Go
 
@@ -110,16 +134,16 @@ provider's default.
 It needs two settings that other endpoints do not need. The values in this section worked in a
 test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other Go model.
 
-!!! warning "Read the Go usage policy before you enable triage"
+!!! warning "Read the Go usage policy before you turn on triage"
     Unattended triage can use all of the allowance of your subscription. OpenCode says that Go
-    is for agents that write code, and that Go monitors traffic for abuse. Go has a 5-hour limit
-    and a weekly limit. Read the [usage limits of Go](https://opencode.ai/docs/en/go/#usage-limits)
-    before you continue.
+    is for agents that write code. OpenCode also says that Go monitors traffic for abuse. Go has a
+    5-hour limit and a weekly limit. Read the
+    [usage limits of Go](https://opencode.ai/docs/en/go/#usage-limits) before you continue.
 
     The LLM Usage list does not show the Go allowance. It shows the cost from the prices on the
-    AI Model row (see [Watching the spend](#watching-the-spend)). Use the OpenCode console to
-    see the allowance. If Extra Usage is on in your OpenCode account, Go does not stop at a
-    limit. Go charges your account credit.
+    AI Model row (see [Watching the spend](#watching-the-spend)). Use the OpenCode console to see
+    the allowance. If Extra Usage is on in your OpenCode account, Go does not stop at a limit.
+    Go charges your account credit.
 
     When Go stops a call, triage accepts the event. See "Failure is safe" in
     [Enabling event triage](#enabling-event-triage).
@@ -127,30 +151,30 @@ test on 2026-11-18 with the model `deepseek-v4.1-flash`. The test used no other 
     The Go facts in this warning come from the vendor page on 2026-11-19. They can change.
 
 !!! warning
-    With the `session_id` template in the *Headers* field, Go sees the consumer name of each triage call. The default
-    consumer name holds the host name and the process number. Set `ingestion.consumer_name` to a
-    text that names nothing, and give each consumer a different name. See
-    [Ingestion](ingestion.md).
+    The `session_id` template in the **Headers** field sends the consumer name of each triage call
+    to Go. The default consumer name holds the host name and the process number. Set
+    `ingestion.consumer_name` to a text that identifies nothing. Give each consumer a different
+    name. See [Ingestion](ingestion.md).
 
-Follow the steps in [Registering a provider](#registering-a-provider) with these values:
+Follow the steps in [Register a provider](#registering-a-provider) with these values:
 
 | Object | Field | Value |
 | --- | --- | --- |
-| External Integration | *Remote URL* | `https://opencode.ai/inference/go/v1` |
-| External Integration | *Headers* | The JSON under this table |
-| External Integration | *Secrets Group* | The group that holds your Go API key |
-| AI Provider | *Provider type* | **OpenAI-compatible** |
-| AI Model | *Name* | `deepseek-v4.1-flash` |
-| AI Model | *Kind* | *Chat* |
-| AI Model | *Default parameters* | `{"extra_body": {"reasoning_effort": "none"}}` |
+| External Integration | **Remote URL** | `https://opencode.ai/inference/go/v1` |
+| External Integration | **Headers** | The JSON under this table |
+| External Integration | **Secrets group** | The group that holds your Go API key |
+| AI Provider | **Provider type** | **OpenAI-compatible** |
+| AI Model | **Name** | `deepseek-v4.1-flash` |
+| AI Model | **Kind** | **Chat** |
+| AI Model | **Default parameters** | `{"extra_body": {"reasoning_effort": "none"}}` |
 
-Put this JSON in the *Headers* field:
+Put this JSON in the **Headers** field:
 
 ```json
 {"x-opencode-session": "{{ session_id | default('nautobot-discovery') }}"}
 ```
 
-Make the AI Model row by hand. The model list of Go also has models that use a different API.
+Create the AI Model row by hand. The model list of Go also has models that use a different API.
 
 To check the URL, read the model list. This call needs no key:
 
@@ -160,49 +184,47 @@ curl https://opencode.ai/inference/go/v1/models
 
 The answer is a JSON list of the models that Go offers.
 
-**Go needs the session header.** Go refuses a call that does not have the
-`x-opencode-session` header. The error is `MissingSessionID`. The template in the table gives
-the header a value on every call.
+**Go needs the session header.** Go refuses a call that has no `x-opencode-session` header. The
+error is `MissingSessionID`. The template in the table gives the header a value on each call.
 
-- A fixed value, such as `nautobot-event-tracker-prod`, continues to work. The app then sends
-  the same value with every call.
-- An agent call sends the ID of the first run of the investigation. A run that resumes after
-  an approval sends the same ID.
+- A fixed value, such as `nautobot-event-tracker-prod`, also works. The app then sends the same
+  value with each call.
+- An agent call sends the ID of the first run of the investigation. A run that resumes after an
+  approval sends the same ID.
 - A triage call sends the consumer name. The same consumer sends the same value each time.
-- Any other call sends one random ID for each process.
-- The app replaces each character other than `A-Z a-z 0-9 . _ : -` with `-`. It cuts the
-  value at 128 characters.
+- Each other call sends one random ID for each process.
+- The app replaces each character other than `A-Z a-z 0-9 . _ : -` with `-`. It cuts the value at
+  128 characters.
 - Go sees one session for each agent investigation, one for each consumer name, and one for each
   other process. This is the purpose of the template. The Go console then shows each session
-  apart.
+  separately.
 
-A renderer that does not know `session_id` sends the literal text `{{ session_id }}`. The
-registry Job "Discover AI Models" and an MCP server integration are such renderers. The
-`default` filter, with single quotes, gives them a value. Do not use double quotes in the
-filter. Double quotes break the stored JSON, and the app then refuses each call.
+A renderer that does not know `session_id` sends the literal text `{{ session_id }}`. The registry
+Job "Discover AI Models" and an MCP server integration are such renderers. The `default` filter,
+with single quotes, gives them a value. Do not use double quotes in the filter. Double quotes break
+the stored JSON, and the app then refuses each call.
 
-After you change the Headers, make one agent run or send one event. Open the LLM Usage list and
-read the record of that call. If the record shows a session error, put the fixed value back.
+After you change **Headers**, start one agent run or send one event. Open the LLM Usage list.
+Read the record of that call. If the record shows a session error, use the fixed value again.
 
-If no new record appears, the app did not send the call. A template that does not render stops
-the call before the app writes a record. Look for the text "has a template that does not
-render" in the result of the agent run or in the log of the consumer. Then put the fixed value
-back.
+If no new record appears, the app did not send the call. A template that does not render stops the
+call before the app writes a record. Look for the text "has a template that does not render" in the
+result of the agent run or in the log of the consumer. Then use the fixed value again.
 
-**Stop reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
-tokens count against [`max_output_tokens`](#enabling-event-triage). With a limit of 256 tokens,
-which was the default at that time, 2 of 14 triage answers were empty in the test. The
-`extra_body` value in the table stops the reasoning. A top-level `reasoning_effort` key gives
-the same request. If the AI Model has the two forms, the `extra_body` value applies. The
-Default parameters apply to each call to this AI Model, agent calls included.
+**Turn off reasoning for triage.** `deepseek-v4.1-flash` reasons before it answers. The reasoning
+tokens count against [`max_output_tokens`](#enabling-event-triage). In the test, the limit was 256
+tokens, which was the default at that time. With this limit, 2 of 14 triage answers were empty. The
+`extra_body` value in the table turns off the reasoning. A top-level `reasoning_effort` key gives
+the same request. If the AI Model has both forms, the `extra_body` value applies. The
+**Default parameters** apply to each call to this AI Model, agent calls included.
 
-**Go has no embedding model.** [Retrieval](rag.md) needs an embedding model on a different
+**Go has no embedding model.** [Retrieval](rag.md) needs an embedding model from a different
 provider.
 
-**Some models need the Global region.** OpenCode says that `deepseek-v4.1-flash` is available
-only when the privacy settings of your OpenCode workspace permit the Global region. Triage sends
-the event payload to the model. Read "Cost and privacy" in
-[Enabling event triage](#enabling-event-triage) before you permit the region.
+**Some models need the Global region.** OpenCode says that `deepseek-v4.1-flash` is available only
+when the privacy settings of your OpenCode workspace permit the Global region. Triage sends the
+event payload to the model. Before you permit the region, read "Cost and privacy" in
+[Enabling event triage](#enabling-event-triage).
 
 ## Settings
 
