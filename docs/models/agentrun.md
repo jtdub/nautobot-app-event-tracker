@@ -1,69 +1,68 @@
 # Agent Run
 
-One pass of the agent over one ticket. A record of what happened, not a thing anybody edits: no
-form creates one, and no API route writes one.
+An Agent Run is one pass of the agent over one ticket. It is a record of what happened. Nobody edits it. The web interface has no add form and no edit form. The REST endpoint is read-only.
 
-A run is started by the **Investigate an Event Ticket** Job, from the button on a ticket's page or
-from the Jobs list. See [Running the Agent](../admin/agents.md).
+The **Investigate an Event Ticket** Job starts a run. Click **Investigate with Agent** on the ticket page, or start the Job in **Jobs > Jobs**. See [Running the Agent](../admin/agents.md).
 
-## Where a run got to
+## Run statuses {#where-a-run-got-to}
 
 | Status | What it means |
 | --- | --- |
-| Running | Executing now. |
-| Waiting for Approval | The agent asked for a tool that changes something. Nothing has been called; somebody has to decide. |
-| Completed | It finished, and its conclusion is a comment on the ticket. |
-| Denied | Somebody denied its proposal. The chain ends there. |
-| Failed | Something went wrong, and the ticket says what. |
-| Superseded | Its approved call was taken over by a resumption run, which is the one that made it. |
+| **Running** | The Job executes the run now. |
+| **Waiting for Approval** | The agent proposed a call of a writable tool. The app made no call. A person must decide. |
+| **Completed** | The run finished. Its conclusion is a comment on the ticket. |
+| **Denied** | A person denied the proposal. The chain ends. |
+| **Failed** | The run did not finish. The ticket comment and the **Error** field say why. |
+| **Superseded** | A resumption run continued this run after an approval. The resumption run makes the approved call. |
 
-**Waiting for Approval is a finished run.** It is not blocked, it is not holding a worker, and it
-is not waiting on a lock. The loop reaches the approval gate by *ending*, and approving starts a
-new run from the stored transcript. That is [ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md),
-and it is why a proposal can sit for three days over a weekend without costing anything.
+**A run with the status Waiting for Approval is a finished run.** It does not block. It does not hold a worker. It does not wait for a lock. The loop reaches the approval gate when it ends. After an approval, a resumption run continues from the stored transcript.
+
+[ADR 0009](../decisions/0009-agent-runs-are-jobs-that-end-at-the-gate.md) gives the reason for this design. A proposal can wait over a weekend at no cost.
 
 ## Fields
 
+The detail page of a run shows the bold labels below. The list shows **Started** for `started_at`. It shows **Finished at**, with a small "a", for `finished_at`. The list also has a **Tool Calls** column with the number of calls of the run.
+
 | Field | Description |
 | --- | --- |
-| Ticket | The one ticket this run is about. Deleting it deletes its runs. |
-| Started By | The person who launched it. **Not** the actor: everything the model decided is recorded on the ticket as `ai` with no user. |
-| Job Result | The Nautobot-side record of the same run, with its log. |
-| Parent | The run this one resumed, when it is a resumption. |
-| Transcript | Every message, tool call and result, in the order the model saw them. |
-| Iterations | Model calls spent. |
-| Error | Why the run failed, when it did. |
-| Started At / Finished At | |
+| **Started At** (`started_at`) | The time when the run started. |
+| **Ticket** (`ticket`) | The ticket that the run is about. If you delete the ticket, the app deletes its runs. |
+| **Status** (`status`) | The status of the run now. See the table above. |
+| **Started By** (`started_by`) | The person who started the run. This person is not the actor. The app records each decision of the model on the ticket as `ai`, with no user. |
+| **Iterations** (`iterations`) | The number of model calls that the run used. |
+| **Finished At** (`finished_at`) | The time when the run ended. The field is empty while the status is **Running**. |
+| **Job Result** (`job_result`) | The Nautobot record of the same run. It has the log of the Job. |
+| **Parent** (`parent`) | The run that this run resumed. The field is empty if the run is not a resumption. |
+| **Error** (`error`) | Why the run failed, if it did. The app cuts a long text. A stop of the Job gives a text that starts with "The Job reached its soft time limit" or "The process running this agent stopped without recording an outcome". |
+| **Transcript** (`transcript`) | Each message, tool call and result, in the order that the model saw them. The detail page shows it in its own panel. |
+
+The detail page also has a **Tool Calls** panel. The **Agent Runs** panel of a ticket page lists the runs of that ticket.
 
 ## The transcript
 
-The whole prompt, stored. It is worth reading for two different reasons.
+The transcript is the whole prompt, stored. It has two uses.
 
-The mundane one: resumption replays it, so an approved call continues the same conversation rather
-than starting a new one.
+The first use is a resumption. A resumption run replays the transcript. An approved call then continues the same conversation. It does not start a new conversation.
 
-The other one: when an agent proposes something surprising, the transcript is where you find out
-why. Every control in this app assumes the ticket's payload is written by whoever can put a line on
-a consumed topic, and that an agent reading it can be steered. What the payload cannot do is call a
-tool nobody enabled, or run a mutating one without a person pressing Approve. What it *can* do is
-influence what the agent concludes and which read-only tools it reaches for — and the transcript is
-where that shows.
+The second use is to see why an agent proposed something unexpected. Each control of the app assumes that any person who can write to a consumed topic can write the payload of a ticket. The controls also assume that the payload can steer the agent.
 
-## What bounds a run
+The payload cannot make the agent call a tool that is not enabled. The payload cannot make the agent call a writable tool without the approval of a person. The payload can change the conclusions of the agent and the read-only tools that it calls. The transcript shows this.
 
-Four limits, all configured in the `agent` block, and reaching any of them ends the run
-`completed` with what it has and a line on the ticket saying which limit it was:
+## Bounds of a run {#what-bounds-a-run}
 
-| Limit | Bounds |
+A run has five bounds. Four bounds are settings in the `agent` block. The fifth bound is the run time limit, which comes from the time limits of the Job. See [The run time limit](../admin/agents.md#the-run-time-limit).
+
+If a run reaches one of these bounds, the run is **Completed** with what the agent found. The agent writes a line on the ticket that names the bound. If the Job reaches its soft time limit, the run is **Failed**.
+
+| Setting | Bound |
 | --- | --- |
-| `max_iterations` | Model calls in one run. |
-| `max_tool_calls` | Tool calls across a whole chain, resumptions included. |
-| `max_tool_result_chars` | How much of one tool's answer is kept. |
-| `max_transcript_chars` | How large the transcript may grow. |
+| `max_iterations` | The number of model calls in one run. |
+| `max_tool_calls` | The number of tool calls in the whole chain, with the resumption runs. |
+| `max_tool_result_chars` | The size of one tool answer that the app keeps. |
+| `max_transcript_chars` | The maximum size of the transcript. |
 
-`max_tool_calls` counts across the chain deliberately. Counted per run, it would mean "twenty calls
-per approval", which is not a limit.
+`max_tool_calls` counts the calls of the whole chain, on purpose. A count for each run would allow a new set of calls at each approval. That is not a limit.
 
 ## Elsewhere
 
-`/api/plugins/event-tracker/agent-runs/` and GraphQL, both read-only.
+The REST API serves runs at `/api/plugins/event-tracker/agent-runs/`. GraphQL also serves them. Both are read-only.

@@ -1,64 +1,48 @@
 # Ticket Embedding
 
-One closed ticket, as a vector. The retrieval corpus is these rows, and the
-[Similar Tickets](../admin/rag.md) panel is what reads them.
+A Ticket Embedding is one closed ticket, as a vector. The retrieval corpus is these rows. The [Similar Tickets](../admin/rag.md) panel reads them.
 
-Written by `services/rag.py` and by nothing else. No form creates one, and no API route writes one.
+Only `services/rag.py` writes these rows. The web interface has no add form and no edit form. The REST endpoint is read-only.
 
 ## Fields
 
+The detail page of an embedding shows the bold labels below. The list shows **Indexed** for `indexed_at`. The list has no column for the document or its fingerprint.
+
 | Field | Description |
 | --- | --- |
-| Ticket | The closed ticket this represents. One row per ticket; deleting the ticket deletes it. |
-| Model | The embedding model that produced the vector. Protected, so tidying the registry cannot orphan the corpus. |
-| Dimensions | How wide the vector is. Recorded rather than assumed — it is the model's choice. |
-| Document | Exactly what was embedded. |
-| Document Fingerprint | A digest of that document. Re-closing a ticket nobody edited costs no model call. |
-| Indexed At | |
+| **Ticket** (`ticket`) | The closed ticket that this row represents. One row exists for each ticket. If you delete the ticket, the app deletes the row. |
+| **Model** (`model`) | The embedding model that made the vector. The registry refuses to delete a model that has a row, so the corpus keeps its model. |
+| **Dimensions** (`dimensions`) | The width of the vector. The app records it, because the model decides it. |
+| **Indexed At** (`indexed_at`) | The time when the app indexed the ticket. |
+| **Document Fingerprint** (`document_fingerprint`) | A digest of the document. If you close again a ticket that nobody edited, the app makes no model call. |
+| **Document** (`document`) | Exactly what the app embedded. The detail page shows it in a panel. |
 
-The vector itself is not shown, in the UI or the API. It is thousands of floats, it means nothing
-without the model that produced it, and a list endpoint returning it would be unkind to the client.
+The vector itself does not show in the UI or the API. It has thousands of numbers. It means nothing without the model that made it. A list endpoint that returned it would be hard for the client to use.
 
-## Why the document is stored
+## Why the app stores the document {#why-the-document-is-stored}
 
-A similarity score with no visible input is not something anybody can check. When two tickets match
-and the match looks wrong, the document is how you find out why — usually that one of them has a
-resolution reading "closed, no action" and the vector faithfully captured that.
+A similarity score with no visible input is not possible to check. When two tickets match and the match looks wrong, read the document. Often one ticket has the resolution "closed, no action", and the vector holds that text.
 
-## What is in the document, and what is not
+## What the document has {#what-is-in-the-document-and-what-is-not}
 
-**In:** the title, the event type, the severity, the description, the resolution, and comments
-written by people.
+**The document has** the title, the event type, the severity, the description, the resolution, and the comments that people wrote.
 
-**Not in: the raw event payload.** It is machine noise, it is the half written by whoever emits your
-events, and by volume it would dominate the vector — two unrelated tickets from one chatty device
-would look alike because their payloads do.
+**The document does not have the raw event payload.** The payload is machine data. Whoever emits your events writes half of it. Its volume would dominate the vector. Two unrelated tickets from one device that sends many events would look alike.
 
-**Not in: comments written by the AI.** The corpus should be what people concluded. Indexing an
-agent's own investigation notes means the app starts learning from itself: a guess gets indexed,
-retrieved as precedent, and read as though somebody had checked it.
+**The document does not have the comments that the AI wrote.** The corpus must hold what people concluded. If the app indexed the investigation notes of an agent, the app would use its own output as a source. The app would use a guess as a precedent, and a reader would think that a person checked it.
 
-## One model at a time
+## One model at a time {#one-model-at-a-time}
 
-A vector is only ever compared with vectors from the same model. Cosine distance between two
-different models' vectors is a number, and it is meaningless.
+The app compares a vector only with vectors from the same model. The cosine distance between vectors of two different models is a number with no meaning.
 
-The practical consequence is that **changing embedding model makes the panel go quiet** rather than
-go wrong. Every existing row belongs to the old model and is never compared with anything again.
-`nautobot-server indexclosedtickets --reindex` is how the corpus comes back.
+If you change the embedding model, the panel shows nothing. It does not show wrong results. Each row that exists belongs to the old model, and the app does not compare it again. Run `nautobot-server indexclosedtickets --reindex` to build the corpus again.
 
-## Who can read one
+## Who can read an embedding {#who-can-read-one}
 
-An embedding is readable by whoever may read **its ticket**, not merely by whoever holds
-`view_ticketembedding`. The document is a verbatim copy of the ticket, so gating it on its own
-permission would let an ObjectPermission constraint on Event Ticket quietly stop applying.
+A user can read an embedding if the user can read **its ticket**. The `view_ticketembedding` permission alone is not enough. The document is a copy of the ticket text. If the app used only the permission of the embedding, an ObjectPermission constraint on Event Ticket would not apply.
 
 ## Elsewhere
 
-`/api/plugins/event-tracker/ticket-embeddings/`, read-only and without the vector.
+The REST API serves embeddings at `/api/plugins/event-tracker/ticket-embeddings/`. It is read-only and has no vector.
 
-**Not on GraphQL, deliberately.** Nautobot restricts a GraphQL type on that type's own model
-permission, with no hook for a parent-object restriction — and excluding the document would not be
-enough on its own, since a filter predicate over an unrestricted queryset leaks by filtering
-without returning the field. Everything safe to read is on the REST API, where the restriction
-works.
+**TicketEmbedding is not on GraphQL, on purpose.** Nautobot restricts a GraphQL type with the permission of that type only. It has no hook for a restriction by the parent object. A filter on an unrestricted queryset also leaks data. The filter tests the field, but the result does not show the field. The REST API restricts the rows correctly. Use it.
