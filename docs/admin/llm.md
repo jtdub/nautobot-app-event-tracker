@@ -364,9 +364,10 @@ Read these points before you turn on triage:
 - **A dry run is free.** `--dry-run` does not use the model. Its output says
   `(triage skipped: dry run)`.
 
-To see the results of triage, open **Apps > Event Tracker > Ingestion Stats**. The page shows the
-counters `triaged`, `triage_attached`, and `triage_errors`. The **Drops by reason** panel shows
-triage drops under `llm_triage`.
+To see the results of triage, open **Apps > Event Tracker > Ingestion Stats**. The list shows the
+counters `triaged`, `triage_attached`, and `triage_errors`. To see the triage drops, click the
+**Window** of a row. The **Drops by reason** panel of the row shows them under `llm_triage`. The
+panel shows only when the row has drops.
 
 ## Monitor the cost {#watching-the-spend}
 
