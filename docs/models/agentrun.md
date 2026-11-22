@@ -27,7 +27,7 @@ The detail page of a run shows the bold labels below. The list shows **Started**
 | --- | --- |
 | **Started At** (`started_at`) | The time when the run started. |
 | **Ticket** (`ticket`) | The ticket that the run is about. If you delete the ticket, the app deletes its runs. |
-| **Status** (`status`) | The status of the run at its end. See the table above. |
+| **Status** (`status`) | The status of the run now. See the table above. |
 | **Started By** (`started_by`) | The person who started the run. This person is not the actor. The app records each decision of the model on the ticket as `ai`, with no user. |
 | **Iterations** (`iterations`) | The number of model calls that the run used. |
 | **Finished At** (`finished_at`) | The time when the run ended. The field is empty while the status is **Running**. |

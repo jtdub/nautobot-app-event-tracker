@@ -63,7 +63,7 @@ A denial ends the run. The agent does not answer a denial with a slightly differ
 An approval is not a token that stays valid. When the resumption run makes the call, `services/mcp.py` checks these items before it sends any network traffic:
 
 - The tool is enabled, on a server that is enabled.
-- The server uses the streamable HTTP transport.
+- The server uses the *Streamable HTTP* transport.
 - The call is still **Approved**, and it did not run before.
 - The fingerprint of the definition, the name and the endpoint of the tool is the same as the **Tool Fingerprint** of this call.
 
