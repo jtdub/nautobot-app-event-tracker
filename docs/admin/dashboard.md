@@ -7,7 +7,7 @@ or in a GraphQL query that you write by hand.
 The dashboard is at **Apps > Event Tracker > Analytics** (`/plugins/event-tracker/dashboard/`). It answers four
 questions:
 
-- **Is ingestion keeping up, and what does it drop?**
+- **Does the consumer read events as fast as they arrive, and what does it drop?**
 - **How many tickets are there, in what state, and how long do they take?**
 - **What does this cost, by model and by purpose?**
 - **How do people decide on agent tool calls?**
@@ -61,9 +61,9 @@ missing page. Restart Nautobot after you change `enabled`, because Nautobot buil
 ## Who sees what
 
 **Every number on the page covers only what the user can already read.** An aggregate can leak data even if it
-returns no record. Example: an ObjectPermission limits a user to the tickets of one tenant. The page shows this
-user a count of 4,812 open tickets. The user now knows the size of the estate that the permission hides. A
-severity pie shows the shape of it.
+returns no record. Example: an ObjectPermission limits a user to the tickets of one tenant. A count of all
+4,812 open tickets tells this user the size of the estate that the permission hides. A severity pie shows the shape
+of it.
 
 The page follows these rules:
 
@@ -102,7 +102,7 @@ the one query on the page that grows with the whole open backlog. For this reaso
 
 The money comes from `LLMUsageRecord.cost`. The help text of the field says that the unit is **USD**. The service
 layer computed the cost at call time, against the model registry as it was then. If you edit the registered price
-of a model, the cost of earlier calls does not change. The chart is accounting, not an estimate.
+of a model, the cost of earlier calls does not change. The chart shows the recorded cost, not an estimate.
 
 If you register providers with prices in different currencies, the sum has no meaning, and the app gives no
 warning. Register all prices in one currency.
@@ -114,7 +114,7 @@ window."** under its title. The rest of the page still draws.
 
 Treat this as a defect. Do not raise the setting. Try these steps in this order:
 
-1. **Use a shorter window.** The page is built for the default window of seven days.
+1. **Use a shorter window.** The default window of seven days gives the best speed.
 2. **Check that the indexes exist.** Migration `0011_analytics_indexes` adds three indexes on `EventTicket`:
 
     - `created` and `closed_at`, for the range scans of ticket flow.
@@ -129,8 +129,8 @@ Treat this as a defect. Do not raise the setting. Try these steps in this order:
 
 ## Measure the speed yourself {#measuring-it-yourself}
 
-The page is designed to draw in under two seconds against 100,000 tickets and 1,000,000 usage records. The test suite checks
-the number of queries, not the time. A clock check in CI fails for reasons that this code does not cause. To
+The design goal is a page that draws in under two seconds against 100,000 tickets and 1,000,000 usage
+records. The test suite checks the number of queries, not the time. A clock check in CI fails for reasons that this code does not cause. To
 measure the time on your own hardware, run this command:
 
 ```bash

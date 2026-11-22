@@ -13,14 +13,16 @@ the fix. The person on shift does not know about it.
 reads the panel and decides what a result is worth.
 
 The refusal is on purpose. An agent that knew the last fix would be a better agent. The corpus comes from tickets.
-Whoever can write a line to a topic that you consume also writes the payload of a ticket. A model already reads
-one ticket at a time. Indexing makes the reach larger. A document that steers one investigation can come back for
-every future ticket that looks like it. Neither you nor the model can see that this happened.
+Whoever can write a line to a topic that you consume also writes the payload of a ticket.
 
-A noisy source is enough. A person closes the ticket to clear the board, and the ticket enters the corpus.
+A model already reads one ticket at a time. When the app indexes a ticket, the ticket can reach more investigations.
+A document that steers one investigation can also steer each future ticket that looks like it. Neither you nor the
+model can see that this happened.
 
-The panel keeps a person in the loop. The person must read the panel. The test suite of the app checks this
-rule (R9).
+A noisy source is enough. A person closes the ticket to remove it from the list of open tickets, and the ticket
+enters the corpus.
+
+A person must read the panel before a result has an effect. The test suite of the app checks this rule (R9).
 
 ## What you need first {#before-you-start}
 
@@ -51,8 +53,9 @@ message names the command to run.
 Register the model like any other model, with **Kind** set to **Embedding**:
 
 - **AI Provider**: Use an existing provider. Embeddings and chat can share a provider.
-- **AI Model**: Enter the model name and set **Kind** to **Embedding**. Set **Input cost per million tokens**.
-  Leave **Output cost per million tokens** at zero, because an embedding has no output to price.
+- **AI Model**: Enter the model name. Set **Kind** to **Embedding**. Set **Input cost per million tokens**. You
+  can leave **Output cost per million tokens** empty. The app does not use it for an embedding, because an
+  embedding has no output tokens.
 
 The app checks **Kind** in both directions. If you point triage at an embedding model, the app refuses before it
 sends any network traffic. The app does not wait for a provider error about token limits.
@@ -92,7 +95,7 @@ least-different tickets in your database. Then everyone learns to ignore the pan
 closer together in embedding space than you expect. They share words, such as device names, "down", and "alarm",
 even when the problems are not related.
 
-The table shows distances that the app measured with `nomic-embed-text` and real tickets:
+The table shows distances from a test with `nomic-embed-text` and real tickets:
 
 | Query | Nearest match |
 | --- | --- |
@@ -101,15 +104,17 @@ The table shows distances that the app measured with `nomic-embed-text` and real
 | A billing query, against a corpus of network faults | 0.22 |
 | "The coffee machine in the London office is broken" | 0.23 |
 
-On this model, the useful band ends at about 0.15. A value of 0.6 would show the coffee machine ticket and call it
-very similar.
+On this model, the useful band ends at about 0.15. A value of 0.6 would show the coffee machine ticket as a
+match.
 
 **Your numbers can differ.** The distances depend on the embedding model. To find your numbers:
 
 1. Index a few closed tickets.
-2. Open a ticket that you know matches one of them. Open a ticket that you know matches none of them.
-3. Read the distances in the log of the run, or with `services.rag.similar_tickets`.
-4. Set the threshold between the two groups of distances.
+2. Set `max_distance` to `2` for the test. Restart Nautobot.
+3. Open a ticket that you know matches one of the closed tickets. Open a ticket that you know matches none of them.
+4. On each ticket page, read the number after the word in each **Similar Tickets** entry, for example
+   `(similar, 0.12)`.
+5. Set `max_distance` between the two groups of distances. Restart Nautobot.
 
 Prefer a low value. People ignore a panel that shows wrong matches far more often than a panel that shows few
 matches.
@@ -125,12 +130,13 @@ Create a **Job Hook**. Then the app indexes each ticket when it closes.
     4. Click **Update**.
 2. Go to **Jobs > Jobs > Job Hooks**.
 3. Click **Add Job Hook**.
-4. In **Content Type(s)**, select **Event Tracker | Event Ticket**.
-5. In **Job**, select **Index a Closed Event Ticket**.
-6. Select **Type update**.
-7. Click **Create**.
+4. In **Name**, enter a name, for example `Index closed tickets`.
+5. In **Content Type(s)**, select **Event Tracker | Event Ticket**.
+6. In **Job**, select **Index a Closed Event Ticket**.
+7. Select **Type update**.
+8. Click **Create**.
 
-Indexing never prevents a close. If the model endpoint is down, the ticket closes and the app logs the failure.
+The index operation never prevents a close. If the model endpoint is down, the ticket closes and the app logs the failure.
 Index the ticket later with the backfill below.
 
 ## Backfill the corpus {#backfilling}
@@ -144,8 +150,8 @@ nautobot-server indexclosedtickets --reindex  # everything, again
 ```
 
 Use `--reindex` after you change the embedding model. Every existing row belongs to the old model. The app never
-compares these rows with the new model, so the panel shows nothing until the corpus is rebuilt. This is the safe
-result, because the panel shows nothing instead of wrong matches. It is also the reason that the app records the
+compares these rows with the new model, so the panel shows no match until you index the corpus again. This is the safe
+result, because the panel shows no match instead of wrong matches. It is also the reason that the app records the
 model on every row.
 
 ## Read the panel {#reading-the-panel}
@@ -162,9 +168,12 @@ If the panel does not show on an open ticket, one of these is true:
 
 - No closed ticket is within `max_distance`.
 - Retrieval is off.
+- The `rag` settings are not valid.
+- The app cannot find the embedding model, or **Kind** of the model is wrong.
 - The app could not embed the ticket.
+- The user cannot view the closed ticket that matches.
 
-## Where to look when the panel shows nothing {#where-to-look-when-it-is-quiet}
+## Where to look when the panel does not show {#where-to-look-when-it-is-quiet}
 
 - **AI Tools > Event Tracker AI > Ticket Embeddings**: the corpus, and the model of each row.
 - **AI Tools > Event Tracker AI > LLM Usage**: Filter **Purpose** on **Embedding** to see the calls and their cost.
@@ -173,7 +182,7 @@ If the panel does not show on an open ticket, one of these is true:
 ## When the corpus gets large
 
 The vector column has no index. Every similarity query is a sequential scan. This is the right choice while the
-corpus is small. At some size, it stops being the right choice. This app has not reached that size.
+corpus is small. At some size, it is not the right choice. The corpus of this app is not that large yet.
 
 Measure before you change it. The query of the panel is one `ORDER BY embedding <=> %s LIMIT n` for each render.
 Time it against your own corpus:
@@ -191,7 +200,7 @@ things before you add one:
 - An HNSW index needs a fixed number of dimensions. Build it only after you choose an embedding model and index
   everything again with that model.
 - An HNSW index is approximate. It can miss a real neighbour. For a panel that suggests and does not decide, this
-  is a fair trade, but it is a trade.
+  loss is acceptable.
 
 ## Further reading
 
