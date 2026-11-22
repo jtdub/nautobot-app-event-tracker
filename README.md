@@ -4,7 +4,7 @@
   <img src="https://raw.githubusercontent.com/jtdub/nautobot-app-event-tracker/develop/docs/images/icon-nautobot-event-tracker.png" class="logo" height="200px">
   <br>
   <a href="https://github.com/jtdub/nautobot-app-event-tracker/actions"><img src="https://github.com/jtdub/nautobot-app-event-tracker/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="https://nautobot-app-event-tracker.readthedocs.io/en/latest/"><img src="https://readthedocs.org/projects/nautobot-app-event-tracker/badge/"></a>
+  <a href="https://nautobot-app-event-tracker.readthedocs.io/en/latest/"><img alt="Documentation status" src="https://readthedocs.org/projects/nautobot-app-event-tracker/badge/"></a>
   <a href="https://pypi.org/project/nautobot-event-tracker/"><img src="https://img.shields.io/pypi/v/nautobot-event-tracker"></a>
   <a href="https://pypi.org/project/nautobot-event-tracker/"><img src="https://img.shields.io/pypi/dm/nautobot-event-tracker"></a>
   <br>

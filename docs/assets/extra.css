@@ -170,3 +170,8 @@ a.autorefs-external:hover::after {
 div.md-typeset__table>table>tbody>tr>td>code {
     white-space: nowrap;
 }
+
+[data-md-color-scheme="default"] a.glightbox[href$="#only-dark"],
+[data-md-color-scheme="slate"] a.glightbox[href$="#only-light"] {
+    display: none;
+}
