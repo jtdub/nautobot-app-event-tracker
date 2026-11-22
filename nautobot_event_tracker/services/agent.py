@@ -501,7 +501,7 @@ def _resumable_run(ticket):
     return existing
 
 
-def _claim_run(*, ticket, user, job_result, settings, limit, time_limit):
+def _claim_run(*, ticket, user, job_result, settings, limit, time_limit):  # pylint: disable=too-many-arguments
     """Decide whether this launch starts a run or resumes one, and open it - in one step.
 
     A9 is a check followed by an act, and the two were separate: two Jobs launched together both

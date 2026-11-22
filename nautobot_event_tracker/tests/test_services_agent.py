@@ -195,7 +195,7 @@ class TestTheDeadRunCheck(TestCase):
                 self.assertTrue(self.is_dead_after(limit, 961))
 
 
-class TestStartingARun(AgentTestCase):
+class TestStartingARun(AgentTestCase):  # pylint: disable=too-many-public-methods
     """What is refused before any run row exists."""
 
     def test_a_disabled_agent_is_refused(self):
