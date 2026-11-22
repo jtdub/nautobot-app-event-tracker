@@ -20,7 +20,7 @@ The consumer process (`nautobot-server eventconsumer`) subscribes to one or more
 | **Credential** | The secrets group of the named `ExternalIntegration`, read when the connection starts |
 | **Configured by** | The `ingestion` block. See [Ingestion](../admin/ingestion.md) |
 
-The consumer is the only part of the app that connects to a broker. A web request never touches it.
+The consumer is the only part of the app that connects to a broker. A web request never connects to the broker.
 
 ### The LLM provider
 
@@ -29,19 +29,19 @@ Event triage is optional. When it is on, the consumer asks a language model what
 | | |
 | --- | --- |
 | **Direction** | Outbound HTTPS, one request for each triaged event |
-| **Protocol** | The protocol that litellm uses with the configured provider. OpenAI-compatible endpoints are fully supported |
+| **Protocol** | The protocol that litellm uses with the configured provider. The app fully supports OpenAI-compatible endpoints |
 | **Endpoint** | The `ExternalIntegration.remote_url` of the AI Provider. No model parameter can change it. To change it, you need `nautobot_ai_models.change_aiprovider`, or the right to edit that integration |
 | **Credential** | The secrets group of that integration, read when the call starts. The app uses secret type `token`, or `secret` when no token exists |
-| **TLS** | The app does not apply SSL Verification and CA File Path of the integration to the call. See [Configuring LLM Providers](../admin/llm.md) |
+| **TLS** | The app does not apply **Verify SSL** and **CA file path** of the integration to the call. See [Configuring LLM Providers](../admin/llm.md) |
 | **Headers and timeout** | The app applies Headers and Timeout of the integration to the call. It does not apply Extra Config |
 | **What is sent** | A fixed system prompt. The event payload, cut to `max_context_chars`. The titles and severities of up to `attach_candidates` open tickets. A Headers template that uses `session_id` also sends the consumer name. By default, this name holds the host name and the process number |
 | **What is recorded** | One `LLMUsageRecord` for each call, also for a failed call. It holds the token counts, the cost and the latency |
 | **Configured by** | The `llm` block and `ingestion.triage`. See [Configuring LLM Providers](../admin/llm.md) |
 
-Read these four points before you enable triage:
+Read these four points before you turn on triage:
 
-- **The payload leaves your network.** To stop this, set `triage: False` on each topic whose payloads must stay. You can also point the provider at an endpoint that you host. Endpoints on your own premises are fully supported.
-- **The off switch is a database flag.** Clear **Enabled** on the provider or on the model. Every call then stops, also in a consumer that already runs. The stop takes effect within `triage.model_cache_seconds`.
+- **The payload leaves your network.** To stop this, set `triage: False` on each topic whose payloads must stay in your network. You can also point the provider at an endpoint that you host. The app fully supports an endpoint on your own premises.
+- **A database flag turns triage off.** Clear **Enabled** on the provider or on the model. Every call then stops, also in a consumer that already runs. The stop takes effect within `triage.model_cache_seconds`.
 - **The consumer name can leave your network.** A Headers template that uses `session_id` sends the name to the provider. Set `ingestion.consumer_name` to a text that names nothing. Give each consumer a different name. See [Ingestion](../admin/ingestion.md).
 - **A failure is safe.** A timeout, a provider error or an unusable answer makes the app accept the event. The app counts it. The consumer does not exit when a model fails.
 
@@ -55,7 +55,7 @@ An operator can register an MCP server and enable tools on it. The [agent](../ad
 | **Protocol** | MCP over **streamable HTTP** only. The app refuses stdio. No configuration value can start a local process |
 | **Endpoint** | The `ExternalIntegration.remote_url` of the server |
 | **Credential** | The secrets group of that integration. The app sends it as `Authorization: Bearer …`, unless the headers of the integration already have an Authorization |
-| **TLS** | The app applies SSL Verification, CA File Path, Headers and Timeout of the integration |
+| **TLS** | The app applies **Verify SSL**, **CA file path**, Headers and Timeout of the integration |
 | **What is sent** | On discovery, only the protocol handshake. On a tool call, the arguments that a model asked for. For this reason, a writable tool needs a human to approve the exact call |
 | **What is recorded** | Each tool that the app can call is a database row. An operator enabled it by hand |
 | **Configured by** | The MCP Server and MCP Tool records. See [Registering MCP Servers](../admin/mcp.md) |
@@ -109,9 +109,9 @@ curl -X POST \
      https://nautobot.example.com/api/plugins/event-tracker/tickets/<id>/transition/
 ```
 
-The app refuses a transition that the workflow graph does not permit. The message names the statuses that the ticket can reach from its current status.
+The app refuses a transition that the workflow graph does not allow. The message names the statuses that the ticket can reach from its current status.
 
-To approve a proposed tool call, use the same form. The approval covers exactly what the agent proposed. You cannot send different arguments with an approval:
+To approve a proposed tool call, send the same kind of request. The approval covers exactly what the agent proposed. You cannot send different arguments with an approval:
 
 ```bash
 curl -X POST \
