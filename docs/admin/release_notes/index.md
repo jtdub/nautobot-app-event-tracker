@@ -1,3 +1,3 @@
 # Release Notes
 
-All the published release notes can be found via the navigation menu. All patch releases are included in the same minor release (e.g. `v1.2`) document.
+The navigation menu has all the published release notes. Each minor release (for example `v1.2`) has one document. This document also holds the patch releases of that minor release.

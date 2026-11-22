@@ -1,65 +1,69 @@
 # Installing the App in Nautobot
 
-Here you will find detailed instructions on how to **install** and **configure** the App within your Nautobot environment.
+Use these instructions to **install** and **configure** the app in your Nautobot environment.
 
 ## Prerequisites
 
-- The app is compatible with Nautobot 3.2.0 and higher.
-- It requires Python 3.11 through 3.14.
+- The app works with Nautobot 3.2.0 and later.
+- The app needs Python 3.11 through 3.14.
 - **Databases supported: PostgreSQL only.**
-- It requires the [AI Models app](https://pypi.org/project/nautobot-ai-models/), version 1.1 or
-  higher, which `pip` installs with it.
+- The app needs the [AI Models app](https://pypi.org/project/nautobot-ai-models/), version 1.1 or
+  later. `pip` installs it with the app.
 
 !!! warning "PostgreSQL is required"
-    Unlike most Nautobot apps, Event Tracker does not support MySQL. Later phases index closed
-    tickets as vector embeddings using the `pgvector` extension, which has no MySQL equivalent
-    worth maintaining a second code path for. A MySQL-backed Nautobot deployment cannot install
-    this app. See [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md) for the full
-    reasoning.
+    Event Tracker does not support MySQL, unlike most Nautobot apps. When retrieval is on, the app
+    indexes closed tickets as vector embeddings with the `pgvector` extension. MySQL has no equivalent that is
+    worth a second code path. A Nautobot deployment on MySQL cannot install this app. For the
+    reasons, see [ADR 0003](../decisions/0003-postgresql-with-pgvector-only.md).
 
-    `pgvector` itself is **not** required by this release and is not checked for. It becomes a
-    requirement when retrieval features land.
+    The `pgvector` extension is **required** in the database. The first migration that needs it
+    creates it when it is not there. On a managed PostgreSQL, the database user can fail to create
+    it. In that case, ask a superuser to run `CREATE EXTENSION vector;` before you run the
+    migrations. For the steps, see [Retrieval over Closed Tickets](rag.md).
 
 !!! warning "The AI Models app is a hard dependency"
-    `nautobot-ai-models` owns the AI provider, AI model, MCP server and MCP tool registries this
-    app reads, and this app declares foreign keys into them
-    ([ADR 0010](../decisions/0010-ai-registry-lives-in-nautobot-ai-models.md)). It is not optional
-    and is not behind an extra: a Nautobot that enables this app without also enabling
-    `nautobot_ai_models` will not start.
+    `nautobot-ai-models` owns the AI provider, AI model, MCP server and MCP tool registries. The
+    app reads these registries, and its models hold foreign keys into them
+    ([ADR 0010](../decisions/0010-ai-registry-lives-in-nautobot-ai-models.md)). The dependency is
+    not optional and is not behind an extra. A Nautobot that turns on this app without
+    `nautobot_ai_models` does not start.
 
-    `pip` installs it automatically. Enabling it in `PLUGINS` is a manual step, shown below.
+    `pip` installs the package automatically. You add it to `PLUGINS` yourself, as the install
+    steps below show.
 
 !!! note
-    Please check the [dedicated page](compatibility_matrix.md) for a full compatibility matrix and the deprecation policy.
+    For a full compatibility matrix and the deprecation policy, see the
+    [dedicated page](compatibility_matrix.md).
 
 ### Access Requirements
 
-Nothing in this app reaches outside Nautobot until you configure it to. When you do, every
-endpoint and every credential comes from a Nautobot **External Integration** and its secrets group,
-named by a registry object in the AI Models app — never from `PLUGINS_CONFIG`. See
-[Configuring LLM Providers](llm.md) and [Registering MCP Servers](mcp.md).
+The app sends nothing outside Nautobot until you configure it to. After you configure it, each
+endpoint and each credential comes from a Nautobot **External Integration** and its secrets group.
+A registry object in the AI Models app names the External Integration. No endpoint and no
+credential comes from `PLUGINS_CONFIG`. See [Configuring LLM Providers](llm.md) and
+[Registering MCP Servers](mcp.md).
 
 ## Install Guide
 
 !!! note
-    Apps can be installed from the [Python Package Index](https://pypi.org/) or locally. See the [Nautobot documentation](https://docs.nautobot.com/projects/core/en/stable/user-guide/administration/installation/app-install/) for more details. The pip package name for this app is [`nautobot-event-tracker`](https://pypi.org/project/nautobot-event-tracker/).
+    You can install apps from the [Python Package Index](https://pypi.org/) or from a local source. For more details, see the [Nautobot documentation](https://docs.nautobot.com/projects/core/en/stable/user-guide/administration/installation/app-install/). The pip package name of this app is [`nautobot-event-tracker`](https://pypi.org/project/nautobot-event-tracker/).
 
-The app is available as a Python package via PyPI and can be installed with `pip`:
+The app is a Python package on PyPI. Install it with `pip`:
 
 ```shell
 pip install nautobot-event-tracker
 ```
 
-To ensure Event Tracker is automatically re-installed during future upgrades, create a file named `local_requirements.txt` (if not already existing) in the Nautobot root directory (alongside `requirements.txt`) and list the `nautobot-event-tracker` package:
+To install the app again at each future upgrade, add it to `local_requirements.txt`. This file is in the Nautobot root directory, next to `requirements.txt`. Make the file if it does not exist. Then list the `nautobot-event-tracker` package:
 
 ```shell
 echo nautobot-event-tracker >> local_requirements.txt
 ```
 
-Once installed, the app needs to be enabled in your Nautobot configuration. The following block of code below shows the additional configuration required to be added to your `nautobot_config.py` file:
+After you install the app, turn it on in your Nautobot configuration. Make these changes in your `nautobot_config.py` file:
 
-- Append both `"nautobot_ai_models"` and `"nautobot_event_tracker"` to the `PLUGINS` list.
-- Append the `"nautobot_event_tracker"` dictionary to the `PLUGINS_CONFIG` dictionary and override any defaults.
+- Add both `"nautobot_ai_models"` and `"nautobot_event_tracker"` to the `PLUGINS` list.
+- Add the `"nautobot_event_tracker"` dictionary to the `PLUGINS_CONFIG` dictionary. Override a default if you need to.
 
 ```python
 # In your nautobot_config.py
@@ -93,19 +97,20 @@ PLUGINS_CONFIG = {
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `attachable_object_types` | The seven DCIM/IPAM/Circuits models above | `app_label.model` strings naming the object types that may be attached to a ticket. Attaching anything else is refused, and the object picker only offers types on this list. |
-| `llm` | `{}` | Settings for the LLM service layer — currently only `usage_retention_days`. Providers, models and credentials are registry objects in the AI Models app, not settings; see [Configuring LLM Providers](llm.md). |
+| `attachable_object_types` | The seven DCIM, IPAM and Circuits models above | `app_label.model` strings. They name the object types that you can attach to a ticket. The app refuses any other type, and the object picker shows only the types on this list. |
+| `llm` | `{}` | Settings for the LLM service layer. The only key is `usage_retention_days`. Providers, models and credentials are registry objects in the AI Models app, not settings. See [Configuring LLM Providers](llm.md). |
 
-Widening the list is a deliberate act: it decides what a ticket — and, in later phases, an AI
-triage step — is allowed to point at. Adding `extras.secret` would be a poor idea.
+A wider list is a deliberate choice. The list decides which objects a ticket can point at. It also
+decides which object types an event resolve rule can name. Do not add `extras.secret`.
 
-Once the Nautobot configuration is updated, run the Post Upgrade command (`nautobot-server post_upgrade`) to run migrations and clear any cache:
+After you update the Nautobot configuration, run the Post Upgrade command. The command runs the
+migrations and clears the cache:
 
 ```shell
 nautobot-server post_upgrade
 ```
 
-Then restart (if necessary) the Nautobot services which may include:
+Then restart the Nautobot services that need it. These can include:
 
 - Nautobot
 - Nautobot Workers
@@ -117,47 +122,49 @@ sudo systemctl restart nautobot nautobot-worker nautobot-scheduler
 
 ## Permissions
 
-Alongside Django's usual four permissions per model, the app adds one:
+The app adds one permission to the four that Django makes for each model:
 
 | Permission | Codename | Grants |
 | --- | --- | --- |
-| Can transition event ticket status | `nautobot_event_tracker.transition_eventticket` | Moving a ticket through the workflow |
+| Can transition event ticket status | `nautobot_event_tracker.transition_eventticket` | The right to transition a ticket through the workflow |
 
-It is deliberately separate from `change_eventticket`, and neither implies the other. That lets you
-give a first-line team the ability to move tickets through the workflow without the ability to
-rewrite ticket content — or the reverse, for a team that curates ticket detail but does not own
-the queue.
+This permission is separate from `change_eventticket`. Neither permission implies the other. You
+can allow a first-line team to transition tickets without the right to rewrite ticket content. You
+can do the reverse for a team that curates ticket detail but does not own the queue.
 
-A typical operator role needs `view` and `add` on all three models, `change` on Event Ticket, and
-`transition_eventticket`.
+A typical operator role needs these permissions:
 
-Two permissions are easy to forget because their absence degrades a page rather than blocking it:
+- `view` and `add` on **Event Type**, **Event Ticket** and **Ticket Update**.
+- `change` on **Event Ticket**.
+- `transition_eventticket`.
 
-- **`view_ticketupdate`** — without it the ticket page renders, but the update trail panel is
-  hidden. A user who can see tickets but not their history is usually not what you meant.
-- **`view_eventtype`** — without it the event type picker on the ticket form has nothing to offer,
-  so tickets cannot be created.
+Two permissions are easy to forget. If one of these permissions is not there, a page shows less and does not block you:
+
+- **`view_ticketupdate`**: without it, the ticket page opens, but it does not show the
+  **Update Trail** panel. A user who can see tickets but not their update trail is usually not what you intend.
+- **`view_eventtype`**: without it, the event type picker on the ticket form has no choices, so
+  nobody can open a ticket.
 
 ### The AI actor, and why triage has no account
 
-[Event triage](llm.md) runs inside the consumer process, which already has database access, so it
-needs **no Nautobot user, no API token, and no permissions** — there is nothing to set up. Its
-actions are attributed by kind, not by account: every update it writes carries source *AI* and no
-user, and the domain rules *require* that combination, so triage could not act through an account
-even if you made one.
+[Event triage](llm.md) runs inside the consumer process. That process already has database access.
+Triage needs **no Nautobot user, no API token, and no permissions**, so you set up nothing. The app
+attributes each action of triage by kind, not by account. Each update that triage writes has source
+*AI* and no user. The domain rules require this combination, so triage cannot act through an
+account, even if you make one.
 
-Two guarantees hold regardless of configuration, because they are enforced in the service layer
-rather than by permissions:
+Two guarantees hold in each configuration. The service layer enforces them, and permissions do not:
 
-- An AI actor cannot modify a resolved or closed ticket — not its status, not its comments, not
-  its attachments. Permissions cannot grant this.
-- An AI action is never recorded against a person's username. The actor kind is stored on every
-  update, and AI entries carry no user.
+- An AI actor cannot change a resolved or closed ticket. This covers its status, its comments and
+  its attachments. No permission can grant this.
+- The app never records an AI action against the user name of a person. The app stores the actor
+  kind on each update, and AI entries have no user.
 
-!!! note "Forward-looking — agents in a later phase"
-    A service account becomes relevant when AI **agents** arrive (a later phase) and reach
-    Nautobot over its REST API or MCP tools, where a token must authenticate the *transport* even
-    though the recorded actor stays AI-with-no-user. Plan that account with `view`, `add`,
-    `change` and `transition_eventticket` on Event Ticket, `view` on Event Type and Ticket
-    Update — and explicitly no `delete` on anything: nothing in the AI path ever needs to remove
-    a record. Restrict its token as you would any service credential.
+!!! note "The agent needs no account"
+    The [agent](agents.md) runs as a Nautobot Job. Like triage, it writes to a ticket through the
+    service layer, as source *AI* with no user. It needs no service account and no permissions
+    on Event Ticket. The person who starts a run needs the `run` permission on the Job.
+
+    The agent uses no Nautobot token. It uses the credential of the AI provider and the credential of each
+    MCP server, each in its secrets group. Give the MCP server credential only the rights that its
+    tools need. See [Registering MCP Servers](mcp.md).
