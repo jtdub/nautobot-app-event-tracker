@@ -641,6 +641,31 @@ class AgentRunViewTest(
         self.assertIn("TRANSCRIPT", content)
         self.assertIn("the answer", content)
 
+    def test_the_detail_page_shows_the_hard_time_limit(self):
+        """AC-5 - an operator who raised the limit reads the value that decides when the ticket is free."""
+        self.add_permissions("nautobot_event_tracker.view_agentrun")
+        run = fixtures.create_agentrun(time_limit_seconds=1234.0)
+
+        response = self.client.get(run.get_absolute_url())
+
+        self.assertHttpStatus(response, 200)
+        content = response.content.decode()
+        self.assertIn("Hard Time Limit (seconds)", content)
+        self.assertIn("1234.0", content)
+
+    def test_the_detail_page_of_a_run_with_no_stored_limit_shows_no_value(self):
+        """AC-5 - a run from before the field has an empty value, and the page does not fail."""
+        self.add_permissions("nautobot_event_tracker.view_agentrun")
+        run = fixtures.create_agentrun()
+
+        response = self.client.get(run.get_absolute_url())
+
+        self.assertHttpStatus(response, 200)
+        content = response.content.decode()
+        self.assertIn("Hard Time Limit (seconds)", content)
+        row = content.split("Hard Time Limit (seconds)", 1)[1].split("</tr>", 1)[0]
+        self.assertNotIn("None", row)
+
 
 class AgentToolCallViewTest(
     ViewTestCases.GetObjectViewTestCase,

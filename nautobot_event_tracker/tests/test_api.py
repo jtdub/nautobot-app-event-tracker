@@ -523,6 +523,18 @@ class AgentRunAPITest(APITestCase):
 
         self.assertIn("transcript", response.data)
 
+    def test_the_hard_time_limit_is_exposed(self):
+        """AC-5 - the stored limit and its empty value are both readable."""
+        self.add_permissions("nautobot_event_tracker.view_agentrun")
+        limited = fixtures.create_agentrun(time_limit_seconds=1234.0)
+        limited_url = reverse("plugins-api:nautobot_event_tracker-api:agentrun-detail", args=[limited.pk])
+
+        limited_response = self.client.get(limited_url, **self.header)
+        unlimited_response = self.client.get(self.detail_url, **self.header)
+
+        self.assertEqual(limited_response.data["time_limit_seconds"], 1234.0)
+        self.assertIsNone(unlimited_response.data["time_limit_seconds"])
+
     def test_writes_are_rejected(self):
         """405 whatever the permissions say, as for TicketUpdate and the usage records."""
         self.add_permissions(

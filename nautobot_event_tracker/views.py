@@ -905,7 +905,7 @@ class AgentRunUIViewSet(RecordUIViewSet):  # pylint: disable=too-many-ancestors,
             ObjectFieldsPanel(
                 weight=100,
                 section=SectionChoices.LEFT_HALF,
-                fields=(*tables.AGENT_RUN_FIELDS, "job_result", "parent", "error"),
+                fields=(*tables.AGENT_RUN_FIELDS, "job_result", "parent", "time_limit_seconds", "error"),
             ),
             ObjectTextPanel(
                 weight=200,

@@ -220,6 +220,7 @@ class AgentRunSerializer(BaseModelSerializer):
             "transcript",
             "iterations",
             "error",
+            "time_limit_seconds",
             "started_at",
             "finished_at",
         ]
