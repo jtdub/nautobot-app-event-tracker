@@ -1,21 +1,21 @@
 # Using the App
 
-Event Tracker turns network events into tickets that carry their own history. This page walks through the ticket lifecycle: the states a ticket can be in, who may move it between them, and why some things that look like ordinary fields are not editable.
+Event Tracker turns network events into tickets. Each ticket keeps its own history. This page describes the ticket lifecycle: the states of a ticket, the transitions between them, and the fields that you cannot edit.
 
 ## The ticket lifecycle
 
-A ticket is always in exactly one of six states.
+A ticket is always in one of six states.
 
 | State | Meaning |
 | --- | --- |
-| **New** | Opened, nobody has looked at it yet. |
-| **Triaged** | Assessed as real and worth working. |
-| **In Progress** | Somebody is actively working it. |
-| **Suppressed** | Judged to be noise. Kept on the record, not worked. |
-| **Resolved** | Fixed, pending confirmation. |
-| **Closed** | Finished. Terminal. |
+| **New** | The ticket is open. Nobody looked at it yet. |
+| **Triaged** | The event is real. It needs work. |
+| **In Progress** | Somebody works on the ticket now. |
+| **Suppressed** | The event is noise. The ticket stays on the record. Nobody works on it. |
+| **Resolved** | The problem is fixed. Nobody confirmed the fix yet. |
+| **Closed** | The work is finished. This state is final. |
 
-Not every move between them is allowed:
+The workflow does not allow all transitions between the states:
 
 ```mermaid
 stateDiagram-v2
@@ -37,35 +37,35 @@ stateDiagram-v2
     closed --> [*]
 ```
 
-Three things follow from this diagram, and they are worth knowing before you start:
+Read these three rules before you start:
 
-**Closed is final.** Nothing leaves it. If a ticket was closed by mistake, open a new one — you cannot reopen it. This is the price of a simple, dependable rule about what AI actors may touch, and it is a deliberate trade.
+**Closed is final.** No transition leaves it. You cannot reopen a closed ticket. If you closed a ticket by mistake, open a new ticket. This rule keeps the limits on AI actors simple.
 
-**Resolved is not final.** A resolved ticket can go back to In Progress if the fix did not hold. Reopening clears the resolution and the resolved timestamp, so the ticket reads as genuinely open again rather than carrying a stale answer.
+**Resolved is not final.** A resolved ticket can go back to In Progress when the fix did not hold. The transition clears the resolution and the resolved time. The ticket then shows no old answer.
 
-**You cannot skip straight from New to Resolved.** A ticket has to be triaged or worked first. If an event turns out to be nothing, Suppress it or Close it rather than resolving it.
+**New cannot go directly to Resolved.** Triage the ticket or work on it first. If the event is not a problem, transition the ticket to Suppressed or Closed.
 
-## Moving a ticket
+## Transition a ticket {#moving-a-ticket}
 
-Use the **Transition** menu on the ticket page. It only offers the moves that are legal from the ticket's current state — if you cannot see the button you want, that move is not permitted from where the ticket is now.
+Use the **Transition** menu on the ticket page. The menu shows only the transitions that the workflow allows from the current state. If a transition is not in the menu, the workflow does not allow it now. A user without the transition permission sees no transition in the menu.
 
-Resolving a ticket requires a resolution. The form will not let you through without one, because a resolved ticket with no explanation is not much use to whoever reads it next month.
+You must give a resolution when you transition a ticket to Resolved. The form does not accept the transition without a resolution. The resolution tells the next reader how the problem ended.
 
 ### Why Status is not on the edit form
 
-Status is missing from the ticket edit form, and a REST `PATCH` that tries to set it is rejected with an error rather than quietly ignored. This is intentional.
+The ticket edit form has no Status field. A REST `PATCH` that sets the status fails with an error. The app does not ignore it. This is intentional.
 
-Every status change has to leave an entry in the trail, has to follow the diagram above, and — once event triage arrives — has to be blocked for AI actors on finished tickets. Those guarantees only hold if there is exactly one way to change a status. So there is one: the transition control, and the API endpoint behind it.
+Each transition must follow the diagram. Each transition must add an entry to the update trail. The app must also stop an AI actor when it tries to change a finished ticket. The app can give these guarantees only when each transition goes through one place. That place is the transition. You use the **Transition** menu or the REST transition action.
 
-The same applies to Resolved At, Closed At, Resolution and Event Count. They are set for you as a side effect of transitions.
+The same rule applies to Resolved At, Closed At, Resolution and Event Count. The app sets these fields when a ticket transitions.
 
-Severity and assignee work the other way round: you edit them on the ticket as you would any other field, and the app records the change in the trail for you. Whether the edit comes from the form or from a REST `PATCH`, the entry says who changed it and what it was before.
+You can edit severity and assignee on the ticket like other fields. The app adds an entry to the update trail for each change. The entry shows who made the change and the old value. This is true for the edit form and for a REST `PATCH`.
 
-Neither appears in the UI's bulk edit form. Nautobot applies a bulk edit by writing to each object directly, with nowhere for the app to record what changed, so a bulk severity change would be the one edit that left no trace. To change either across many tickets at once, use the REST API's bulk `PATCH`, which does record every one.
+The bulk edit form of the web interface has no severity field and no assignee field. Nautobot saves a bulk edit directly on each object. The app cannot add an entry to the update trail in that case. To change severity or assignee on many tickets, use the bulk `PATCH` of the REST API. The app adds an entry for each ticket.
 
 ### Permissions
 
-Transitioning needs the **Can transition event ticket status** permission (`transition_eventticket`), which is separate from the ordinary change permission. That separation is useful: you can let a first-line team move tickets through the workflow without letting them rewrite ticket content.
+To transition a ticket, a user needs the **Can transition event ticket status** permission (`transition_eventticket`). This permission is separate from the ordinary change permission. Use this to let a first-line team transition tickets without a right to change ticket content.
 
 ## Comments and the update trail
 
@@ -74,52 +74,72 @@ The **Update Trail** panel of a ticket page lists each change to the ticket.
 ![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_light.png#only-light)
 ![The Update Trail panel of a ticket page, with one row for each change to the ticket](../media/ss_ticket_detail_dark.png#only-dark)
 
-Every ticket carries a complete history at the bottom of the page: when it was opened, every comment, every status change, every assignment, every attachment.
+The update trail is the complete history of the ticket. It shows the time when the ticket opened. It also shows each comment, transition and assignment. It shows each **Object Attached** entry and each **Object Detached** entry.
 
-**The trail is append-only.** Entries cannot be edited or deleted, by anyone, through any route. If something in it is wrong, add a comment saying so. Nothing that happened gets erased.
+**Nobody can edit or delete an entry.** No route of the app can change or delete an entry. If an entry is wrong, add a comment that says so. The app never erases an event.
 
-Entries record *who* acted and *what kind* of actor they were — a person, an AI, or automation. AI and automation entries never carry a username, so an automated action can never be made to look like a person took it.
+Each entry records who acted and what kind of actor it was: a person, an AI, or automation. The entries of AI and automation never have a username. An automated action cannot look like an action of a person.
 
-## Attaching network objects
+To add a comment, use the REST API action `tickets/<id>/comment/`. The web interface has no comment button. The **Note** field of the transition form adds a note to the entry of the transition.
 
-Tickets point at the real thing in Nautobot rather than describing it. Use **Attach Object** on the ticket page to link a device, interface, IP address, prefix, cable, circuit or location. You are asked for the kind of object first, then for the object itself through the usual type-ahead picker. Attached objects appear on the ticket grouped by type, each one a link, each with a control to detach it again.
+## Attach network objects {#attaching-network-objects}
 
-Detaching an object does not erase the fact that it was attached — you will still see both events in the trail. That is often the useful part: knowing an interface was implicated at 03:14 and ruled out at 04:02 tells you more than a ticket that simply never mentions it.
+A ticket points to the real object in Nautobot. It does not describe the object. Use **Attach Object** on the ticket page to link one of these objects:
 
-Which object types can be attached is configurable; see [Install and Configure](../admin/install.md).
+- device
+- interface
+- IP address
+- prefix
+- cable
+- circuit
+- location
+
+First, choose the kind of object. Then choose the object in the type-ahead picker. The ticket page shows the attached objects in groups by type. Each object is a link. While the ticket is open, each object has a control to detach it.
+
+The detach control removes the object from the ticket, but the app keeps the **Object Attached** entry. The update trail shows both entries. This is useful. For example, the trail can show an **Object Attached** entry for an interface at 03:14 and an **Object Detached** entry for it at 04:02.
+
+An administrator sets which object types you can attach. See [Install and Configure](../admin/install.md).
 
 ## Where tickets come from
 
-A ticket is opened by a person, by a script through the REST API, or by the event consumer — a
-process that reads network events from a broker and opens tickets for the ones worth working. The
-**Source** field on a ticket says which, and every entry in the trail says the same for itself.
-Events that arrive automatically are recorded as **System**, never as a person.
+These sources open a ticket:
 
-An automatically opened ticket carries the raw event in its payload, so whoever picks it up can see
-exactly what the device said. Which events become tickets, and which are discarded as noise, is
-configured by an administrator; see [Running the Event Consumer](../admin/ingestion.md).
+- A person.
+- A script that uses the REST API.
+- The event consumer. This process reads network events from a broker. It opens tickets for the events that need work.
 
-Some events are opened straight into **Suppressed**. That is a rule saying "this is known noise,
-keep it on the record but do not work it" — a flapping link on a device somebody is already dealing
-with, for instance. The trail says which rule did it. Once a ticket exists, those rules leave it
-alone: if you triage a suppressed ticket and start work, a later matching event will not put it
-back.
+The **Source** field of a ticket shows which source opened it. Each entry of the update trail shows the source of that entry. The app records an event that arrives automatically as **System**. It never records such an event as a person.
 
-**Apps → Event Tracker → Ingestion Stats** shows what the consumer has been doing lately: how many
-events arrived, how many became tickets, and how many were discarded by which rule. It is the page
-to look at when you expected a ticket and did not get one.
+An automatic ticket holds the raw event in its payload. You can see what the device sent. An administrator sets which events become tickets and which events the app discards as noise. See [Running the Event Consumer](../admin/ingestion.md).
+
+Some events open directly in **Suppressed**. A rule does this for events that are known noise. The ticket stays on the record, and nobody works on it. For example, a link goes down and up again and again on a device that a person already repairs. The update trail shows which rule did it.
+
+A rule never changes a ticket after the ticket exists. Assume that you triage a suppressed ticket and start work. A later event that matches the rule does not transition the ticket back.
+
+**Apps > Event Tracker > Ingestion Stats** shows what the consumer did lately. It shows how many events arrived and how many became tickets. It also shows how many events each rule discarded. Look at this page when you expected a ticket and did not get one.
 
 ## Repeat events
 
-A ticket can carry a **dedup key**. When a new event arrives with a key matching an open ticket, it does not open a second ticket — the existing ticket's event count goes up, its Last Seen advances, and a recurrence entry lands in the trail.
+A ticket can have a **dedup key**. A new event can have the same key as an open ticket. The app then does not open a second ticket. It adds one to the event count of the open ticket and updates its Last Seen. It also adds a recurrence entry to the update trail.
 
-Once a ticket is resolved or closed, that stops. The next event with the same key opens a fresh ticket, because a problem recurring after a fix is new information, not a continuation of the old problem.
+This stops when the ticket is resolved or closed. The next event with the same key opens a new ticket. A problem that comes back after a fix is new information. It is not a continuation of the old problem.
 
-## Finding tickets
+## Find tickets {#finding-tickets}
 
-The ticket list supports filtering on status, severity, source, event type, assignee, dates, event count and dedup key, plus two that are worth calling out:
+You can filter the ticket list by these fields:
 
-- **Is Open** — everything not resolved or closed, in one filter.
-- **Attached Object Type** — tickets that *currently* have an object of a given type attached. Objects that were attached and later detached correctly do not match.
+- status
+- severity
+- source
+- event type
+- assignee
+- dates
+- event count
+- dedup key
 
-Everything available in the UI filter is available in the REST API and GraphQL too.
+Two filters need more explanation:
+
+- **Is open** shows each ticket that is not resolved or closed.
+- **Attached object type (app_label.model)** shows tickets that have an object of this type attached now. A ticket does not match when the trail shows an **Object Detached** entry after the **Object Attached** entry of that object.
+
+The REST API and GraphQL have each filter of the web interface.
