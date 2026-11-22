@@ -321,11 +321,13 @@ Read these points before you turn on triage:
   must not leave your network, set `triage: False` on that topic. You can also point the provider
   at a self-hosted endpoint. A repeated event costs nothing: an event with a dedup key that matches
   an open ticket joins that ticket with no model call.
+
 - **Triage is a filter, not a control.** The prompt holds text that the source of the events
   controls. An event can try to argue for its own result. The app limits the shape of the answer
   to four actions and to tickets that the app itself listed. The app does not limit the reasoning
   of the model. A triage `drop` means only that the model judged the event as noise, not that the
   event was harmless.
+
 - **The app limits the parameters of a model on purpose.** **Default parameters** on an AI Model
   accepts generation parameters only: `temperature`, `top_p`, `top_k`, `frequency_penalty`,
   `presence_penalty`, `logit_bias`, `n`, `reasoning_effort`, `seed`, `stop`, `extra_body`, and
@@ -336,6 +338,7 @@ Read these points before you turn on triage:
 
     For an OpenAI-compatible provider, the app sends `reasoning_effort` as written. The endpoint
     decides if it accepts the value.
+
 - **Failure is safe.** If a call times out, the provider returns an error, or the answer is
   unusable, triage accepts the event. The result can be one ticket too many, but the app does not
   lose an event. An answer is unusable in these cases:
@@ -348,13 +351,16 @@ Read these points before you turn on triage:
     Each such event adds 1 to the `triage_errors` counter. A failed call shows as failed on its
     usage record, and an empty answer is a failed call. Other unusable answers show there as a
     successful call. The consumer does not exit because of a model fault.
+
 - **Latency.** The consumer handles one message at a time, so a slow model limits the throughput.
   The pre-filter and the dedup check keep the number of calls to events that are new.
+
 - **Attribution.** The update trail of a ticket shows each action of the model, for example a
   suppression or an attach. The entry has the source **AI** and no user. The message of the entry
   holds the reason of the model. Triage needs no Nautobot account, because it runs inside the
   consumer process. See the note **The agent needs no account** in
   [Install and Configure](install.md).
+
 - **A dry run is free.** `--dry-run` does not use the model. Its output says
   `(triage skipped: dry run)`.
 
