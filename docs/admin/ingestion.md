@@ -303,8 +303,9 @@ of the newest message.
 - `enrichment_misses` counts the rule evaluations that found nothing. An event with two rules that
   both miss is one event and two misses.
 
-The consumer also counts each drop under the rule or filter that refused the event
-(`drops_by_reason`). Look there first when events do not become tickets.
+The consumer also counts each drop under the rule or filter that refused the event. To see this
+count, click the **Window** of a row. The **Drops by reason** panel of the row opens. Look there
+first when events do not become tickets.
 
 The counters follow this equation: `received = errored + dropped + tickets_opened + tickets_joined`. The counter
 `suppressed` is not in the equation, because a suppressed message also opened or joined a ticket.
@@ -318,7 +319,7 @@ the counters of one flush interval at most. The consumer prunes the rows that ar
 
 **No tickets at all.** Make sure that the consumer runs. Then open **Ingestion Stats**. If `received`
 is zero, no messages arrive from the broker. If `received` rises and all messages go to `dropped`,
-a filter drops them. `drops_by_reason` names the filter.
+a filter drops them. Click the **Window** of a row. The **Drops by reason** panel names the filter.
 
 **`errored` rises.** Messages arrive that are not JSON objects, or that the consumer cannot decode.
 The consumer writes a log line for each one, with the topic and the offset. It counts the message,
