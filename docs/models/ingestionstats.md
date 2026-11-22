@@ -8,17 +8,17 @@ Only the consumer writes these rows. The web interface has no add form, no edit 
 
 The consumer deletes each row that is older than the retention period. The setting is `ingestion.stats_retention_days`.
 
-The app does not log changes to these rows. The consumer rewrites the row of the current window every few seconds. A change log entry for each write would fill the change log with entries about counters.
+The app does not log changes to these rows. The consumer rewrites the row of the current window every few seconds. If the app logged each of these changes, the change log would fill with entries about counters.
 
 ## Fields
 
-The detail page of a row shows the names below. To open it, click **Window** in the list. The list shows the same names with a capital letter on the first word only, for example **Tickets opened**.
+The detail page of a row shows the names below. To open it, click the time in the **Window** column of the list. The list shows the same names with a capital letter on the first word only, for example **Tickets opened**.
 
 | Field | Description |
 | --- | --- |
 | **Consumer Name** (`consumer_name`) | The consumer process that made these counts. If you set no name, the consumer uses `hostname:pid`. |
 | **Topic** (`topic`) | The broker topic or channel. |
-| **Bucket Start** (`bucket_start`) | The start of the period that these counts cover. The list shows this field as **Window**. |
+| **Bucket Start** (`bucket_start`) | The start of the window that these counts cover. The list shows this field as **Window**. |
 | **Received** (`received`) | The messages that the consumer took from the broker. It counts each message, whatever happened to it. |
 | **Tickets Opened** (`tickets_opened`) | The messages that opened a new ticket. |
 | **Tickets Joined** (`tickets_joined`) | The messages that matched the dedup key of an open ticket. Each one became a recurrence. |
@@ -27,9 +27,9 @@ The detail page of a row shows the names below. To open it, click **Window** in 
 | **Errored** (`errored`) | The messages that the consumer could not read. The body is not JSON, or it is not a JSON object. |
 | **Triaged** (`triaged`) | The messages that LLM triage judged. Triage does not judge a recurrence or a message from a topic without triage. This value is also the count of model calls. |
 | **Triage Attached** (`triage_attached`) | The messages that triage attached to a ticket that already exists. The app also counts them under **Tickets Joined**. |
-| **Triage Errors** (`triage_errors`) | The triage runs that failed or that gave an unusable answer. In each case, the app accepted the event. |
+| **Triage Errors** (`triage_errors`) | The triage calls that failed or that gave an unusable answer. In each case, the app accepted the event. |
 | **Enriched** (`enriched`) | The messages that attached at least one object that the enrichment resolver found. The app also counts them under **Tickets Opened** or **Tickets Joined**. |
-| **Enrichment Misses** (`enrichment_misses`) | The enrichment rules that found nothing but should have found something. It counts rule evaluations, not messages. |
+| **Enrichment Misses** (`enrichment_misses`) | The enrichment rules that expected an object and found none. It counts rule evaluations, not messages. |
 | **Drops by reason** (`drops_by_reason`) | The drop counts, by the rule or the filter that dropped each message. LLM triage drops use the key `llm_triage`. |
 | **Last Message At** (`last_message_at`) | The broker timestamp of the newest message that the row counts. |
 
@@ -43,9 +43,11 @@ Received = Errored + Dropped + Tickets Opened + Tickets Joined
 
 **Suppressed** is not a term in this sum. A suppressed message still opens a ticket or joins a ticket. The app counts it there too. The column shows how many of those messages a suppression rule or LLM triage suppressed.
 
-The three triage columns are also outside the sum. **Triage Attached** counts messages that **Tickets Joined** already counts. A triage run that failed still accepted its event.
+The three triage columns are also outside the sum. **Triage Attached** counts messages that **Tickets Joined** already counts. A triage call that failed still accepted its event.
 
-The two enrichment columns are also outside the sum, and they count different things on purpose. **Enriched** counts messages. One event that attached a device and an interface counts one time. **Enrichment Misses** counts rule evaluations. One event with two rules that both found nothing counts two times. Neither column counts a rule that the app skipped. The app skips a rule when the payload says there is no interface. It also skips a rule when the app does not find the device that the rule needs.
+The two enrichment columns are also outside the sum, and they count different things on purpose. **Enriched** counts messages. One event that attached a device and an interface counts one time. **Enrichment Misses** counts rule evaluations. One event with two rules that both found nothing counts two times.
+
+Neither column counts a rule that the app skipped. The app skips a rule when the payload says there is no interface. It also skips a rule when the app does not find the device that the rule needs.
 
 The **Drops by reason** panel is the most useful. It is on the detail page of a row, and only when the row has drops. Each key is the name of a filter or the name of a rule that an administrator wrote. The filter names are `unknown_topic`, `unknown_event_type`, `event_type_disabled`, `below_severity_floor` and `rate_limited`. If you do not know a key, someone configured a rule with that name.
 

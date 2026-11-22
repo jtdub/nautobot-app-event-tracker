@@ -2,7 +2,7 @@
 
 An LLM Usage Record is the record of one model call. It shows the model, the purpose, the tokens, the cost, the time and the result. A failed call also has a record.
 
-Use this page to see what the AI features of the app cost. Use it also to find out why a triage decision did not happen.
+Use this page to see what the AI features of the app cost. Use it also to see why a triage decision did not occur.
 
 ## Read-only
 

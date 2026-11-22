@@ -1,6 +1,6 @@
 # Ticket Update
 
-A Ticket Update is one entry in the update trail of a ticket. The app writes one entry for each of these events:
+A Ticket Update is one entry in the update trail of a ticket. The app writes one entry for each of these changes:
 
 - The ticket opens.
 - An actor adds a comment.

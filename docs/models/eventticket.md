@@ -36,7 +36,7 @@ This is intentional. The workflow allows only some transitions. Each transition 
 
 You can attach these objects to a ticket: devices, interfaces, IP addresses, prefixes, cables, circuits and locations. Use the **Attach Object** button on the ticket page. The button shows only on an open ticket. The **Attached Objects** panel shows the objects in groups by type.
 
-The app does not store an attachment in a table of its own. It records each attach and each detach in the update trail. The attach entry stays after a detach.
+The app does not store an attachment in a table of its own. It writes an **Object Attached** entry or an **Object Detached** entry in the update trail. The **Object Attached** entry stays when an actor detaches the object.
 
 An administrator sets the object types that you can attach with the `attachable_object_types` setting. See [Install and Configure](../admin/install.md).
 
