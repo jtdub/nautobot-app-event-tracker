@@ -1,17 +1,16 @@
 # The Analytics Dashboard
 
-The app has been recording for four phases. `IngestionStats` has bucketed the ingestion funnel
-since Phase 2, `LLMUsageRecord` has priced every model call since Phase 3, and `AgentRun` has
-recorded every investigation since Phase 4B. Until now the only way to see any of it was a list
-view or a GraphQL query written by hand.
+The dashboard shows what the app records. It reads the ingestion funnel (`IngestionStats`), the cost of each model
+call (`LLMUsageRecord`), and each agent investigation (`AgentRun`). You can also see these records in a list view,
+or in a GraphQL query that you write by hand.
 
-The dashboard lives at **Apps → Event Tracker → Analytics**
-(`/plugins/event-tracker/dashboard/`) and answers four questions:
+The dashboard is at **Apps > Event Tracker > Analytics** (`/plugins/event-tracker/dashboard/`). It answers four
+questions:
 
-- **Is ingestion keeping up, and what is it dropping?**
-- **How many tickets, in what state, and how long do they take?**
-- **What is this costing, by model and by purpose?**
-- **Are agents being approved, or rubber-stamped?**
+- **Does the consumer read events as fast as they arrive, and what does it drop?**
+- **How many tickets are there, in what state, and how long do they take?**
+- **What does this cost, by model and by purpose?**
+- **How do people decide on agent tool calls?**
 
 The dashboard shows the answers in charts and tables.
 
@@ -20,22 +19,21 @@ The dashboard shows the answers in charts and tables.
 
 ## What this does not do
 
-**It writes nothing.** No model, no counter, no cache row, no migration beyond three indexes. A cache
-table is the obvious thing to reach for and this app refuses it: it would be stale in exactly the
-case somebody is staring at the page, which is during an incident.
+**It writes nothing.** It has no model, no counter, no cache row, and no migration except three indexes. A cache
+table is the obvious choice, and the app refuses it. A cache table would be stale in the case that matters most:
+when someone looks at the page during an incident.
 
-**It calls no language model.** The dashboard shows numbers a person reads. It does not summarize
-them. "Describe this month's incidents" is a different feature with a different argument behind it,
-and the test suite asserts the import direction that keeps it out.
+**It calls no language model.** The dashboard shows numbers that a person reads. It does not summarize them. A
+feature that describes the incidents of a month needs a different design. The test suite checks the import
+direction that keeps model calls out of the dashboard.
 
-**It has no per-person breakdown.** A chart of tickets closed per person is a
-performance-management tool wearing an operations hat, and this app has no mandate for that.
+**It has no per-person breakdown.** A chart of tickets closed for each person measures the performance of people. This app does not have that
+purpose.
 
-## Switching it on
+## Turn the dashboard on or off {#switching-it-on}
 
-It is already on. This is the only settings block in the app that defaults to enabled, because it
-reaches no network and spends no money — it runs a handful of `GROUP BY` queries against tables
-your deployment already has.
+The dashboard is on by default. It is the only block of settings in the app that is on by default. It uses no
+network and spends no money. It runs a few `GROUP BY` queries against tables that your deployment already has.
 
 ```python
 PLUGINS_CONFIG = {
@@ -52,92 +50,94 @@ PLUGINS_CONFIG = {
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `True` | Whether the page, its route and its menu item exist at all. |
-| `default_window_days` | `7` | The window the page opens on. |
-| `max_window_days` | `90` | The largest window anybody may ask for. |
-| `query_timeout_seconds` | `10` | Past this a panel reports that it took too long. |
+| `enabled` | `True` | If `False`, the page, its route, and its menu item do not exist. |
+| `default_window_days` | `7` | The number of days that the page shows when it opens. |
+| `max_window_days` | `90` | The largest window that a user can ask for. |
+| `query_timeout_seconds` | `10` | After this time, a panel reports that it took too long. |
 
-Setting `enabled` to `False` removes the route and the menu item rather than leaving a page that
-returns 404. Restart Nautobot after you change it: the route is built when the app loads.
+If you set `enabled` to `False`, the app removes the route and the menu item. No menu item stays that leads to a
+missing page. Restart Nautobot after you change `enabled`, because Nautobot builds the route when the app loads.
 
 ## Who sees what
 
-**Every number on the page is computed over what the requesting user may already read.** That is
-worth stating plainly, because an aggregate leaks without returning anything. A user constrained by
-an ObjectPermission to one tenant's tickets, shown a count of 4,812 open tickets, has learned the
-size of the estate they were scoped out of. A severity pie tells them its shape.
+**Every number on the page covers only what the user can already read.** An aggregate can leak data even if it
+returns no record. Example: an ObjectPermission limits a user to the tickets of one tenant. A count of all
+4,812 open tickets tells this user how many tickets the other tenants have. A severity pie of all tickets also
+tells the user their severity.
 
-So:
+The page follows these rules:
 
-- Ticket counts, the severity split and time-to-close follow `view_eventticket`, including any
-  constraint on it.
-- Costs follow the **ticket**, not `view_llmusagerecord`. A usage record names its ticket, so a
-  cost chart built from unrestricted records is a ticket-existence oracle with a price attached.
-  A call that names no ticket is counted for everybody, because it discloses nothing.
-- Agent runs and tool-call decisions follow the ticket too, through the run.
-- Ingestion counters follow `view_ingestionstats` alone. A counter row names a consumer and a
-  topic, not a ticket, so there is no parent for it to follow.
+- Ticket counts, the severity split, and time to close follow `view_eventticket`, with each constraint on it.
+- Costs follow the ticket, not `view_llmusagerecord`. A usage record names its ticket. A cost chart from
+  unrestricted records would show that a ticket exists, with a price. A call that names no ticket counts for
+  everybody, because it discloses nothing.
 
-The page itself needs no permission beyond being logged in. A user with none simply sees zeroes,
-which is the honest answer rather than a 403 that confirms there is something there.
+- Agent runs and tool call decisions also follow the ticket, through the run.
+- Ingestion counters follow `view_ingestionstats` only. A counter row names a consumer and a topic, not a ticket.
+  It has no parent to follow.
+
+The user must log in. The page needs no other permission. A user with no permission sees zeroes. This is the
+honest answer. A 403 would confirm that something exists.
 
 ## Retention shortens the window
 
-Two of the tables prune themselves, and the dashboard will not draw data that has been deleted as
-though it were quiet:
+Two of the tables prune themselves. The dashboard does not show deleted data as a period with no activity:
 
 | Panel group | Pruned by | Setting | Default |
 | --- | --- | --- | --- |
 | Ingestion health | `StatsRecorder` | `ingestion.stats_retention_days` | 30 days |
 | Model cost | `services.llm` | `llm.usage_retention_days` | 90 days |
 
-Ask for ninety days on a stock install and the ingestion panels report **"last 30 days (retention;
-90 requested)"** under their titles. That is not an error. Raise `stats_retention_days` if you want
-a longer view of the funnel, and be aware that the table then grows for as long as you asked for.
+If you ask for 90 days on a default install, the ingestion panels show **"last 30 days (retention; 90
+requested)"** under their titles. This is not an error. To see more of the funnel, raise
+`ingestion.stats_retention_days`. The table then holds more rows.
 
-Ticket flow and agent activity are not clamped. Nothing prunes `EventTicket`, `AgentRun` or
-`AgentToolCall`.
+Retention does not shorten the window of ticket flow or of agent activity. Nothing prunes `EventTicket`,
+`AgentRun`, or `AgentToolCall`.
 
-The severity pie is not windowed at all, and deliberately: "which tickets are open right now" has no
-time bound to give it. It is the one query on the page that grows with the whole open backlog, which
-is why it has an index of its own.
+The severity pie has no window, on purpose. The question "which tickets are open now" has no time bound. This is
+the one query on the page that grows with the whole open backlog. For this reason, it has an index of its own.
 
-## Reading the cost figures
+## Read the cost figures {#reading-the-cost-figures}
 
-The money comes from `LLMUsageRecord.cost` and is **USD**, as that field's own help text says. It is
-what the service layer computed at call time, against the model registry as it stood then. Editing a
-model's registered prices today does not rewrite what last month's calls cost, which is the point:
-the chart is accounting, not an estimate.
+The money comes from `LLMUsageRecord.cost`. The help text of the field says that the unit is **USD**. The service
+layer computed the cost at call time, against the model registry as it was then. If you edit the registered price
+of a model, the cost of earlier calls does not change. The chart shows the recorded cost, not an estimate.
 
-If you have registered providers priced in different currencies, the sum is meaningless and nothing
-will warn you. Register prices in one currency.
+If you register providers with prices in different currencies, the sum has no meaning, and the app gives no
+warning. Register all prices in one currency.
 
 ## When a panel says it took too long
 
-A panel that exceeds `query_timeout_seconds` draws nothing and puts **"This took too long to draw.
-Try a shorter window."** under its title. The rest of the page still renders.
+A panel that exceeds `query_timeout_seconds` draws nothing. It shows **"This took too long to draw. Try a shorter
+window."** under its title. The rest of the page still draws.
 
-Treat that as a defect rather than as a setting to raise. In order of what to try:
+Treat this as a defect. Do not raise the setting. Try these steps in this order:
 
-1. **A shorter window.** The default of seven days is what the page is built around.
-2. **Check the indexes landed.** Migration `0011_analytics_indexes` adds three indexes on
-   `EventTicket`: `created` and `closed_at` for the ticket-flow range scans, and
-   `(status, severity)` for the open-tickets pie. That last one matters most if the slow panel is
-   **Open tickets by severity** — it asks which tickets are open *right now*, so it is the one
-   query on the page with no time bound and nothing to bound it by. Everything else the page groups
-   by was already indexed.
-3. **Report it.** Raising the timeout hides the problem, and a persistently slow panel becomes
-   invisible furniture rather than something somebody fixes.
+1. **Use a shorter window.** The default window of seven days gives the best speed.
+2. **Check that the indexes exist.** Migration `0011_analytics_indexes` adds three indexes on `EventTicket`:
 
-## Measuring it yourself
+    - `created` and `closed_at`, for the range scans of ticket flow.
+    - `(status, severity)`, for the open tickets pie.
 
-The page is meant to render in under two seconds against 100,000 tickets and 1,000,000 usage
-records. The test suite pins the query count rather than the wall clock, because a clock assertion
-in CI fails for reasons unrelated to this code. To take the real measurement on your own hardware:
+    The last index matters most when the slow panel is **Open tickets by severity**. That panel asks which tickets
+    are open now. It is the one query on the page with no time bound. Every other column that the page groups by
+    already has an index.
+
+3. **Report the problem.** A higher timeout hides the problem. A panel that is slow all the time becomes normal, and
+    nobody fixes it.
+
+## Measure the speed yourself {#measuring-it-yourself}
+
+The design goal is a page that draws in under two seconds against 100,000 tickets and 1,000,000 usage records. The
+test suite checks the number of queries, not the time. A clock check in CI fails for reasons that this code does not
+cause. To measure the time on your own hardware, run this command:
 
 ```bash
 invoke nbshell
 ```
+
+Then run this code in the shell:
 
 ```python
 import time
@@ -152,13 +152,13 @@ client.get("/plugins/event-tracker/dashboard/?days=7")
 print(f"{time.perf_counter() - start:.2f}s")
 ```
 
-Compare a seven-day window against a ninety-day one. If the short window is slow, the problem is an
-index; if only the long one is, the problem is the window.
+Compare a window of seven days with a window of 90 days. If the short window is slow, the problem is an index. If
+only the long window is slow, the problem is the window.
 
 ## Further reading
 
-- [Phase 5B specification](../specs/phase-5b-analytics.md) — rules D1 to D8, and the arguments.
-- [ADR 0008 — UI Component Framework only](../decisions/0008-ui-component-framework-only.md) — why
-  this page is the app's one template.
-- [Running the Event Consumer](ingestion.md) — where the ingestion counters come from.
-- [Configuring LLM Providers](llm.md) — where the prices come from.
+- [Phase 5B specification](../specs/phase-5b-analytics.md): rules D1 to D8, and the arguments.
+- [ADR 0008: UI Component Framework only](../decisions/0008-ui-component-framework-only.md): why this page is the
+  one template of the app.
+- [Running the Event Consumer](ingestion.md): where the ingestion counters come from.
+- [Configuring LLM Providers](llm.md): where the prices come from.
