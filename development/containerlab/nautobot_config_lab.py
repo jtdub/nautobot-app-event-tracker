@@ -85,3 +85,5 @@ LAB_INGESTION = {
         },
     },
 }
+
+LAB_INGESTION["triage"] = {"enabled": True, "provider": "OpenCode Go", "model": "deepseek-v4.1-flash"}

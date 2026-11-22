@@ -1,0 +1,78 @@
+# sdlc-crew configuration. The sdlc-setup skill writes this file for you.
+# You can also edit it by hand. Every key has a default, so you can delete a key
+# that you do not need.
+
+version: 1
+
+# Who uses the workflow. This changes how much the personas explain.
+#   new          - explain every term, offer fewer options, add safety steps
+#   some         - explain uncommon terms only
+#   professional - assume a software developer
+person:
+  experience: professional
+
+# Where the work items live.
+#   local     - a BACKLOG.md file in this repository (no account needed)
+#   github    - GitHub Issues of the repository in forge.repo
+#   gitlab    - GitLab Issues of the project in tracker.project
+#   jira      - Jira Cloud or Jira Server; tracker.url and tracker.project are required
+#   bitbucket - Bitbucket Cloud issues of the repository in forge.repo
+tracker:
+  kind: github
+  url: ""
+  project: ""
+  statuses:
+    todo: "To Do"
+    in_progress: "In Progress"
+    in_review: "In Review"
+    done: "Done"
+  child_issue_type: "Subtask"
+
+# Where the code and the pull requests live.
+#   github | gitlab | bitbucket | none
+# With none, the workflow makes branches and commits but opens no pull request.
+# worktree_dir is where the crew makes one git worktree for each pull request.
+# The crew never changes the branch or the files of your own checkout.
+forge:
+  kind: github
+  repo: "jtdub/nautobot-app-event-tracker"
+  default_branch: "develop"
+  branch_pattern: "sdlc/{id}-{slug}"
+  worktree_dir: "../{repo}-worktrees"
+  assign_to_me: true
+
+# Which model each role uses. The value is a model name that your harness accepts,
+# "inherit" for the model of the current session, or "ask" to choose at the start
+# of each run, for work where data rules limit which model can read the code.
+#   plan   - the architect
+#   build  - the engineer
+#   review - QA, UX, and the sdlc-review skill
+models:
+  plan: fable
+  build: sonnet
+  review: opus
+
+# How to run and test the project. Leave a value empty if the project has none yet.
+project:
+  run_command: "invoke start"
+  test_command: "invoke tests"
+  app_url: "http://localhost:8080"
+  changelog: towncrier
+  screenshots: pr-comment
+  # Local files that git ignores and that the app or the tests need, such as .env.
+  # The crew copies them into each new worktree. It never commits them.
+  local_files: ["invoke.yml", "development/creds.env"]
+
+# A review of the plan by reviewers that did not see the conversation, before you
+# approve the plan.
+#   auto  - the Elephant-Goldfish Model (EGM) reviewers if installed, else the built-in reviewer
+#   egm   - the EGM reviewers
+#   fresh - the built-in reviewer
+#   none  - no review
+plan_review: auto
+
+# Limits that keep a change reviewable.
+limits:
+  max_pr_lines: 500
+  max_qa_rounds: 3
+  max_ci_rounds: 3
