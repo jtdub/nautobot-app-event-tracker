@@ -1,0 +1,2 @@
+Fixed `invoke yamllint`, which failed on `.sdlc-crew.yaml`.
+Removed the LLM triage setting from the lab configuration. The lab now starts with triage off.
