@@ -1,0 +1,1 @@
+Added the real time limit of an embedding call on an Ollama provider to the retrieval page, with the `REQUEST_TIMEOUT` environment variable.

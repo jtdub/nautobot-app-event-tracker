@@ -1,0 +1,2 @@
+Fixed event triage on OpenAI and OpenAI-compatible providers. A failed triage call now ends after one `timeout_seconds`, and triage accepts the event.
+Fixed embedding calls on OpenAI and OpenAI-compatible providers. A call now makes one attempt and stops after one `timeout_seconds`.

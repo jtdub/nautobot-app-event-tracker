@@ -650,6 +650,17 @@ class TestCallParameters(TestCase):
         self.assertEqual(client.calls[0]["allowed_openai_params"], ["reasoning_effort"])
 
 
+class TestEmbeddingCallParameters(TestCase):
+    """What `embed()` sends to the client."""
+
+    def test_an_embedding_call_sends_no_retry(self):
+        """AC-2 - `embed()` sends `max_retries=0` on each call."""
+        model = fixtures.create_embedding_model()
+        client = FakeEmbeddingClient()
+        llm_service.embed(model=model, text="hello", client=client)
+        self.assertEqual(client.calls[0]["max_retries"], 0)
+
+
 class TestRefusals(TestCase):
     """L8 - disabled means disabled, before any network traffic and with no record."""
 

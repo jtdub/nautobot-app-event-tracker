@@ -278,7 +278,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     `session_id` reaches the Headers template of the provider integration as `{{ session_id }}`.
     The service cleans it. A call with no value sends one random value for each process.
 
-    `max_retries` goes to the client when it is not None. The agent sends 0, so the SDK does not
+    `max_retries` goes to the client when it is not None. The agent and triage send 0, so the SDK does not
     send a timed-out request again.
 
     An answer with no text and no tool call is a failed call. A tool call with no text is a
@@ -384,8 +384,8 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     Refuse a disabled or wrong-kind model before any network traffic (L8), resolve credentials from
     the ExternalIntegration at call time (L3), pass a timeout (L6), write exactly one usage record
     whether it worked or not (L1), price it from the registry (L5), and let no provider exception
-    escape the `LLMError` family (L4). Nothing new is invented here; this is the same call with a
-    different verb.
+    escape the `LLMError` family (L4). An embedding call makes one attempt. `_litellm_embedding()` turns
+    the retry of the SDK off.
 
     `client` is the test seam: a callable `(model_string, input, **kwargs)` returning a
     litellm-shaped embedding response. No test reaches a provider. `session_id` works as it does
@@ -401,6 +401,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
 
     call_kwargs = {
         "timeout": timeout or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
+        "max_retries": 0,
     }
     model_string = _model_string(model)
     connection = _connection_kwargs(model.provider, _session_value(session_id))
@@ -458,7 +459,11 @@ def _response_vector(raw):
 
 
 def _litellm_embedding():
-    """The one place litellm's embedding entry point is reached (L2)."""
+    """Return litellm's embedding entry point, the one place it is reached (L2).
+
+    litellm replaces `max_retries=0` with `litellm.DEFAULT_MAX_RETRIES` for an embedding. This function sets that
+    value to 0, so an embedding call makes one attempt.
+    """
     try:
         import litellm  # pylint: disable=import-outside-toplevel
     except ImportError as error:
@@ -467,6 +472,7 @@ def _litellm_embedding():
             f"{type(error).__name__}: {error}. "
             "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
+    litellm.DEFAULT_MAX_RETRIES = 0
     return litellm.embedding
 
 

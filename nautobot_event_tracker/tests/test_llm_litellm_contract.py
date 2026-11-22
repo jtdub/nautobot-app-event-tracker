@@ -148,6 +148,60 @@ class TestTheRealClient(TestCase):
 
         self.assertEqual(len(attempts), 1)
 
+    def test_an_embedding_call_sends_one_request_when_the_server_times_out(self):
+        """AC-3 - the call makes one attempt, though litellm would send the request twice more."""
+        attempts = []
+
+        def time_out(_client, request, **_kwargs):
+            attempts.append(str(request.url))
+            raise self.httpx.ReadTimeout("no answer", request=request)
+
+        model = fixtures.create_embedding_model(name="real-embedding-timeout-model")
+
+        with (
+            mock.patch("litellm.DEFAULT_MAX_RETRIES", 2),
+            mock.patch.object(self.httpx.Client, "send", time_out),
+        ):
+            with self.assertRaises(LLMCallError):
+                llm_service.embed(model=model, text="hello")
+
+        self.assertEqual(len(attempts), 1)
+
+    def test_an_embedding_call_sends_one_request_when_the_server_answers_429(self):
+        """AC-4 - a rate limit answer does not start a second request."""
+        attempts = []
+
+        def rate_limit(_client, request, **_kwargs):
+            attempts.append(str(request.url))
+            return self.httpx.Response(429, request=request, json={"error": {"message": "rate limit"}})
+
+        model = fixtures.create_embedding_model(name="real-embedding-429-model")
+
+        with (
+            mock.patch("litellm.DEFAULT_MAX_RETRIES", 2),
+            mock.patch.object(self.httpx.Client, "send", rate_limit),
+        ):
+            with self.assertRaises(LLMCallError):
+                llm_service.embed(model=model, text="hello")
+
+        self.assertEqual(len(attempts), 1)
+
+    def test_a_call_with_no_retry_sends_one_request_when_the_server_answers_429(self):
+        """AC-4 - `max_retries=0` also holds for a rate limit answer on a completion."""
+        attempts = []
+
+        def rate_limit(_client, request, **_kwargs):
+            attempts.append(str(request.url))
+            return self.httpx.Response(429, request=request, json={"error": {"message": "rate limit"}})
+
+        model = fixtures.create_llmmodel(name="real-no-retry-429-model")
+
+        with mock.patch.object(self.httpx.Client, "send", rate_limit):
+            with self.assertRaises(LLMCallError):
+                self.complete(model, max_retries=0)
+
+        self.assertEqual(len(attempts), 1)
+
     def test_the_session_id_reaches_the_request_headers(self):
         """AC-6 - the rendered Headers template is in the HTTP request, and each call has its own value."""
         integration = fixtures.create_external_integration(
