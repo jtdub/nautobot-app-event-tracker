@@ -5,6 +5,7 @@ internals, so everything up to the wire is exercised for real and no test opens 
 connection.
 """
 
+import asyncio
 import os
 import threading
 import uuid
@@ -13,6 +14,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock
 
+from celery.exceptions import SoftTimeLimitExceeded
 from django.core.exceptions import ImproperlyConfigured
 from django.db import DatabaseError
 from django.test import override_settings
@@ -26,7 +28,12 @@ from nautobot_ai_models.models import AIModel
 from nautobot_event_tracker.choices import LLMPurposeChoices
 from nautobot_event_tracker.models import LLMUsageRecord
 from nautobot_event_tracker.services import llm as llm_service
-from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
+from nautobot_event_tracker.services.exceptions import (
+    LLMCallError,
+    LLMConfigurationError,
+    LLMResponseError,
+    is_soft_time_limit,
+)
 from nautobot_event_tracker.tests import fixtures
 from nautobot_event_tracker.tests.fixtures import FakeEmbeddingClient, FakeLLMClient, FakeLLMResponse
 
@@ -1221,3 +1228,242 @@ class TestSessionId(TestCase):
     def test_a_long_session_id_is_cut(self):
         """AC-5: the value stops at 128 characters."""
         self.assertEqual(self._session_header_of_one_call(session_id="x" * 300), "x" * 128)
+
+
+DEADLINE_TEXT = "The call did not finish in {seconds} seconds. The app stopped the call."
+
+
+def blocked_call():
+    """Return a callable that waits until the test ends, and its release event."""
+    release = threading.Event()
+    return (lambda: release.wait(30)), release
+
+
+class TestTheDeadline(TestCase):
+    """AC-1, AC-4, AC-6 - one total deadline for each model call."""
+
+    def start_blocked_call(self):
+        """Return a callable that blocks, with a cleanup that frees its thread."""
+        work, release = blocked_call()
+        self.addCleanup(release.set)
+        return work
+
+    def test_a_call_that_gives_no_result_raises_at_the_deadline(self):
+        """The wait ends with `TimeoutError` and one warning."""
+        work = self.start_blocked_call()
+        with self.assertLogs(llm_service.logger, level="WARNING") as logged:
+            with self.assertRaises(TimeoutError) as raised:
+                llm_service._within_deadline(work, 0)  # pylint: disable=protected-access
+        self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=0))
+        self.assertEqual(len(logged.records), 1)
+
+    def test_an_error_of_the_call_goes_on_as_itself(self):
+        """The same error object reaches the caller."""
+        error = ValueError("x")
+
+        def work():
+            raise error
+
+        with self.assertRaises(ValueError) as raised:
+            llm_service._within_deadline(work, 5)  # pylint: disable=protected-access
+        self.assertIs(raised.exception, error)
+
+    def test_a_result_goes_on(self):
+        """A result goes on, a `None` result goes on, and a result at the deadline goes on."""
+        real_join = threading.Thread.join
+
+        def join_without_limit(thread, _timeout=None):
+            return real_join(thread)
+
+        with self.subTest("a value"):
+            self.assertEqual(llm_service._within_deadline(lambda: "x", 5), "x")  # pylint: disable=protected-access
+        with self.subTest("none"):
+            self.assertIsNone(llm_service._within_deadline(lambda: None, 5))  # pylint: disable=protected-access
+        with self.subTest("a call that ended at the deadline"):
+            with mock.patch.object(threading.Thread, "join", join_without_limit):
+                self.assertEqual(llm_service._within_deadline(lambda: "x", 0), "x")  # pylint: disable=protected-access
+
+    def test_the_cancel_ends_the_stopped_call(self):
+        """The async entry point is cancelled at its timeout, and the other outcomes go on."""
+
+        async def never_ends(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        async def gives_a_value(*_args, **_kwargs):
+            return "value"
+
+        async def times_out_by_itself(*_args, **_kwargs):
+            raise TimeoutError("inner")
+
+        with self.subTest("the deadline stops the call"):
+            with self.assertRaises(TimeoutError) as raised:
+                llm_service._cancellable(never_ends)("m", [], timeout=0)  # pylint: disable=protected-access
+            self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=0))
+        with self.subTest("a result goes on"):
+            client = llm_service._cancellable(gives_a_value)  # pylint: disable=protected-access
+            self.assertEqual(client("m", [], timeout=60), "value")
+        with self.subTest("a timeout of the client goes on"):
+            with self.assertRaises(TimeoutError) as raised:
+                llm_service._cancellable(times_out_by_itself)("m", [], timeout=60)  # pylint: disable=protected-access
+            self.assertEqual(str(raised.exception), "inner")
+
+    def test_each_call_runs_on_one_event_loop_of_the_process(self):
+        """Calls share one loop in the `llm-loop` thread, and a forked process starts its own loop."""
+        seen = []
+
+        async def record_loop(*_args, **_kwargs):
+            seen.append((asyncio.get_running_loop(), threading.current_thread().name))
+
+        def run_one_call():
+            llm_service._cancellable(record_loop)("m", [], timeout=60)  # pylint: disable=protected-access
+            return llm_service._call_loop[1]  # pylint: disable=protected-access
+
+        with mock.patch.object(llm_service, "_call_loop", None):
+            first = run_one_call()
+            self.addCleanup(first.call_soon_threadsafe, first.stop)
+            run_one_call()
+            run_one_call()
+            with mock.patch.object(os, "getpid", return_value=os.getpid() + 1):
+                forked = run_one_call()
+            self.addCleanup(forked.call_soon_threadsafe, forked.stop)
+
+        self.assertEqual({loop for loop, _name in seen[:3]}, {first})
+        self.assertEqual({name for _loop, name in seen}, {"llm-loop"})
+        self.assertIsNot(forked, first)
+        self.assertIs(seen[3][0], forked)
+
+    def test_the_deadline_text_has_no_trailing_zero(self):
+        """The seconds use the `g` format."""
+        work = self.start_blocked_call()
+        with mock.patch.object(threading.Thread, "join", lambda thread, timeout=None: None):
+            for seconds, text in ((60.0, "60"), (0.5, "0.5")):
+                with self.subTest(seconds=seconds):
+                    with self.assertRaises(TimeoutError) as raised:
+                        llm_service._within_deadline(work, seconds)  # pylint: disable=protected-access
+                    self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=text))
+
+
+class TestTheSoftTimeLimitInTheWait(TestCase):
+    """AC-5 - the soft time limit of the Job, raised while the caller waits."""
+
+    def test_the_soft_time_limit_in_the_wait_is_recorded_and_goes_on(self):
+        """One row, then `LLMCallError` with the limit as its cause."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocked_client(*_args, **_kwargs):
+            return release.wait(30)
+
+        with mock.patch.object(threading.Thread, "join", side_effect=SoftTimeLimitExceeded()):
+            with self.assertRaises(LLMCallError) as raised:
+                call(fixtures.create_llmmodel(name="g"), blocked_client)
+        self.assertTrue(is_soft_time_limit(raised.exception))
+        self.assertEqual(LLMUsageRecord.objects.count(), 1)
+
+
+class TestTheDeadlineOfACall(TestCase):
+    """AC-1, AC-2, AC-3, AC-5 - `complete()` and `embed()` use the resolved timeout as the deadline."""
+
+    def setUp(self):
+        """Record the deadline that each call gets, and run the call."""
+        super().setUp()
+        self.deadlines = []
+
+        def record_and_run(work, seconds):
+            self.deadlines.append(seconds)
+            return work()
+
+        patcher = mock.patch.object(llm_service, "_within_deadline", record_and_run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_complete_uses_the_resolved_timeout_as_the_deadline(self):
+        """Each source of the timeout is also the deadline."""
+        integration = fixtures.create_external_integration(name="Nine", timeout=9)
+        provider = fixtures.create_llmprovider(name="Nine Provider", external_integration=integration)
+        cases = {
+            "the argument": (fixtures.create_llmmodel(name="a"), {"timeout": 7}, 7),
+            "the registry parameter": (
+                fixtures.create_llmmodel(name="b", default_parameters={"timeout": 8}),
+                {},
+                8,
+            ),
+            "the integration": (fixtures.create_llmmodel(name="c", provider=provider), {}, 9),
+            "the default": (fixtures.create_llmmodel(name="d"), {}, llm_service.DEFAULT_TIMEOUT_SECONDS),
+        }
+        for name, (model, arguments, expected) in cases.items():
+            with self.subTest(name):
+                client = FakeLLMClient()
+                call(model, client, **arguments)
+                self.assertEqual(client.calls[0]["timeout"], expected)
+                self.assertEqual(self.deadlines[-1], expected)
+
+    def test_a_timeout_that_is_not_a_positive_number_is_skipped(self):
+        """A string, zero, a negative number and a boolean pass to the next source."""
+        for bad in ("45", 0, -1, True):
+            with self.subTest(source="argument", value=bad):
+                client = FakeLLMClient()
+                call(fixtures.create_llmmodel(name="e"), client, timeout=bad)
+                self.assertEqual(client.calls[0]["timeout"], llm_service.DEFAULT_TIMEOUT_SECONDS)
+            with self.subTest(source="registry", value=bad):
+                model = fixtures.create_llmmodel(name="f")
+                AIModel.objects.filter(pk=model.pk).update(default_parameters={"timeout": bad})
+                model.refresh_from_db()
+                client = FakeLLMClient()
+                call(model, client)
+                self.assertEqual(client.calls[0]["timeout"], llm_service.DEFAULT_TIMEOUT_SECONDS)
+                self.assertIsInstance(client.calls[0]["timeout"], (int, float))
+
+    def test_a_stopped_chat_call_writes_one_failed_row(self):
+        """AC-3 - the row has the deadline text, zero tokens and zero cost."""
+        error = TimeoutError(DEADLINE_TEXT.format(seconds="60"))
+        model = fixtures.create_llmmodel(name="h")
+        with mock.patch.object(llm_service, "_within_deadline", side_effect=error):
+            with self.assertRaises(LLMCallError):
+                call(model, FakeLLMClient())
+        record = LLMUsageRecord.objects.get()
+        self.assertFalse(record.success)
+        self.assertEqual((record.prompt_tokens, record.completion_tokens, record.cost), (0, 0, 0))
+        self.assertEqual(record.error, DEADLINE_TEXT.format(seconds="60"))
+
+    def test_embed_uses_the_resolved_timeout_as_the_deadline(self):
+        """Each source of the timeout is the deadline, on each provider type."""
+        integration = fixtures.create_external_integration(name="Nine Embedding", timeout=9)
+        provider = fixtures.create_llmprovider(name="Nine Embedding Provider", external_integration=integration)
+        cases = {
+            "the argument": (fixtures.create_embedding_model(name="a"), {"timeout": 7}, 7),
+            "the integration": (fixtures.create_embedding_model(name="b", provider=provider), {}, 9),
+            "the default": (fixtures.create_embedding_model(name="c"), {}, llm_service.DEFAULT_TIMEOUT_SECONDS),
+        }
+        for name, (model, arguments, expected) in cases.items():
+            with self.subTest(name):
+                client = FakeEmbeddingClient()
+                llm_service.embed(model=model, text="hello", client=client, **arguments)
+                self.assertEqual(client.calls[0]["timeout"], expected)
+                self.assertEqual(self.deadlines[-1], expected)
+        for provider_type in (
+            AIProviderTypeChoices.OPENAI,
+            AIProviderTypeChoices.OPENAI_COMPATIBLE,
+            AIProviderTypeChoices.OLLAMA,
+            AIProviderTypeChoices.ANTHROPIC,
+        ):
+            with self.subTest(provider_type=provider_type):
+                typed = fixtures.create_llmprovider(name=f"Typed {provider_type}", provider_type=provider_type)
+                client = FakeEmbeddingClient()
+                llm_service.embed(
+                    model=fixtures.create_embedding_model(name=f"t-{provider_type}", provider=typed),
+                    text="hello",
+                    client=client,
+                )
+                self.assertEqual(self.deadlines[-1], llm_service.DEFAULT_TIMEOUT_SECONDS)
+
+    def test_a_stopped_embedding_call_writes_one_failed_row(self):
+        """AC-3 - the same row as a chat call."""
+        error = TimeoutError(DEADLINE_TEXT.format(seconds="60"))
+        model = fixtures.create_embedding_model(name="i")
+        with mock.patch.object(llm_service, "_within_deadline", side_effect=error):
+            with self.assertRaises(LLMCallError):
+                llm_service.embed(model=model, text="hello", client=FakeEmbeddingClient())
+        record = LLMUsageRecord.objects.get()
+        self.assertFalse(record.success)
+        self.assertEqual(record.error, DEADLINE_TEXT.format(seconds="60"))

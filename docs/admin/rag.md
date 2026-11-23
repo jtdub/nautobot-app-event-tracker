@@ -84,12 +84,13 @@ Each other setting has a default:
 | `max_document_chars` | 8000 | The number of characters of a ticket that the app embeds. |
 | `similar_count` | 5 | The number of similar tickets that the panel shows. |
 | `max_distance` | 0.15 | The cosine distance above which the panel does not show a ticket. |
-| `timeout_seconds` | 30 | The time limit, in seconds, of one embedding call. See [The time limit of an embedding call](#embedding-time-limit). |
+| `timeout_seconds` | 30 | The time limit, in seconds, of one full embedding call. See [The time limit of an embedding call](#embedding-time-limit). |
 
 ### The time limit of an embedding call {#embedding-time-limit}
 
-On an OpenAI or OpenAI-compatible provider, an embedding call makes one attempt and waits one `timeout_seconds`.
-The app does not send the call again after a timeout, a connection error, or an HTTP 408, 409, 429, or 5xx answer.
+An embedding call makes one attempt and stops after one `timeout_seconds`, on each provider type. The limit is
+for the full call, from the name lookup to the answer. The app does not send the call again after a timeout, a
+connection error, or an HTTP 408, 409, 429, or 5xx answer.
 
 When a call fails, this occurs:
 
@@ -104,15 +105,10 @@ embedding call. This value replaces the `DEFAULT_MAX_RETRIES` environment variab
 (triage and the agent) do not use this value. Other code in the same process that makes an embedding call through
 litellm gets the same value.
 
-!!! warning "On an Ollama provider, timeout_seconds does not limit an embedding call"
+!!! note "REQUEST_TIMEOUT is not necessary"
 
-    An embedding call on an Ollama provider can wait 6000 seconds, the default of the litellm library. Set the
-    environment variable `REQUEST_TIMEOUT` to the value of `timeout_seconds` (30 by default), in seconds. Set it
-    before the process starts, in each process that makes an embedding call. These processes are the Nautobot web
-    service, the worker, and the shell that runs `nautobot-server indexclosedtickets`.
-
-    litellm uses `REQUEST_TIMEOUT` for each call that sends no time limit of its own. The app sends a time limit with
-    each chat call and with each embedding call on an OpenAI or OpenAI-compatible provider. Those calls do not change.
+    An earlier release told you to set the environment variable `REQUEST_TIMEOUT` for an Ollama provider. The
+    app now stops an embedding call on Ollama after `timeout_seconds`. You can remove the variable.
 
 ### Tune `max_distance` {#tuning-max_distance}
 

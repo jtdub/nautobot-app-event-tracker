@@ -4,6 +4,8 @@ No test reaches a provider: `embed` is a seam, and the fake routes through the r
 `services.llm.embed` so every indexing pass leaves a real usage record behind.
 """
 
+from unittest import mock
+
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
@@ -13,6 +15,7 @@ from nautobot_event_tracker.choices import (
     TicketStatusChoices,
 )
 from nautobot_event_tracker.models import LLMUsageRecord, TicketEmbedding
+from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services import rag as rag_service
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError
@@ -216,6 +219,16 @@ class TestIndexingNeverBlocksAClose(RagTestCase):
 
         self.assertFalse(TicketEmbedding.objects.exists())
 
+    def test_an_embedding_that_the_deadline_stops_indexes_nothing(self):
+        """The real service function fails at the deadline: no row, and one failed usage row."""
+        stop = TimeoutError("The call did not finish in 30 seconds. The app stopped the call.")
+
+        with fixtures.rag_settings(), mock.patch.object(llm_service, "_within_deadline", side_effect=stop):
+            self.assertIsNone(rag_service.index_ticket_quietly(self.ticket))
+
+        self.assertFalse(TicketEmbedding.objects.exists())
+        self.assertFalse(LLMUsageRecord.objects.get().success)
+
     def test_a_broken_configuration_is_swallowed(self):
         """A settings fault must not stop a close either."""
         with fixtures.app_settings(rag={"enabled": True, "max_distance": 9}):
@@ -306,6 +319,15 @@ class TestRetrieval(RagTestCase):
             self.assertEqual(rag_service.similar_tickets(self.open_ticket, user=self.user, embed=embed), [])
 
         self.assertEqual(embed.calls, [])
+
+    def test_a_query_embedding_that_the_deadline_stops_gives_no_similar_tickets(self):
+        """The panel shows nothing for that page load."""
+        stop = TimeoutError("The call did not finish in 30 seconds. The app stopped the call.")
+
+        with fixtures.rag_settings(), mock.patch.object(llm_service, "_within_deadline", side_effect=stop):
+            self.assertEqual(rag_service.similar_tickets(self.open_ticket, user=self.user), [])
+
+        self.assertFalse(LLMUsageRecord.objects.get().success)
 
     def test_a_broken_configuration_returns_nothing_rather_than_raising(self):
         """A panel is not a place to surface an exception."""

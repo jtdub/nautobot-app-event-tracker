@@ -12,6 +12,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -63,7 +64,7 @@ class TestTheRealClient(TestCase):
         self.bodies = []
         self.headers = []
 
-        def fake_send(_client, request, **_kwargs):
+        async def fake_send(_client, request, **_kwargs):
             self.assertEqual(str(request.url), COMPLETIONS_URL)
             self.bodies.append(json.loads(request.content))
             self.headers.append(request.headers)
@@ -73,7 +74,7 @@ class TestTheRealClient(TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         llm_service.require_client()
-        transport = mock.patch.object(httpx.Client, "send", fake_send)
+        transport = mock.patch.object(httpx.AsyncClient, "send", fake_send)
         transport.start()
         self.addCleanup(transport.stop)
 
@@ -96,6 +97,10 @@ class TestTheRealClient(TestCase):
             attempts.append(str(request.url))
             raise OSError("network blocked by the test")
 
+        async def refuse_async_request(_client, request, **_kwargs):
+            attempts.append(str(request.url))
+            raise OSError("network blocked by the test")
+
         def litellm_handlers():
             return {
                 name: list(logging.getLogger(name).handlers)
@@ -114,6 +119,7 @@ class TestTheRealClient(TestCase):
                 mock.patch.object(socket, "create_connection", refuse_network),
                 mock.patch.object(socket.socket, "connect", refuse_network),
                 mock.patch.object(self.httpx.Client, "send", refuse_request),
+                mock.patch.object(self.httpx.AsyncClient, "send", refuse_async_request),
             ):
                 importlib.import_module("litellm")
         finally:
@@ -132,17 +138,68 @@ class TestTheRealClient(TestCase):
         """One call through the service with the real client."""
         return llm_service.complete(model=model, messages=MESSAGES, purpose=LLMPurposeChoices.TRIAGE, **kwargs)
 
+    def test_calls_use_one_client_of_litellm_again(self):
+        """Three chat calls share one client, and three embedding calls share one client."""
+        chat_clients = []
+        embedding_clients = []
+        embedding_answer = {
+            "object": "list",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+            "model": "m",
+            "usage": {"prompt_tokens": 1, "total_tokens": 1},
+        }
+
+        async def record_client(client, request, **_kwargs):
+            if request.url.path.endswith("/embeddings"):
+                embedding_clients.append(id(client))
+                return self.httpx.Response(200, request=request, json=embedding_answer)
+            chat_clients.append(id(client))
+            return self.httpx.Response(200, request=request, json=CANNED_ANSWER)
+
+        chat_model = fixtures.create_llmmodel(name="real-client-reuse-model")
+        embedding_model = fixtures.create_embedding_model(name="real-client-reuse-embedding")
+        with mock.patch.object(self.httpx.AsyncClient, "send", record_client):
+            for _ in range(3):
+                self.complete(chat_model)
+                llm_service.embed(model=embedding_model, text="hello")
+
+        self.assertEqual(len(chat_clients), 3)
+        self.assertEqual(len(set(chat_clients)), 1)
+        self.assertEqual(len(embedding_clients), 3)
+        self.assertEqual(len(set(embedding_clients)), 1)
+
+    def test_the_real_client_runs_in_a_worker_thread_inside_the_deadline(self):
+        """AC-6 - the request leaves from a thread that is not the caller's, and the wrapper holds the call."""
+        threads = []
+        original_send = self.httpx.AsyncClient.send
+
+        async def record_thread(client, request, **kwargs):
+            threads.append(threading.current_thread() is threading.main_thread())
+            return await original_send(client, request, **kwargs)
+
+        model = fixtures.create_llmmodel(name="real-thread-model")
+        real_wrapper = llm_service._within_deadline  # pylint: disable=protected-access
+        with (
+            mock.patch.object(llm_service, "_within_deadline", wraps=real_wrapper) as wrapper,
+            mock.patch.object(self.httpx.AsyncClient, "send", record_thread),
+        ):
+            response = self.complete(model)
+
+        self.assertEqual(response.text, "answer")
+        self.assertEqual(wrapper.call_count, 1)
+        self.assertEqual(threads, [False])
+
     def test_a_call_with_no_retry_sends_one_request_when_the_server_times_out(self):
         """AC-6 - `max_retries=0` is the only way to keep the SDK from sending the request again."""
         attempts = []
 
-        def time_out(_client, request, **_kwargs):
+        async def time_out(_client, request, **_kwargs):
             attempts.append(str(request.url))
             raise self.httpx.ReadTimeout("no answer", request=request)
 
         model = fixtures.create_llmmodel(name="real-no-retry-model")
 
-        with mock.patch.object(self.httpx.Client, "send", time_out):
+        with mock.patch.object(self.httpx.AsyncClient, "send", time_out):
             with self.assertRaises(LLMCallError):
                 self.complete(model, max_retries=0)
 
@@ -152,7 +209,7 @@ class TestTheRealClient(TestCase):
         """AC-3 - the call makes one attempt, though litellm would send the request twice more."""
         attempts = []
 
-        def time_out(_client, request, **_kwargs):
+        async def time_out(_client, request, **_kwargs):
             attempts.append(str(request.url))
             raise self.httpx.ReadTimeout("no answer", request=request)
 
@@ -160,7 +217,7 @@ class TestTheRealClient(TestCase):
 
         with (
             mock.patch("litellm.DEFAULT_MAX_RETRIES", 2),
-            mock.patch.object(self.httpx.Client, "send", time_out),
+            mock.patch.object(self.httpx.AsyncClient, "send", time_out),
         ):
             with self.assertRaises(LLMCallError):
                 llm_service.embed(model=model, text="hello")
@@ -171,7 +228,7 @@ class TestTheRealClient(TestCase):
         """AC-4 - a rate limit answer does not start a second request."""
         attempts = []
 
-        def rate_limit(_client, request, **_kwargs):
+        async def rate_limit(_client, request, **_kwargs):
             attempts.append(str(request.url))
             return self.httpx.Response(429, request=request, json={"error": {"message": "rate limit"}})
 
@@ -179,7 +236,7 @@ class TestTheRealClient(TestCase):
 
         with (
             mock.patch("litellm.DEFAULT_MAX_RETRIES", 2),
-            mock.patch.object(self.httpx.Client, "send", rate_limit),
+            mock.patch.object(self.httpx.AsyncClient, "send", rate_limit),
         ):
             with self.assertRaises(LLMCallError):
                 llm_service.embed(model=model, text="hello")
@@ -190,13 +247,13 @@ class TestTheRealClient(TestCase):
         """AC-4 - `max_retries=0` also holds for a rate limit answer on a completion."""
         attempts = []
 
-        def rate_limit(_client, request, **_kwargs):
+        async def rate_limit(_client, request, **_kwargs):
             attempts.append(str(request.url))
             return self.httpx.Response(429, request=request, json={"error": {"message": "rate limit"}})
 
         model = fixtures.create_llmmodel(name="real-no-retry-429-model")
 
-        with mock.patch.object(self.httpx.Client, "send", rate_limit):
+        with mock.patch.object(self.httpx.AsyncClient, "send", rate_limit):
             with self.assertRaises(LLMCallError):
                 self.complete(model, max_retries=0)
 

@@ -16,7 +16,8 @@ Rules implemented here, referenced by number from the Phase 3 spec:
   reason.
 * **L5** - cost is computed here from the model's registered prices and the provider's reported
   token usage. A response with no usage block records zeros, never a guess.
-* **L6** - every call passes a timeout to litellm.
+* **L6** - every call passes a timeout to litellm and has one total deadline of the same value. The service
+  cancels the call at the deadline.
 * **L7** - usage records older than the retention window are pruned by the service itself, at
   most once per process per day.
 * **L8** - a disabled provider or model, or one registered for the other job, is refused before
@@ -30,6 +31,7 @@ about the registry is carried in settings here, which is the whole point of ADR 
 reason the floor is 1.1 rather than 1.0.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -68,9 +70,11 @@ DEFAULTS = {
     "usage_retention_days": 90,
 }
 
-#: Applied when the caller does not set a timeout. There is no unbounded wait in any request path
-#: (rule L6).
 DEFAULT_TIMEOUT_SECONDS = 30
+"""The timeout and the total deadline of a call when the caller sets none (L6)."""
+
+DEADLINE_ERROR = "The call did not finish in {seconds} seconds. The app stopped the call."
+"""The error of a model call that its total deadline stopped."""
 
 #: Error text longer than this is truncated before it is recorded. The record exists to show that
 #: and why a call failed, not to archive a stack trace.
@@ -97,6 +101,8 @@ SESSION_ID_FORBIDDEN = re.compile(r"[^A-Za-z0-9._:-]")
 
 _process_session = None  # pylint: disable=invalid-name
 _process_session_lock = threading.Lock()
+_call_loop = None  # pylint: disable=invalid-name
+_call_loop_lock = threading.Lock()
 
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
 #: rather than one per call. The same shape as `StatsRecorder._prune`'s bookkeeping.
@@ -281,6 +287,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     `max_retries` goes to the client when it is not None. The agent and triage send 0, so the SDK does not
     send a timed-out request again.
 
+    The call has one total deadline: the resolved timeout. A call that does not finish is a failed call, with its usage
+    record. The timeout is the first positive number of the argument, the registry parameter, the integration, and 30.
+
     An answer with no text and no tool call is a failed call. A tool call with no text is a
     complete answer. A tool call problem keeps its own error text, so that the operator looks in
     the correct place. Logs one warning for an empty answer and for an answer that reached the
@@ -296,12 +305,11 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
     call_kwargs = _registry_call_kwargs(model)
 
-    # L6 - a call always has a timeout, and it comes from the most specific place that named one:
-    # this call, then the registry entry, then the integration, then the constant. `or` rather
-    # than `is not None` on purpose: a stored `null` or `0` is not somebody asking for no limit,
-    # it is a row that says nothing, and `setdefault` used to read it as an answer.
     call_kwargs["timeout"] = (
-        timeout or call_kwargs.get("timeout") or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS
+        _positive_seconds(timeout)
+        or _positive_seconds(call_kwargs.get("timeout"))
+        or _integration_timeout(model.provider)
+        or DEFAULT_TIMEOUT_SECONDS
     )
 
     registry_cap = registry_completion_cap(model)
@@ -328,7 +336,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
     started = time.monotonic()
     try:
-        raw = call(model_string, messages, **call_kwargs, **connection)
+        raw = _within_deadline(
+            lambda: call(model_string, messages, **call_kwargs, **connection), call_kwargs["timeout"]
+        )
     except Exception as error:  # pylint: disable=broad-except
         # L4 - whatever the client raised, the caller sees one family, and the failure is on the
         # record first (L1).
@@ -385,7 +395,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     the ExternalIntegration at call time (L3), pass a timeout (L6), write exactly one usage record
     whether it worked or not (L1), price it from the registry (L5), and let no provider exception
     escape the `LLMError` family (L4). An embedding call makes one attempt. `_litellm_embedding()` turns
-    the retry of the SDK off.
+    the retry of the SDK off. The total deadline is the resolved timeout, on each provider type.
 
     `client` is the test seam: a callable `(model_string, input, **kwargs)` returning a
     litellm-shaped embedding response. No test reaches a provider. `session_id` works as it does
@@ -400,7 +410,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     call = client if client is not None else _litellm_embedding()
 
     call_kwargs = {
-        "timeout": timeout or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
+        "timeout": _positive_seconds(timeout) or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
         "max_retries": 0,
     }
     model_string = _model_string(model)
@@ -408,7 +418,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
 
     started = time.monotonic()
     try:
-        raw = call(model_string, [text], **call_kwargs, **connection)
+        raw = _within_deadline(lambda: call(model_string, [text], **call_kwargs, **connection), call_kwargs["timeout"])
     except Exception as error:  # pylint: disable=broad-except
         record = _record_usage(
             model=model, ticket=ticket, purpose=purpose, latency_ms=_elapsed_ms(started), error=error
@@ -461,6 +471,8 @@ def _response_vector(raw):
 def _litellm_embedding():
     """Return litellm's embedding entry point, the one place it is reached (L2).
 
+    The client runs the async entry point, so that a call can be cancelled.
+
     litellm replaces `max_retries=0` with `litellm.DEFAULT_MAX_RETRIES` for an embedding. This function sets that
     value to 0, so an embedding call makes one attempt.
     """
@@ -473,7 +485,7 @@ def _litellm_embedding():
             "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
     litellm.DEFAULT_MAX_RETRIES = 0
-    return litellm.embedding
+    return _cancellable(litellm.aembedding)
 
 
 def link_usage_records(record_ids, ticket):
@@ -732,6 +744,77 @@ def _integration_timeout(provider):
     return timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
 
 
+def _positive_seconds(value):
+    """Return the value as a float if it is a positive number, and None if not. A boolean is not a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def _within_deadline(call, seconds):
+    """Return the result of `call()`, or raise `TimeoutError` if it gives none in `seconds`.
+
+    The call runs in a daemon thread, so that the caller waits no longer than the deadline in any
+    step, the name lookup included.
+    """
+    outcome = {}
+
+    def work():
+        try:
+            outcome["result"] = call()
+        except BaseException as error:  # pylint: disable=broad-except
+            outcome["error"] = error
+
+    worker = threading.Thread(target=work, name="llm-call", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if "error" in outcome:
+        raise outcome["error"]
+    if "result" in outcome:
+        return outcome["result"]
+    logger.warning("A model call did not finish in %s seconds. The app stopped the call.", f"{seconds:g}")
+    raise TimeoutError(DEADLINE_ERROR.format(seconds=f"{seconds:g}"))
+
+
+def _event_loop():
+    """Return the event loop that runs the model calls of this process, started on first use.
+
+    litellm keeps one client for each event loop, so one loop keeps one set of connections. A forked
+    worker has a new pid, so it starts its own loop. A lock guards the check and the write.
+    """
+    global _call_loop  # pylint: disable=global-statement
+    with _call_loop_lock:
+        pid = os.getpid()
+        if _call_loop is None or _call_loop[0] != pid:
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, name="llm-loop", daemon=True).start()
+            _call_loop = (pid, loop)
+        return _call_loop[1]
+
+
+def _cancellable(entry_point):
+    """Return a sync client that runs this async litellm entry point and cancels it at its timeout.
+
+    The call runs on the event loop of `_event_loop()`. The cancel closes the connection of a call that
+    did not finish. A call that finished leaves its connection to the client of litellm, for the next call.
+    """
+
+    def call(model_string, payload, **kwargs):
+        async def bounded():
+            limit = asyncio.timeout(kwargs["timeout"])
+            try:
+                async with limit:
+                    return await entry_point(model_string, payload, **kwargs)
+            except TimeoutError as error:
+                if not limit.expired():
+                    raise
+                raise TimeoutError(DEADLINE_ERROR.format(seconds=f"{kwargs['timeout']:g}")) from error
+
+        return asyncio.run_coroutine_threadsafe(bounded(), _event_loop()).result()
+
+    return call
+
+
 def _rendered(integration, method_name, context):
     """One of the integration's Jinja2-templated fields, rendered rather than read raw.
 
@@ -748,7 +831,10 @@ def _rendered(integration, method_name, context):
 
 
 def _litellm_completion():
-    """The one place litellm exists (L2). Imported lazily so the app runs without the extra."""
+    """The one place litellm exists (L2). Imported lazily so the app runs without the extra.
+
+    The client runs the async entry point, so that a call can be cancelled.
+    """
     try:
         import litellm  # pylint: disable=import-outside-toplevel
     except ImportError as error:
@@ -761,7 +847,7 @@ def _litellm_completion():
             f"{type(error).__name__}: {error}. "
             "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
-    return litellm.completion
+    return _cancellable(litellm.acompletion)
 
 
 def _token_usage(raw):

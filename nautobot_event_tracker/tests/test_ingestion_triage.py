@@ -5,6 +5,8 @@ with a canned client, so every triage decision here writes a real usage record -
 mocks litellm internals or opens a network connection.
 """
 
+from unittest import mock
+
 from django.test import TestCase
 from django.utils import timezone
 from nautobot_ai_models.models import AIModel, AIProvider
@@ -16,6 +18,7 @@ from nautobot_event_tracker.ingestion.normalize import NormalizedEvent
 from nautobot_event_tracker.ingestion.prefilter import ACCEPT, Decision, FilterResult
 from nautobot_event_tracker.ingestion.triage import TriageFilter
 from nautobot_event_tracker.models import EventType, LLMUsageRecord
+from nautobot_event_tracker.services import llm as llm_service
 from nautobot_event_tracker.services.exceptions import LLMConfigurationError
 from nautobot_event_tracker.tests import fixtures
 from nautobot_event_tracker.tests.fixtures import TRIAGE_SETTINGS, FakeComplete
@@ -184,6 +187,28 @@ class TestTheVerdicts(TriageTestCase):
         record = LLMUsageRecord.objects.get()
         self.assertFalse(record.success)
         self.assertEqual(result.usage_record_ids, (record.pk,))
+
+
+class TestTheDeadlineOfTheTriageCall(TriageTestCase):
+    """T4 and the deadline - the real service function, with the stop of the deadline."""
+
+    def test_a_call_that_the_deadline_stops_accepts_the_event(self):
+        """The decision is accept, the error counts, and one failed usage row exists."""
+        with fixtures.ingestion_settings(
+            triage=TRIAGE_SETTINGS, topics={"network.events": fixtures.INGESTION_TOPIC}, consumer_name=""
+        ):
+            loaded = config.load()
+        self.topic_config = loaded.topics["network.events"]
+        stop = TimeoutError("The call did not finish in 30 seconds. The app stopped the call.")
+
+        with mock.patch.object(llm_service, "_within_deadline", side_effect=stop):
+            result = self.decide(TriageFilter(loaded))
+
+        self.assertEqual(result.decision.action, ACTION_ACCEPT)
+        self.assertTrue(result.errored)
+        record = LLMUsageRecord.objects.get()
+        self.assertFalse(record.success)
+        self.assertEqual(record.error, str(stop))
 
 
 class TestWhatNeverReachesTheModel(TriageTestCase):

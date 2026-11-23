@@ -1,0 +1,2 @@
+Fixed model calls that waited with no end for a slow answer. A triage, agent, or embedding call now stops after one `timeout_seconds` in total.
+Fixed embedding calls on an Ollama provider. The `timeout_seconds` setting of `rag` now limits the call, and `REQUEST_TIMEOUT` is not necessary.
