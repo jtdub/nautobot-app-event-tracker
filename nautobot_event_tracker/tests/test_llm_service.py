@@ -5,6 +5,7 @@ internals, so everything up to the wire is exercised for real and no test opens 
 connection.
 """
 
+import asyncio
 import os
 import threading
 import uuid
@@ -1221,3 +1222,92 @@ class TestSessionId(TestCase):
     def test_a_long_session_id_is_cut(self):
         """AC-5: the value stops at 128 characters."""
         self.assertEqual(self._session_header_of_one_call(session_id="x" * 300), "x" * 128)
+
+
+DEADLINE_TEXT = "The call did not finish in {seconds} seconds. The app stopped the call."
+
+
+def blocked_call():
+    """Return a callable that waits until the test ends, and its release event."""
+    release = threading.Event()
+    return (lambda: release.wait(30)), release
+
+
+class TestTheDeadline(TestCase):
+    """AC-1, AC-4, AC-6 - one total deadline for each model call."""
+
+    def start_blocked_call(self):
+        """Return a callable that blocks, with a cleanup that frees its thread."""
+        work, release = blocked_call()
+        self.addCleanup(release.set)
+        return work
+
+    def test_a_call_that_gives_no_result_raises_at_the_deadline(self):
+        """The wait ends with `TimeoutError` and one warning."""
+        work = self.start_blocked_call()
+        with self.assertLogs(llm_service.logger, level="WARNING") as logged:
+            with self.assertRaises(TimeoutError) as raised:
+                llm_service._within_deadline(work, 0)  # pylint: disable=protected-access
+        self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=0))
+        self.assertEqual(len(logged.records), 1)
+
+    def test_an_error_of_the_call_goes_on_as_itself(self):
+        """The same error object reaches the caller."""
+        error = ValueError("x")
+
+        def work():
+            raise error
+
+        with self.assertRaises(ValueError) as raised:
+            llm_service._within_deadline(work, 5)  # pylint: disable=protected-access
+        self.assertIs(raised.exception, error)
+
+    def test_a_result_goes_on(self):
+        """A result goes on, a `None` result goes on, and a result at the deadline goes on."""
+        real_join = threading.Thread.join
+
+        def join_without_limit(thread, timeout=None):
+            return real_join(thread)
+
+        with self.subTest("a value"):
+            self.assertEqual(llm_service._within_deadline(lambda: "x", 5), "x")  # pylint: disable=protected-access
+        with self.subTest("none"):
+            self.assertIsNone(llm_service._within_deadline(lambda: None, 5))  # pylint: disable=protected-access
+        with self.subTest("a call that ended at the deadline"):
+            with mock.patch.object(threading.Thread, "join", join_without_limit):
+                self.assertEqual(llm_service._within_deadline(lambda: "x", 0), "x")  # pylint: disable=protected-access
+
+    def test_the_cancel_ends_the_stopped_call(self):
+        """The async entry point is cancelled at its timeout, and the other outcomes go on."""
+
+        async def never_ends(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        async def gives_a_value(*_args, **_kwargs):
+            return "value"
+
+        async def times_out_by_itself(*_args, **_kwargs):
+            raise TimeoutError("inner")
+
+        with self.subTest("the deadline stops the call"):
+            with self.assertRaises(TimeoutError) as raised:
+                llm_service._cancellable(never_ends)("m", [], timeout=0)  # pylint: disable=protected-access
+            self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=0))
+        with self.subTest("a result goes on"):
+            self.assertEqual(
+                llm_service._cancellable(gives_a_value)("m", [], timeout=60), "value"  # pylint: disable=protected-access
+            )
+        with self.subTest("a timeout of the client goes on"):
+            with self.assertRaises(TimeoutError) as raised:
+                llm_service._cancellable(times_out_by_itself)("m", [], timeout=60)  # pylint: disable=protected-access
+            self.assertEqual(str(raised.exception), "inner")
+
+    def test_the_deadline_text_has_no_trailing_zero(self):
+        """The seconds use the `g` format."""
+        work = self.start_blocked_call()
+        with mock.patch.object(threading.Thread, "join", lambda thread, timeout=None: None):
+            for seconds, text in ((60.0, "60"), (0.5, "0.5")):
+                with self.subTest(seconds=seconds):
+                    with self.assertRaises(TimeoutError) as raised:
+                        llm_service._within_deadline(work, seconds)  # pylint: disable=protected-access
+                    self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=text))

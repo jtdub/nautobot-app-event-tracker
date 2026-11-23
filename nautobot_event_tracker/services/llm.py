@@ -16,7 +16,8 @@ Rules implemented here, referenced by number from the Phase 3 spec:
   reason.
 * **L5** - cost is computed here from the model's registered prices and the provider's reported
   token usage. A response with no usage block records zeros, never a guess.
-* **L6** - every call passes a timeout to litellm.
+* **L6** - every call passes a timeout to litellm and has one total deadline of the same value. The service
+  cancels the call at the deadline.
 * **L7** - usage records older than the retention window are pruned by the service itself, at
   most once per process per day.
 * **L8** - a disabled provider or model, or one registered for the other job, is refused before
@@ -30,6 +31,7 @@ about the registry is carried in settings here, which is the whole point of ADR 
 reason the floor is 1.1 rather than 1.0.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -68,9 +70,11 @@ DEFAULTS = {
     "usage_retention_days": 90,
 }
 
-#: Applied when the caller does not set a timeout. There is no unbounded wait in any request path
-#: (rule L6).
 DEFAULT_TIMEOUT_SECONDS = 30
+"""The timeout and the total deadline of a call when the caller sets none (L6)."""
+
+DEADLINE_ERROR = "The call did not finish in {seconds} seconds. The app stopped the call."
+"""The error of a model call that its total deadline stopped."""
 
 #: Error text longer than this is truncated before it is recorded. The record exists to show that
 #: and why a call failed, not to archive a stack trace.
@@ -730,6 +734,59 @@ def _integration_timeout(provider):
     """
     timeout = getattr(provider.external_integration, "timeout", None)
     return timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
+
+
+def _positive_seconds(value):
+    """Return the value as a float if it is a positive number, and None if not. A boolean is not a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def _within_deadline(call, seconds):
+    """Return the result of `call()`, or raise `TimeoutError` if it gives none in `seconds`.
+
+    The call runs in a daemon thread, so that the caller waits no longer than the deadline in any
+    step, the name lookup included.
+    """
+    outcome = {}
+
+    def work():
+        try:
+            outcome["result"] = call()
+        except BaseException as error:  # pylint: disable=broad-except
+            outcome["error"] = error
+
+    worker = threading.Thread(target=work, name="llm-call", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if "error" in outcome:
+        raise outcome["error"]
+    if "result" in outcome:
+        return outcome["result"]
+    logger.warning("A model call did not finish in %s seconds. The app stopped the call.", f"{seconds:g}")
+    raise TimeoutError(DEADLINE_ERROR.format(seconds=f"{seconds:g}"))
+
+
+def _cancellable(entry_point):
+    """Return a sync client that runs this async litellm entry point and cancels it at its timeout.
+
+    The cancel closes the connection, so the thread that `_within_deadline` started ends.
+    """
+
+    def call(model_string, payload, **kwargs):
+        async def bounded():
+            try:
+                async with asyncio.timeout(kwargs["timeout"]) as limit:
+                    return await entry_point(model_string, payload, **kwargs)
+            except TimeoutError as error:
+                if not limit.expired():
+                    raise
+                raise TimeoutError(DEADLINE_ERROR.format(seconds=f"{kwargs['timeout']:g}")) from error
+
+        return asyncio.run(bounded())
+
+    return call
 
 
 def _rendered(integration, method_name, context):
