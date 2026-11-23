@@ -14,6 +14,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock
 
+from celery.exceptions import SoftTimeLimitExceeded
 from django.core.exceptions import ImproperlyConfigured
 from django.db import DatabaseError
 from django.test import override_settings
@@ -27,7 +28,12 @@ from nautobot_ai_models.models import AIModel
 from nautobot_event_tracker.choices import LLMPurposeChoices
 from nautobot_event_tracker.models import LLMUsageRecord
 from nautobot_event_tracker.services import llm as llm_service
-from nautobot_event_tracker.services.exceptions import LLMCallError, LLMConfigurationError, LLMResponseError
+from nautobot_event_tracker.services.exceptions import (
+    LLMCallError,
+    LLMConfigurationError,
+    LLMResponseError,
+    is_soft_time_limit,
+)
 from nautobot_event_tracker.tests import fixtures
 from nautobot_event_tracker.tests.fixtures import FakeEmbeddingClient, FakeLLMClient, FakeLLMResponse
 
@@ -1311,3 +1317,129 @@ class TestTheDeadline(TestCase):
                     with self.assertRaises(TimeoutError) as raised:
                         llm_service._within_deadline(work, seconds)  # pylint: disable=protected-access
                     self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=text))
+
+
+class TestTheSoftTimeLimitInTheWait(TestCase):
+    """AC-5 - the soft time limit of the Job, raised while the caller waits."""
+
+    def test_the_soft_time_limit_in_the_wait_is_recorded_and_goes_on(self):
+        """One row, then `LLMCallError` with the limit as its cause."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocked_client(*_args, **_kwargs):
+            return release.wait(30)
+
+        with mock.patch.object(threading.Thread, "join", side_effect=SoftTimeLimitExceeded()):
+            with self.assertRaises(LLMCallError) as raised:
+                call(fixtures.create_llmmodel(name="g"), blocked_client)
+        self.assertTrue(is_soft_time_limit(raised.exception))
+        self.assertEqual(LLMUsageRecord.objects.count(), 1)
+
+
+class TestTheDeadlineOfACall(TestCase):
+    """AC-1, AC-2, AC-3, AC-5 - `complete()` and `embed()` use the resolved timeout as the deadline."""
+
+    def setUp(self):
+        """Record the deadline that each call gets, and run the call."""
+        super().setUp()
+        self.deadlines = []
+
+        def record_and_run(work, seconds):
+            self.deadlines.append(seconds)
+            return work()
+
+        patcher = mock.patch.object(llm_service, "_within_deadline", record_and_run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_complete_uses_the_resolved_timeout_as_the_deadline(self):
+        """Each source of the timeout is also the deadline."""
+        integration = fixtures.create_external_integration(name="Nine", timeout=9)
+        provider = fixtures.create_llmprovider(name="Nine Provider", external_integration=integration)
+        cases = {
+            "the argument": (fixtures.create_llmmodel(name="a"), {"timeout": 7}, 7),
+            "the registry parameter": (
+                fixtures.create_llmmodel(name="b", default_parameters={"timeout": 8}),
+                {},
+                8,
+            ),
+            "the integration": (fixtures.create_llmmodel(name="c", provider=provider), {}, 9),
+            "the default": (fixtures.create_llmmodel(name="d"), {}, llm_service.DEFAULT_TIMEOUT_SECONDS),
+        }
+        for name, (model, arguments, expected) in cases.items():
+            with self.subTest(name):
+                client = FakeLLMClient()
+                call(model, client, **arguments)
+                self.assertEqual(client.calls[0]["timeout"], expected)
+                self.assertEqual(self.deadlines[-1], expected)
+
+    def test_a_timeout_that_is_not_a_positive_number_is_skipped(self):
+        """A string, zero, a negative number and a boolean pass to the next source."""
+        for bad in ("45", 0, -1, True):
+            with self.subTest(source="argument", value=bad):
+                client = FakeLLMClient()
+                call(fixtures.create_llmmodel(name="e"), client, timeout=bad)
+                self.assertEqual(client.calls[0]["timeout"], llm_service.DEFAULT_TIMEOUT_SECONDS)
+            with self.subTest(source="registry", value=bad):
+                model = fixtures.create_llmmodel(name="f")
+                AIModel.objects.filter(pk=model.pk).update(default_parameters={"timeout": bad})
+                model.refresh_from_db()
+                client = FakeLLMClient()
+                call(model, client)
+                self.assertEqual(client.calls[0]["timeout"], llm_service.DEFAULT_TIMEOUT_SECONDS)
+                self.assertIsInstance(client.calls[0]["timeout"], (int, float))
+
+    def test_a_stopped_chat_call_writes_one_failed_row(self):
+        """AC-3 - the row has the deadline text, zero tokens and zero cost."""
+        error = TimeoutError(DEADLINE_TEXT.format(seconds="60"))
+        model = fixtures.create_llmmodel(name="h")
+        with mock.patch.object(llm_service, "_within_deadline", side_effect=error):
+            with self.assertRaises(LLMCallError):
+                call(model, FakeLLMClient())
+        record = LLMUsageRecord.objects.get()
+        self.assertFalse(record.success)
+        self.assertEqual((record.prompt_tokens, record.completion_tokens, record.cost), (0, 0, 0))
+        self.assertEqual(record.error, DEADLINE_TEXT.format(seconds="60"))
+
+    def test_embed_uses_the_resolved_timeout_as_the_deadline(self):
+        """Each source of the timeout is the deadline, on each provider type."""
+        integration = fixtures.create_external_integration(name="Nine Embedding", timeout=9)
+        provider = fixtures.create_llmprovider(name="Nine Embedding Provider", external_integration=integration)
+        cases = {
+            "the argument": (fixtures.create_embedding_model(name="a"), {"timeout": 7}, 7),
+            "the integration": (fixtures.create_embedding_model(name="b", provider=provider), {}, 9),
+            "the default": (fixtures.create_embedding_model(name="c"), {}, llm_service.DEFAULT_TIMEOUT_SECONDS),
+        }
+        for name, (model, arguments, expected) in cases.items():
+            with self.subTest(name):
+                client = FakeEmbeddingClient()
+                llm_service.embed(model=model, text="hello", client=client, **arguments)
+                self.assertEqual(client.calls[0]["timeout"], expected)
+                self.assertEqual(self.deadlines[-1], expected)
+        for provider_type in (
+            AIProviderTypeChoices.OPENAI,
+            AIProviderTypeChoices.OPENAI_COMPATIBLE,
+            AIProviderTypeChoices.OLLAMA,
+            AIProviderTypeChoices.ANTHROPIC,
+        ):
+            with self.subTest(provider_type=provider_type):
+                typed = fixtures.create_llmprovider(name=f"Typed {provider_type}", provider_type=provider_type)
+                client = FakeEmbeddingClient()
+                llm_service.embed(
+                    model=fixtures.create_embedding_model(name=f"t-{provider_type}", provider=typed),
+                    text="hello",
+                    client=client,
+                )
+                self.assertEqual(self.deadlines[-1], llm_service.DEFAULT_TIMEOUT_SECONDS)
+
+    def test_a_stopped_embedding_call_writes_one_failed_row(self):
+        """AC-3 - the same row as a chat call."""
+        error = TimeoutError(DEADLINE_TEXT.format(seconds="60"))
+        model = fixtures.create_embedding_model(name="i")
+        with mock.patch.object(llm_service, "_within_deadline", side_effect=error):
+            with self.assertRaises(LLMCallError):
+                llm_service.embed(model=model, text="hello", client=FakeEmbeddingClient())
+        record = LLMUsageRecord.objects.get()
+        self.assertFalse(record.success)
+        self.assertEqual(record.error, DEADLINE_TEXT.format(seconds="60"))

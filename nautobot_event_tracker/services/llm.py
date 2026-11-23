@@ -285,6 +285,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
     `max_retries` goes to the client when it is not None. The agent and triage send 0, so the SDK does not
     send a timed-out request again.
 
+    The call has one total deadline: the resolved timeout. A call that does not finish is a failed call, with its usage
+    record. The timeout is the first positive number of the argument, the registry parameter, the integration, and 30.
+
     An answer with no text and no tool call is a failed call. A tool call with no text is a
     complete answer. A tool call problem keeps its own error text, so that the operator looks in
     the correct place. Logs one warning for an empty answer and for an answer that reached the
@@ -300,12 +303,11 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
     call_kwargs = _registry_call_kwargs(model)
 
-    # L6 - a call always has a timeout, and it comes from the most specific place that named one:
-    # this call, then the registry entry, then the integration, then the constant. `or` rather
-    # than `is not None` on purpose: a stored `null` or `0` is not somebody asking for no limit,
-    # it is a row that says nothing, and `setdefault` used to read it as an answer.
     call_kwargs["timeout"] = (
-        timeout or call_kwargs.get("timeout") or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS
+        _positive_seconds(timeout)
+        or _positive_seconds(call_kwargs.get("timeout"))
+        or _integration_timeout(model.provider)
+        or DEFAULT_TIMEOUT_SECONDS
     )
 
     registry_cap = registry_completion_cap(model)
@@ -332,7 +334,7 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
     started = time.monotonic()
     try:
-        raw = call(model_string, messages, **call_kwargs, **connection)
+        raw = _within_deadline(lambda: call(model_string, messages, **call_kwargs, **connection), call_kwargs["timeout"])
     except Exception as error:  # pylint: disable=broad-except
         # L4 - whatever the client raised, the caller sees one family, and the failure is on the
         # record first (L1).
@@ -389,7 +391,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     the ExternalIntegration at call time (L3), pass a timeout (L6), write exactly one usage record
     whether it worked or not (L1), price it from the registry (L5), and let no provider exception
     escape the `LLMError` family (L4). An embedding call makes one attempt. `_litellm_embedding()` turns
-    the retry of the SDK off.
+    the retry of the SDK off. The total deadline is the resolved timeout, on each provider type.
 
     `client` is the test seam: a callable `(model_string, input, **kwargs)` returning a
     litellm-shaped embedding response. No test reaches a provider. `session_id` works as it does
@@ -404,7 +406,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
     call = client if client is not None else _litellm_embedding()
 
     call_kwargs = {
-        "timeout": timeout or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
+        "timeout": _positive_seconds(timeout) or _integration_timeout(model.provider) or DEFAULT_TIMEOUT_SECONDS,
         "max_retries": 0,
     }
     model_string = _model_string(model)
@@ -412,7 +414,7 @@ def embed(  # pylint: disable=too-many-arguments,too-many-locals
 
     started = time.monotonic()
     try:
-        raw = call(model_string, [text], **call_kwargs, **connection)
+        raw = _within_deadline(lambda: call(model_string, [text], **call_kwargs, **connection), call_kwargs["timeout"])
     except Exception as error:  # pylint: disable=broad-except
         record = _record_usage(
             model=model, ticket=ticket, purpose=purpose, latency_ms=_elapsed_ms(started), error=error
