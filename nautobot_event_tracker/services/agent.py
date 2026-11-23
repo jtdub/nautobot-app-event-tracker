@@ -558,7 +558,7 @@ def _bury(run):
         "restart or an out-of-memory kill. Marked failed so the ticket can be worked again."
     )
     if any(row.tool.writable for row in cut):
-        run.error = f"{run.error} {mcp_service.CUT_CHANGE_ERROR}"
+        run.error = f"{run.error} {mcp_service.CUT_CHANGE_RUN_NOTE}"
     run.finished_at = timezone.now()
     run.save()
     _record_cut_calls(run.ticket, cut)
@@ -690,11 +690,23 @@ def _with_unique_identifiers(calls, used):
 
 
 def _was_cut(call):
-    """Return True if the call row records that the soft time limit cut it."""
-    return call.status == AgentToolCallStatusChoices.FAILED and call.error in (
-        mcp_service.SOFT_TIME_LIMIT_CALL_ERROR,
-        mcp_service.CUT_CHANGE_ERROR,
-    )
+    """Return True if the row of the call in flight has an outcome that the loop did not record.
+
+    That is a read-only call that the soft time limit cut, or a call with the status `outcome_unknown`.
+    """
+    if call.status == AgentToolCallStatusChoices.OUTCOME_UNKNOWN:
+        return True
+    return call.status == AgentToolCallStatusChoices.FAILED and call.error == mcp_service.SOFT_TIME_LIMIT_CALL_ERROR
+
+
+def _soft_time_limit_message(limit, activity, cut_change, first_cause):
+    """Return the run error for a soft time limit: the limit, the note for a cut change, the earlier cause."""
+    message = SOFT_TIME_LIMIT_RUN_ERROR.format(limit=limit, activity=activity)
+    if cut_change:
+        message = f"{message} {mcp_service.CUT_CHANGE_RUN_NOTE}"
+    if first_cause:
+        message = f"{message}{SOFT_TIME_LIMIT_FIRST_CAUSE}{first_cause}"
+    return message
 
 
 class _Loop:  # pylint: disable=too-many-instance-attributes
@@ -1015,10 +1027,13 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
     def _result_text(record):
         """What the model is told a call did. The row's own words, never a summary of them.
 
-        A note line comes first when the row carries the key `separators_shortened`.
+        A note line comes first when the row carries the key `separators_shortened`. A call with the
+        status `outcome_unknown` is not reported as failed.
         """
         if record is None:
             return "The approved call could not be found."
+        if record.status == AgentToolCallStatusChoices.OUTCOME_UNKNOWN:
+            return f"The outcome of the call is not known: {record.error}"
         if record.error:
             return f"The call failed: {record.error}"
         result = record.result or {}
@@ -1169,7 +1184,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
 
         A run that already wrote its end status keeps it. A run that had another cause keeps that
         cause in the text. A cut call of a writable tool adds the warning that the change might be
-        in effect.
+        in effect, and the status of the call.
         """
         if self.run.status != AgentRunStatusChoices.RUNNING:
             self._save()
@@ -1179,13 +1194,12 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         if in_flight is not None and in_flight.pk not in {row.pk for row in cut} and _was_cut(in_flight):
             cut.append(in_flight)
         _record_cut_calls(self.ticket, cut)
-        message = SOFT_TIME_LIMIT_RUN_ERROR.format(
-            limit=round(self._job_soft_time_limit), activity=self._activity or "its work"
+        message = _soft_time_limit_message(
+            limit=round(self._job_soft_time_limit),
+            activity=self._activity or "its work",
+            cut_change=any(row.tool.writable for row in cut),
+            first_cause=self.run.error,
         )
-        if any(row.tool.writable for row in cut):
-            message = f"{message} {mcp_service.CUT_CHANGE_ERROR}"
-        if self.run.error:
-            message = f"{message}{SOFT_TIME_LIMIT_FIRST_CAUSE}{self.run.error}"
         self._fail(message)
 
     def _in_flight_row(self):

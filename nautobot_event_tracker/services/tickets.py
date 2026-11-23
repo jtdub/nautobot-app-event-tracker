@@ -29,6 +29,7 @@ from nautobot_event_tracker.choices import (
     ATTACHMENT_UPDATE_TYPES,
     TERMINAL_STATUSES,
     TICKET_STATUS_TRANSITIONS,
+    AgentToolCallStatusChoices,
     TicketSourceChoices,
     TicketStatusChoices,
     UpdateTypeChoices,
@@ -502,13 +503,31 @@ def _rendered_arguments(tool_call):
     return rendered
 
 
+EARLIER_OUTCOME_UNKNOWN_NOTE = (
+    " An earlier call of this tool on this ticket has the status Outcome Unknown. "
+    "The change might be in effect. Check the device before you approve this call."
+)
+"""The words that a proposal entry adds when the ticket has a call of the same tool with no known outcome."""
+
+
+def _has_earlier_unknown_outcome(ticket, tool_call):
+    """Return True if this ticket has another call of the same tool with the status `outcome_unknown`."""
+    return (
+        tool_call.tool.event_tracker_calls.filter(run__ticket=ticket, status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+        .exclude(pk=tool_call.pk)
+        .exists()
+    )
+
+
 def record_tool_proposal(*, ticket, tool_call):
     """Record that an agent wants to call a mutating tool, and is waiting for a person (7.1).
 
     Written as `source=ai` with no user, like everything else the model decided (A4). Nothing has
-    been called when this is written, and nothing will be until somebody presses Approve.
+    been called when this is written, and nothing will be until somebody presses Approve. The entry
+    says so when the ticket has an earlier call of the same tool with the status `outcome_unknown`.
     """
     _check_mutable(ticket, TicketSourceChoices.AI)
+    note = EARLIER_OUTCOME_UNKNOWN_NOTE if _has_earlier_unknown_outcome(ticket, tool_call) else ""
 
     with transaction.atomic():
         return _record(
@@ -518,7 +537,7 @@ def record_tool_proposal(*, ticket, tool_call):
             message=(
                 f"Agent proposes calling '{tool_call.tool.name}' on MCP server "
                 f"'{tool_call.tool.mcp_server.name}' with arguments {_rendered_arguments(tool_call)}. "
-                "Nothing has been called; this needs a human decision."
+                f"Nothing has been called; this needs a human decision.{note}"
             ),
         )
 
