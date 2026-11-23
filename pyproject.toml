@@ -61,6 +61,8 @@ pgvector = ">=0.3.0,<1.0.0"
 # rather than relied on as one of mcp's own dependencies - which is where it comes from today, and
 # which would surface as an ImproperlyConfigured naming the wrong extra the day it stops.
 httpx2 = { version = ">=2.12.0,<3.0.0", optional = true }
+# Imported by services/mcp.py for the cancel scope of a call, so it is declared, as httpx2 is.
+anyio = { version = ">=4.10,<5.0.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 coverage = "*"
@@ -99,8 +101,9 @@ mkdocs-glightbox = "~0.5.2"
 [tool.poetry.extras]
 kafka = ["confluent-kafka"]
 llm = ["litellm"]
-mcp = ["mcp", "httpx2"]
+mcp = ["anyio", "httpx2", "mcp"]
 all = [
+    "anyio",
     "confluent-kafka",
     "httpx2",
     "litellm",

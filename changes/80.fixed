@@ -1,0 +1,2 @@
+Fixed agent tool calls that waited for a slow MCP server past their time limit. A tool call now stops after two times `tool_timeout_seconds`.
+Fixed the error of a Mutating tool call that failed with no answer. The error now says that the change might be in effect.

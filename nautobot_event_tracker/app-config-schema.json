@@ -94,7 +94,7 @@
                 },
                 "tool_timeout_seconds": {
                     "type": "number",
-                    "description": "How long one tool call may take.",
+                    "description": "How long one step of a tool call may take. The full call may take two times this value.",
                     "exclusiveMinimum": 0,
                     "default": 30
                 }

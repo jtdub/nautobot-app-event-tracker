@@ -1,0 +1,1 @@
+Changed a tool call that takes longer than two times `tool_timeout_seconds` to fail.

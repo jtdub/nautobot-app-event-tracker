@@ -60,7 +60,19 @@ class MCPConfigurationError(MCPError):
 
 
 class MCPCallError(MCPError):
-    """The call was attempted and did not come back usable."""
+    """The call was attempted and did not come back usable.
+
+    `call_sent` is True if the app sent the tool call to the server before the failure.
+    """
+
+    def __init__(self, message, *, call_sent=False):
+        """Keep whether the server can have the tool call."""
+        super().__init__(message)
+        self.call_sent = call_sent
+
+
+class MCPDeadlineError(MCPCallError):
+    """The call did not finish before its total deadline."""
 
 
 class AgentError(Exception):

@@ -36,8 +36,8 @@ Each other setting has a default:
 | `max_tool_result_chars` | 8000 | The size of one tool answer that the app keeps. The app makes separator lines and table spaces short first. |
 | `max_context_chars` | 8000 | The size of the raw payload of the ticket that goes into the prompt. |
 | `max_transcript_chars` | 60000 | The maximum size of the transcript of a run. |
-| `timeout_seconds` | 60 | The time limit of one model call. The agent does not try the call again. |
-| `tool_timeout_seconds` | 30 | The time limit of one step of a tool call. A call can take two times this value or more. |
+| `timeout_seconds` | 60 | The time limit of one full model call. The agent does not try the call again. |
+| `tool_timeout_seconds` | 30 | The time limit of one step of a tool call. The full call can take two times this value. |
 
 Before the app applies `max_tool_result_chars`, it makes padding short. A run of 10 or more `=`, `-` or `+`
 becomes 3 characters. In a table row that starts with `|`, a run of 2 or more spaces becomes one space. The
@@ -66,12 +66,16 @@ starts a read-only tool call only if two times `tool_timeout_seconds` plus 30 se
 no call starts after 510 seconds. A run that stops this way is Completed. The ticket comment starts with "The
 agent stopped at the run time limit".
 
+These two values are also the total time limits of a call. A model call stops after `timeout_seconds`. A
+tool call stops after two times `tool_timeout_seconds`. So a call that starts in time also ends in time. One
+step is an exception: the name lookup of an MCP server does not count against the limit of a tool call.
+
 You can change the limits of the Job. A lower limit stops a run sooner. A higher limit does not give a run more
 time.
 
-A higher limit has one use. A call can be slower than its allowance. With the default limits, the Job cuts off
-such a call at 600 seconds, and the run is Failed. With higher limits, the call can finish. The run then stops
-at the run time limit, and it is Completed.
+A higher limit has one use. A slow name lookup of an MCP server can make a tool call slower than its
+allowance. With the default limits, the Job cuts off such a call at 600 seconds, and the run is Failed. With
+higher limits, the call can finish. The run then stops at the run time limit, and it is Completed.
 
 The app stores the hard time limit of the Job on each run. The detail page of the run shows it as **Hard Time
 Limit (seconds)**.
@@ -107,6 +111,19 @@ A resumption run makes an approved call. It does not start if two times `tool_ti
 seconds do not fit in the run time limit. The call stays approved. Set the limits of the Job back to their
 defaults, or lower `tool_timeout_seconds`. To restore a default, clear **Override default value** for the
 limit. Then run the agent again.
+
+### A tool call that reaches its time limit
+
+A tool call that does not finish in two times `tool_timeout_seconds` is Failed. Its error is "The call did
+not finish in 60 seconds." with the defaults. The run continues, and the model reads the error. The update
+trail of the ticket has an entry for the call.
+
+A Mutating tool call can fail after the app sent it and before an answer came. The error then also says that
+the change might be in effect. Check the device before you approve the same change again. This is true for
+the time limit and for each other failure at that point.
+
+If the tool gave its answer and only the close of the session is slow, the call is Executed with the answer.
+The Nautobot log has a warning.
 
 ## Run the agent {#running-it}
 

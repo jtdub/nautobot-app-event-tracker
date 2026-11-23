@@ -28,9 +28,11 @@ Rules implemented here, referenced by number from the Phase 4B spec:
   the call, so two callers cannot both make it.
 * **M7** - every call is on the record - arguments, result, latency, error - before its caller
   sees any of it. Rule L1's promise, made about the other kind of call this app makes. A call that
-  the soft time limit of the Job interrupts is recorded as failed before the error goes on.
-* **M8** - every call is bounded in both directions: a timeout going out, and a cap on the result
-  coming back. Long separator runs and the cell spaces of `|` rows are made short before the cap.
+  the soft time limit of the Job interrupts is recorded as failed before the error goes on. A call
+  of a writable tool that was sent and has no answer says that the change might be in effect.
+* **M8** - every call is bounded in both directions. Each step has a timeout, the call has one total
+  deadline of two timeouts, and the result has a cap. Long separator runs and the cell spaces of `|`
+  rows are made short before the cap.
 """
 
 import asyncio
@@ -54,6 +56,7 @@ from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import (
     MCPCallError,
     MCPConfigurationError,
+    MCPDeadlineError,
     MCPError,
     is_soft_time_limit,
 )
@@ -66,11 +69,26 @@ DEFAULT_TIMEOUT_SECONDS = 30
 SOFT_TIME_LIMIT_CALL_ERROR = "The Job reached its soft time limit before this call finished."
 """The error of a read-only call that the soft time limit of the Job interrupted."""
 
-CUT_CHANGE_ERROR = (
-    "The call was interrupted before the app got an answer. This tool changes the network, so the change might be "
-    "in effect. Check the device before you approve the same change again."
+CALL_DEADLINE_TIMEOUTS = 2
+"""Timeouts that one call can take in total (M8)."""
+
+DEADLINE_CALL_ERROR = "The call did not finish in {seconds} seconds."
+"""The error of a call that its total deadline stopped."""
+
+CHANGE_MIGHT_BE_IN_EFFECT = (
+    "This tool changes the network, so the change might be in effect. "
+    "Check the device before you approve the same change again."
 )
+"""The warning of a call of a writable tool that was sent and has no answer."""
+
+CUT_CHANGE_ERROR = f"The call was interrupted before the app got an answer. {CHANGE_MIGHT_BE_IN_EFFECT}"
 """The error of a call of a writable tool that a stop interrupted."""
+
+
+def call_deadline(timeout):
+    """Return the total deadline, in seconds, of a call with this timeout."""
+    return CALL_DEADLINE_TIMEOUTS * timeout
+
 
 DEAD_PROCESS_CALL_ERROR = "The process that ran this agent stopped before this call finished."
 """The error of a read-only call that a dead process left unfinished."""
@@ -83,10 +101,8 @@ SHORT_SEPARATOR_LENGTH = 3
 TABLE_ROW_SPACE_RUN = re.compile(r"(?<=\S)[ \t]{2,}")
 """Two or more spaces or tabs after a character that is not whitespace (M8)."""
 
-#: How long the read side of a session may wait. The transport keeps a server-sent-event stream
-#: open, so the read deadline is not the request deadline and must not be set from it. Matches what
-#: the SDK's own HTTP client factory uses.
 SSE_READ_TIMEOUT_SECONDS = 300
+"""The read timeout of the HTTP client. The stream stays open, so it is not the timeout of a request."""
 
 CALLABLE_TRANSPORTS = (MCPTransportChoices.TYPE_STREAMABLE_HTTP,)
 """The transports that this app calls (M2).
@@ -122,6 +138,11 @@ class MCPConnection:
     headers: dict = field(default_factory=dict)
     verify: object = True
     timeout: float = DEFAULT_TIMEOUT_SECONDS
+
+    @property
+    def deadline(self):
+        """Return the total deadline of one call, in seconds."""
+        return call_deadline(self.timeout)
 
     def __repr__(self):
         """Say everything except the header values, one of which is usually the credential.
@@ -199,7 +220,9 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     error of its own is a `failed` row and not an exception: the server was reached and had
     something to say, and what it said is the model's to read (section 7.4). Raises
     `MCPConfigurationError` when the call is refused before any network I/O, and `MCPCallError`
-    when it left the process and did not come back usable. The soft time limit of the Job is raised again as itself, after the row is written (M7).
+    when it left the process and did not come back usable. A call that does not finish before its total
+    deadline is recorded as failed, then raised as `MCPDeadlineError`. The soft time limit of the Job is raised
+    again as itself, after the row is written (M7).
     """
     cap = int(max_result_chars) if max_result_chars else DEFAULT_MAX_RESULT_CHARS
 
@@ -233,7 +256,7 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
             )
             raise
         # M7 - on the record first, then the caller hears about it.
-        _finish(tool_call, latency_ms=_elapsed_ms(started), error=f"The call failed: {error}")
+        _finish(tool_call, latency_ms=_elapsed_ms(started), error=_failure_text(error, tool))
         # The family the caller expects is preserved: a configuration fault stays one, and a
         # missing extra stays the deployment fault it is (deliberately outside `MCPError`, so
         # nothing on the agent's path swallows it as a bad tool call).
@@ -250,6 +273,15 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
         error = result.get("text") or "The server reported an error and said nothing about it."
     _finish(tool_call, latency_ms=_elapsed_ms(started), result=result, error=error)
     return tool_call
+
+
+def _failure_text(error, tool):
+    """Return the row text of a failed call, with the warning when a writable tool was sent and has no answer."""
+    text = str(error) if isinstance(error, MCPDeadlineError) else f"The call failed: {error}"
+    if tool.writable and getattr(error, "call_sent", False):
+        room = ERROR_TEXT_CAP - len(CHANGE_MIGHT_BE_IN_EFFECT) - 1
+        text = f"{text[:room]} {CHANGE_MIGHT_BE_IN_EFFECT}"
+    return text
 
 
 def fail_unfinished_calls(run_ids, reason):
@@ -471,14 +503,18 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
     The SDK is asynchronous and every caller here is not, so each operation is one `asyncio.run`.
     That is correct in a WSGI request and in a Celery worker, and it is wrong inside a running
     event loop - which this app has none of, and which the error below explains if that changes.
+
+    One cancel scope holds the whole session, so a slow step cannot take the call past its deadline.
+    An answer that the app already has is kept when only the close is cut.
     """
 
-    def __init__(self, session_class, transport, http_client_class, timeout_class):
-        """Hold the four pieces of the SDK and its HTTP client that this module uses."""
+    def __init__(self, session_class, transport, http_client_class, timeout_class, move_on_after):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        """Hold the pieces of the SDK, of its HTTP client and of anyio that this module uses."""
         self._session_class = session_class
         self._transport = transport
         self._http_client_class = http_client_class
         self._timeout_class = timeout_class
+        self._move_on_after = move_on_after
 
     def call_tool(self, connection, name, arguments):
         """Call one tool and hand back what the server said, unread.
@@ -493,44 +529,70 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
         return self._run(connection, _call)
 
     def _run(self, connection, operation):
-        """Open a session, do one thing, close it."""
+        """Open a session, do one thing, close it, all inside the total deadline of the call.
+
+        The read timeout of the HTTP client is long, because the read side of the session is a stream that stays
+        open. The client follows redirects, because a server that redirects `/mcp` to `/mcp/` is usual.
+        """
+        sent = []
 
         async def _once():
-            async with self._http_client_class(
-                headers=connection.headers,
-                verify=connection.verify,
-                # Not a flat timeout. The SDK's own client factory documents why: the read side of
-                # a streamable HTTP session is a long-lived SSE stream, and a 30-second read
-                # deadline cuts it mid-answer. The other three phases keep the integration's
-                # number, which is what an operator set it for.
-                timeout=self._timeout_class(
-                    connect=connection.timeout,
-                    write=connection.timeout,
-                    pool=connection.timeout,
-                    read=max(connection.timeout, SSE_READ_TIMEOUT_SECONDS),
-                ),
-                # An endpoint that redirects `/mcp` to `/mcp/` is ordinary, and without this the
-                # session simply fails. The SDK's factory sets it for the same reason.
-                follow_redirects=True,
-            ) as http_client:
-                async with self._transport(connection.url, http_client=http_client) as (read, write):
-                    async with self._session_class(read, write, read_timeout_seconds=connection.timeout) as session:
-                        await session.initialize()
-                        return await operation(session)
+            answer = []
+            late_error = False
+            with self._move_on_after(connection.deadline) as scope:
+                try:
+                    async with self._http_client_class(
+                        headers=connection.headers,
+                        verify=connection.verify,
+                        timeout=self._timeout_class(
+                            connect=connection.timeout,
+                            write=connection.timeout,
+                            pool=connection.timeout,
+                            read=max(connection.timeout, SSE_READ_TIMEOUT_SECONDS),
+                        ),
+                        follow_redirects=True,
+                    ) as http_client:
+                        async with self._transport(connection.url, http_client=http_client) as (read, write):
+                            async with self._session_class(
+                                read, write, read_timeout_seconds=connection.timeout
+                            ) as session:
+                                await session.initialize()
+                                sent.append(True)
+                                answer.append(await operation(session))
+                except Exception as error:  # pylint: disable=broad-except
+                    if not scope.cancel_called or is_soft_time_limit(error):
+                        raise
+                    late_error = True
+                    logger.info("The MCP session at %s raised an error after its deadline: %s", connection.url, error)
+            return answer, scope.cancelled_caught or late_error
 
         try:
-            return asyncio.run(_once())
-        except RuntimeError as error:
-            if "running event loop" not in str(error):
-                raise
-            raise MCPCallError(
-                "MCP calls are made from synchronous code and cannot run inside an event loop."
-            ) from error
+            answer, cut = asyncio.run(_once())
+        except Exception as error:  # pylint: disable=broad-except
+            if isinstance(error, RuntimeError) and "running event loop" in str(error):
+                raise MCPCallError(
+                    "MCP calls are made from synchronous code and cannot run inside an event loop."
+                ) from error
+            if sent and not is_soft_time_limit(error):
+                raise MCPCallError(str(error), call_sent=True) from error
+            raise
+
+        seconds = f"{connection.deadline:g}"
+        if not answer:
+            raise MCPDeadlineError(DEADLINE_CALL_ERROR.format(seconds=seconds), call_sent=bool(sent))
+        if cut:
+            logger.warning(
+                "The MCP session at %s did not close in %s seconds. The app keeps the answer of the tool.",
+                connection.url,
+                seconds,
+            )
+        return answer[0]
 
 
 def _default_client():
     """The one place the MCP client library exists (M1). Imported lazily, like litellm."""
     try:
+        import anyio  # pylint: disable=import-outside-toplevel
         import httpx2  # pylint: disable=import-outside-toplevel
         from mcp import ClientSession  # pylint: disable=import-outside-toplevel
         from mcp.client.streamable_http import streamable_http_client  # pylint: disable=import-outside-toplevel
@@ -543,4 +605,6 @@ def _default_client():
             f"{type(error).__name__}: {error}. "
             "If it is not installed, install the app with the 'mcp' extra: nautobot-event-tracker[mcp]."
         ) from error
-    return _StreamableHTTPClient(ClientSession, streamable_http_client, httpx2.AsyncClient, httpx2.Timeout)
+    return _StreamableHTTPClient(
+        ClientSession, streamable_http_client, httpx2.AsyncClient, httpx2.Timeout, anyio.move_on_after
+    )
