@@ -489,14 +489,20 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
     The SDK is asynchronous and every caller here is not, so each operation is one `asyncio.run`.
     That is correct in a WSGI request and in a Celery worker, and it is wrong inside a running
     event loop - which this app has none of, and which the error below explains if that changes.
+
+    One cancel scope holds the whole session, so a slow step cannot take the call past its deadline.
+    An answer that the app already has is kept when only the close is cut.
     """
 
-    def __init__(self, session_class, transport, http_client_class, timeout_class):
-        """Hold the four pieces of the SDK and its HTTP client that this module uses."""
+    def __init__(
+        self, session_class, transport, http_client_class, timeout_class, move_on_after
+    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        """Hold the pieces of the SDK, of its HTTP client and of anyio that this module uses."""
         self._session_class = session_class
         self._transport = transport
         self._http_client_class = http_client_class
         self._timeout_class = timeout_class
+        self._move_on_after = move_on_after
 
     def call_tool(self, connection, name, arguments):
         """Call one tool and hand back what the server said, unread.
@@ -511,44 +517,72 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
         return self._run(connection, _call)
 
     def _run(self, connection, operation):
-        """Open a session, do one thing, close it."""
+        """Open a session, do one thing, close it, all inside the total deadline of the call."""
+        sent = []
 
         async def _once():
-            async with self._http_client_class(
-                headers=connection.headers,
-                verify=connection.verify,
-                # Not a flat timeout. The SDK's own client factory documents why: the read side of
-                # a streamable HTTP session is a long-lived SSE stream, and a 30-second read
-                # deadline cuts it mid-answer. The other three phases keep the integration's
-                # number, which is what an operator set it for.
-                timeout=self._timeout_class(
-                    connect=connection.timeout,
-                    write=connection.timeout,
-                    pool=connection.timeout,
-                    read=max(connection.timeout, SSE_READ_TIMEOUT_SECONDS),
-                ),
-                # An endpoint that redirects `/mcp` to `/mcp/` is ordinary, and without this the
-                # session simply fails. The SDK's factory sets it for the same reason.
-                follow_redirects=True,
-            ) as http_client:
-                async with self._transport(connection.url, http_client=http_client) as (read, write):
-                    async with self._session_class(read, write, read_timeout_seconds=connection.timeout) as session:
-                        await session.initialize()
-                        return await operation(session)
+            answer = []
+            late_error = False
+            with self._move_on_after(connection.deadline) as scope:
+                try:
+                    async with self._http_client_class(
+                        headers=connection.headers,
+                        verify=connection.verify,
+                        # Not a flat timeout. The SDK's own client factory documents why: the read side of
+                        # a streamable HTTP session is a long-lived SSE stream, and a 30-second read
+                        # deadline cuts it mid-answer. The other three phases keep the integration's
+                        # number, which is what an operator set it for.
+                        timeout=self._timeout_class(
+                            connect=connection.timeout,
+                            write=connection.timeout,
+                            pool=connection.timeout,
+                            read=max(connection.timeout, SSE_READ_TIMEOUT_SECONDS),
+                        ),
+                        # An endpoint that redirects `/mcp` to `/mcp/` is ordinary, and without this the
+                        # session simply fails. The SDK's factory sets it for the same reason.
+                        follow_redirects=True,
+                    ) as http_client:
+                        async with self._transport(connection.url, http_client=http_client) as (read, write):
+                            async with self._session_class(
+                                read, write, read_timeout_seconds=connection.timeout
+                            ) as session:
+                                await session.initialize()
+                                sent.append(True)
+                                answer.append(await operation(session))
+                except Exception as error:  # pylint: disable=broad-except
+                    if not scope.cancel_called or is_soft_time_limit(error):
+                        raise
+                    late_error = True
+                    logger.info("The MCP session at %s raised an error after its deadline: %s", connection.url, error)
+            return answer, scope.cancelled_caught or late_error
 
         try:
-            return asyncio.run(_once())
-        except RuntimeError as error:
-            if "running event loop" not in str(error):
-                raise
-            raise MCPCallError(
-                "MCP calls are made from synchronous code and cannot run inside an event loop."
-            ) from error
+            answer, cut = asyncio.run(_once())
+        except Exception as error:  # pylint: disable=broad-except
+            if isinstance(error, RuntimeError) and "running event loop" in str(error):
+                raise MCPCallError(
+                    "MCP calls are made from synchronous code and cannot run inside an event loop."
+                ) from error
+            if sent and not is_soft_time_limit(error):
+                raise MCPCallError(str(error), call_sent=True) from error
+            raise
+
+        seconds = f"{connection.deadline:g}"
+        if not answer:
+            raise MCPDeadlineError(DEADLINE_CALL_ERROR.format(seconds=seconds), call_sent=bool(sent))
+        if cut:
+            logger.warning(
+                "The MCP session at %s did not close in %s seconds. The app keeps the answer of the tool.",
+                connection.url,
+                seconds,
+            )
+        return answer[0]
 
 
 def _default_client():
     """The one place the MCP client library exists (M1). Imported lazily, like litellm."""
     try:
+        import anyio  # pylint: disable=import-outside-toplevel
         import httpx2  # pylint: disable=import-outside-toplevel
         from mcp import ClientSession  # pylint: disable=import-outside-toplevel
         from mcp.client.streamable_http import streamable_http_client  # pylint: disable=import-outside-toplevel
@@ -561,4 +595,6 @@ def _default_client():
             f"{type(error).__name__}: {error}. "
             "If it is not installed, install the app with the 'mcp' extra: nautobot-event-tracker[mcp]."
         ) from error
-    return _StreamableHTTPClient(ClientSession, streamable_http_client, httpx2.AsyncClient, httpx2.Timeout)
+    return _StreamableHTTPClient(
+        ClientSession, streamable_http_client, httpx2.AsyncClient, httpx2.Timeout, anyio.move_on_after
+    )

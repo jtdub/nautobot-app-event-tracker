@@ -9,6 +9,7 @@ Nothing here opens a socket: the client seam is the boundary, and no test mocks 
 internals.
 """
 
+import asyncio
 import json
 import pathlib
 from unittest import mock
@@ -22,13 +23,65 @@ from nautobot_ai_models.models import MCPTool
 from nautobot_event_tracker.choices import AgentToolCallStatusChoices
 from nautobot_event_tracker.models import AgentToolCall
 from nautobot_event_tracker.services import mcp as mcp_service
-from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError
+from nautobot_event_tracker.services.exceptions import MCPCallError, MCPConfigurationError, MCPDeadlineError
 from nautobot_event_tracker.tests import fixtures
 
 
 def _recorded(name):
     """Return one recorded SR Linux tool result from the data directory."""
     return (pathlib.Path(__file__).parent / "data" / name).read_text(encoding="utf-8")
+
+
+class _Stage:
+    """An async context manager that can wait with no end, or fail, on enter or on exit."""
+
+    def __init__(self, value=None, *, hang_enter=False, hang_exit=False, exit_error=None):
+        """Set what the stage does when it opens and when it closes."""
+        self.value, self.hang_enter, self.hang_exit, self.exit_error = value, hang_enter, hang_exit, exit_error
+
+    def __call__(self, *_args, **_kwargs):
+        """Act as the class that the client calls, and return this stage."""
+        return self
+
+    async def __aenter__(self):
+        """Wait with no end, or give the value."""
+        if self.hang_enter:
+            await asyncio.Event().wait()
+        return self.value
+
+    async def __aexit__(self, *_exc):
+        """Wait with no end, or raise the exit error, or close with no error."""
+        if self.hang_exit:
+            await asyncio.Event().wait()
+        if self.exit_error is not None:
+            raise self.exit_error
+
+
+class _FakeSession(_Stage):
+    """A session whose handshake or call can wait with no end, or fail."""
+
+    def __init__(self, *, hang_initialize=False, hang_call=False, initialize_error=None, call_error=None, **kwargs):
+        """Set what the handshake and the call do."""
+        super().__init__(**kwargs)
+        self.value, self.called = self, False
+        self.hang_initialize, self.hang_call = hang_initialize, hang_call
+        self.initialize_error, self.call_error = initialize_error, call_error
+
+    async def initialize(self):
+        """Wait with no end, or fail, or finish the handshake."""
+        if self.hang_initialize:
+            await asyncio.Event().wait()
+        if self.initialize_error is not None:
+            raise self.initialize_error
+
+    async def call_tool(self, name, arguments, *, read_timeout_seconds=None):
+        """Record the call, then wait with no end, or fail, or answer."""
+        self.called = True
+        if self.hang_call:
+            await asyncio.Event().wait()
+        if self.call_error is not None:
+            raise self.call_error
+        return fixtures.FakeCallToolResult("answer")
 
 
 class MCPTestCase(TestCase):
@@ -131,12 +184,132 @@ class TestTheConnection(MCPTestCase):
 class TestTheCallDeadline(SimpleTestCase):
     """M8: one call has one total deadline, made from its timeout."""
 
+    def build_client(self, session=None, *, transport=None, http_client=None, move_on_after=None):
+        """Build the real client over stages that can wait with no end."""
+        return mcp_service._StreamableHTTPClient(  # pylint: disable=protected-access
+            session or _FakeSession(),
+            transport or _Stage(("read", "write")),
+            http_client or _Stage(),
+            lambda **_: None,
+            move_on_after or mcp_service._default_client()._move_on_after,  # pylint: disable=protected-access
+        )
+
+    def connection(self, timeout=0):
+        """Return a connection whose deadline is two times the timeout."""
+        return mcp_service.MCPConnection(url="http://mcp.example.test/mcp", timeout=timeout)
+
+    def test_a_call_with_no_slow_step_returns_the_answer(self):
+        """A call with no wait gives the answer and no warning, with a deadline of 0 and of 60."""
+        for timeout in (0, 30):
+            with self.subTest(timeout=timeout):
+                with self.assertNoLogs(mcp_service.logger, level="WARNING"):
+                    answer = self.build_client().call_tool(self.connection(timeout), "probe", {})
+
+                self.assertEqual(answer.content[0].text, "answer")
+
+    def test_a_wait_before_the_call_ends_at_the_deadline(self):
+        """A wait with no end before the call raises the deadline error, and the call is not sent."""
+        session = _FakeSession(hang_initialize=True)
+        stalls = {
+            "the HTTP client": {"http_client": _Stage(hang_enter=True)},
+            "the transport": {"transport": _Stage(hang_enter=True)},
+            "the session": {"session": _FakeSession(hang_enter=True)},
+            "the handshake": {"session": session},
+        }
+        for name, stage in stalls.items():
+            with self.subTest(name):
+                client = self.build_client(**stage)
+                with self.assertRaises(MCPDeadlineError) as caught:
+                    client.call_tool(self.connection(), "probe", {})
+
+                self.assertEqual(str(caught.exception), "The call did not finish in 0 seconds.")
+                self.assertFalse(caught.exception.call_sent)
+        self.assertFalse(session.called)
+
+    def test_a_wait_in_the_call_ends_at_the_deadline(self):
+        """A wait with no end in the call raises the deadline error, and the call was sent."""
+        session = _FakeSession(hang_call=True)
+
+        with self.assertRaises(MCPDeadlineError) as caught:
+            self.build_client(session).call_tool(self.connection(), "probe", {})
+
+        self.assertTrue(caught.exception.call_sent)
+        self.assertTrue(session.called)
+
+    def test_a_slow_close_keeps_the_answer(self):
+        """A close that does not finish gives the answer back and logs one warning."""
+        stalls = {
+            "the session": {"session": _FakeSession(hang_exit=True)},
+            "the transport": {"transport": _Stage(("read", "write"), hang_exit=True)},
+            "the HTTP client": {"http_client": _Stage(hang_exit=True)},
+        }
+        for name, stage in stalls.items():
+            with self.subTest(name):
+                with self.assertLogs(mcp_service.logger, level="WARNING") as logged:
+                    answer = self.build_client(**stage).call_tool(self.connection(), "probe", {})
+
+                self.assertEqual(answer.content[0].text, "answer")
+                self.assertEqual(len(logged.records), 1)
+                self.assertIn("did not close in 0 seconds", logged.records[0].getMessage())
+
     def test_the_deadline_is_two_timeouts(self):
         """The deadline of a connection is two times its timeout."""
-        connection = mcp_service.MCPConnection(url="http://mcp.example.test/mcp", timeout=30)
-
-        self.assertEqual(connection.deadline, 60)
+        self.assertEqual(self.connection(30).deadline, 60)
         self.assertEqual(mcp_service.call_deadline(30), 60)
+
+    def test_the_scope_gets_the_deadline(self):
+        """The cancel scope opens with the deadline of the connection."""
+        seconds = []
+        real = mcp_service._default_client()._move_on_after  # pylint: disable=protected-access
+
+        def recording(delay):
+            seconds.append(delay)
+            return real(delay)
+
+        self.build_client(move_on_after=recording).call_tool(self.connection(30), "probe", {})
+
+        self.assertEqual(seconds, [60])
+
+    def test_an_error_before_the_call_goes_on_as_itself(self):
+        """An error before the call was sent leaves the client with no change."""
+        error = ValueError("x")
+
+        with self.assertRaises(ValueError) as caught:
+            self.build_client(_FakeSession(initialize_error=error)).call_tool(self.connection(30), "probe", {})
+
+        self.assertIs(caught.exception, error)
+
+    def test_an_error_after_the_deadline_is_the_deadline(self):
+        """An error that leaves the session after the scope cancelled it is the deadline error."""
+        client = self.build_client(
+            _FakeSession(hang_initialize=True), transport=_Stage(("read", "write"), exit_error=ValueError("closed"))
+        )
+
+        with self.assertRaises(MCPDeadlineError) as caught:
+            client.call_tool(self.connection(), "probe", {})
+
+        self.assertFalse(caught.exception.call_sent)
+
+    def test_the_soft_time_limit_is_not_wrapped(self):
+        """The soft time limit in a call leaves the client as itself."""
+        error = SoftTimeLimitExceeded()
+
+        with self.assertRaises(SoftTimeLimitExceeded) as caught:
+            self.build_client(_FakeSession(call_error=error)).call_tool(self.connection(30), "probe", {})
+
+        self.assertIs(caught.exception, error)
+
+    def test_an_error_of_a_sent_call_says_that_it_was_sent(self):
+        """An error after the call was sent has the same text, the sent flag, and its cause."""
+        error = ValueError("Request 'tools/call' timed out")
+
+        with self.assertRaises(MCPCallError) as caught:
+            self.build_client(_FakeSession(call_error=error)).call_tool(self.connection(30), "probe", {})
+
+        self.assertNotIsInstance(caught.exception, MCPDeadlineError)
+        self.assertEqual(str(caught.exception), "Request 'tools/call' timed out")
+        self.assertTrue(caught.exception.call_sent)
+        self.assertIs(caught.exception.__cause__, error)
 
     def test_the_warning_text_of_a_cut_call_did_not_change(self):
         """The split of the constant keeps the value that the rows of today hold."""
