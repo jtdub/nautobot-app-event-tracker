@@ -28,8 +28,9 @@ Rules implemented here, referenced by number from the Phase 4B spec:
   the call, so two callers cannot both make it.
 * **M7** - every call is on the record - arguments, result, latency, error - before its caller
   sees any of it. Rule L1's promise, made about the other kind of call this app makes. A call that
-  the soft time limit of the Job interrupts is recorded as failed before the error goes on. A call
-  of a writable tool that was sent and has no answer says that the change might be in effect.
+  the soft time limit of the Job interrupts is recorded as failed, or as outcome_unknown for a
+  writable tool, before the error goes on. A call of a writable tool that was sent and has no answer
+  is outcome_unknown and says that the change might be in effect.
 * **M8** - every call is bounded in both directions. Each step has a timeout, the call has one total
   deadline of two timeouts, and the result has a cap. Long separator runs and the cell spaces of `|`
   rows are made short before the cap.
@@ -83,6 +84,9 @@ CHANGE_MIGHT_BE_IN_EFFECT = (
 
 CUT_CHANGE_ERROR = f"The call was interrupted before the app got an answer. {CHANGE_MIGHT_BE_IN_EFFECT}"
 """The error of a call of a writable tool that a stop interrupted."""
+
+CUT_CHANGE_RUN_NOTE = f"{CUT_CHANGE_ERROR} The call has the status Outcome Unknown."
+"""The text that a run adds to its error when a stop interrupted a call of a writable tool."""
 
 
 def call_deadline(timeout):
@@ -216,12 +220,14 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     `client` is the test seam - an object with `call_tool(connection, name, arguments)` - and
     nothing outside a test supplies one. No test opens a socket.
 
-    Returns the updated `AgentToolCall`, `executed` or `failed`. A server that answers with an
+    Returns the updated `AgentToolCall`: `executed`, `failed`, or `outcome_unknown` for a writable
+    tool that has no answer. A server that answers with an
     error of its own is a `failed` row and not an exception: the server was reached and had
     something to say, and what it said is the model's to read (section 7.4). Raises
     `MCPConfigurationError` when the call is refused before any network I/O, and `MCPCallError`
     when it left the process and did not come back usable. A call that does not finish before its total
-    deadline is recorded as failed, then raised as `MCPDeadlineError`. The soft time limit of the Job is raised
+    deadline is recorded as failed, or as `outcome_unknown` for a writable tool that was sent,
+    then raised as `MCPDeadlineError`. The soft time limit of the Job is raised
     again as itself, after the row is written (M7).
     """
     cap = int(max_result_chars) if max_result_chars else DEFAULT_MAX_RESULT_CHARS
@@ -253,10 +259,16 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
                 tool_call,
                 latency_ms=_elapsed_ms(started),
                 error=CUT_CHANGE_ERROR if tool.writable else SOFT_TIME_LIMIT_CALL_ERROR,
+                outcome_unknown=tool.writable,
             )
             raise
         # M7 - on the record first, then the caller hears about it.
-        _finish(tool_call, latency_ms=_elapsed_ms(started), error=_failure_text(error, tool))
+        _finish(
+            tool_call,
+            latency_ms=_elapsed_ms(started),
+            error=_failure_text(error, tool),
+            outcome_unknown=_writable_sent_with_no_answer(error, tool),
+        )
         # The family the caller expects is preserved: a configuration fault stays one, and a
         # missing extra stays the deployment fault it is (deliberately outside `MCPError`, so
         # nothing on the agent's path swallows it as a bad tool call).
@@ -275,21 +287,26 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     return tool_call
 
 
+def _writable_sent_with_no_answer(error, tool):
+    """Return True if this error left a sent call of a writable tool with no answer."""
+    return bool(tool.writable and getattr(error, "call_sent", False))
+
+
 def _failure_text(error, tool):
     """Return the row text of a failed call, with the warning when a writable tool was sent and has no answer."""
     text = str(error) if isinstance(error, MCPDeadlineError) else f"The call failed: {error}"
-    if tool.writable and getattr(error, "call_sent", False):
+    if _writable_sent_with_no_answer(error, tool):
         room = ERROR_TEXT_CAP - len(CHANGE_MIGHT_BE_IN_EFFECT) - 1
         text = f"{text[:room]} {CHANGE_MIGHT_BE_IN_EFFECT}"
     return text
 
 
 def fail_unfinished_calls(run_ids, reason):
-    """Mark the unfinished calls of these runs as failed, and return the rows that changed.
+    """Mark the unfinished calls of these runs, and return the rows that changed.
 
     A call is unfinished when it is `executing`, or when it is `proposed` for a tool that is not
-    writable. A call of a writable tool gets `CUT_CHANGE_ERROR`; the others get `reason`. A
-    `proposed` call of a writable tool is a proposal for a person, so it stays.
+    writable. A call of a writable tool gets `outcome_unknown` and `CUT_CHANGE_ERROR`; the others
+    get `failed` and `reason`. A `proposed` call of a writable tool is a proposal for a person, so it stays.
     """
     unfinished = AgentToolCall.objects.filter(run_id__in=run_ids).filter(
         Q(status=AgentToolCallStatusChoices.EXECUTING)
@@ -297,9 +314,13 @@ def fail_unfinished_calls(run_ids, reason):
     )
     changed = list(unfinished.values_list("pk", flat=True))
     now = timezone.now()
-    for writable, error in ((True, CUT_CHANGE_ERROR), (False, reason)):
+    outcomes = (
+        (True, AgentToolCallStatusChoices.OUTCOME_UNKNOWN, CUT_CHANGE_ERROR),
+        (False, AgentToolCallStatusChoices.FAILED, reason),
+    )
+    for writable, status, error in outcomes:
         AgentToolCall.objects.filter(pk__in=changed, tool__writable=writable).update(
-            status=AgentToolCallStatusChoices.FAILED, error=str(error)[:ERROR_TEXT_CAP], called_at=now
+            status=status, error=str(error)[:ERROR_TEXT_CAP], called_at=now
         )
     return list(AgentToolCall.objects.filter(pk__in=changed).select_related("tool__mcp_server"))
 
@@ -378,18 +399,29 @@ def _check_callable(tool_call, tool):
 
 
 def _refuse(tool_call, message):
-    """Record a refusal on the row and raise it. Nothing has left the process."""
-    _finish(tool_call, latency_ms=0, error=message)
+    """Record a refusal on the row and raise it. Nothing has left the process.
+
+    A row with the status `outcome_unknown` keeps its status and its error.
+    """
+    if tool_call.status != AgentToolCallStatusChoices.OUTCOME_UNKNOWN:
+        _finish(tool_call, latency_ms=0, error=message)
     raise MCPConfigurationError(message)
 
 
-def _finish(tool_call, *, latency_ms, result=None, error=None):
+def _finish(tool_call, *, latency_ms, result=None, error=None, outcome_unknown=False):
     """M7 - write the outcome onto the row. The one place a call's result is recorded.
+
+    `outcome_unknown` is True for a failed call of a writable tool that has no answer.
 
     No `validated_save()`: every value here is service-constructed or capped on the line above,
     and the alternative costs two FK queries on a path that has just made a network call.
     """
-    tool_call.status = AgentToolCallStatusChoices.FAILED if error is not None else AgentToolCallStatusChoices.EXECUTED
+    if error is None:
+        tool_call.status = AgentToolCallStatusChoices.EXECUTED
+    elif outcome_unknown:
+        tool_call.status = AgentToolCallStatusChoices.OUTCOME_UNKNOWN
+    else:
+        tool_call.status = AgentToolCallStatusChoices.FAILED
     tool_call.result = result or {}
     tool_call.error = str(error)[:ERROR_TEXT_CAP] if error is not None else ""
     tool_call.latency_ms = latency_ms

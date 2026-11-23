@@ -1065,8 +1065,9 @@ class TestDecisions(AgentTestCase):
 
     def test_a_call_with_no_known_outcome_is_not_decided_again(self):
         """A call with no answer is final, so approve and deny both refuse it."""
-        self.call.status = AgentToolCallStatusChoices.OUTCOME_UNKNOWN
-        self.call.validated_save()
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN
+        )
         decided_before = len(self.updates(UpdateTypeChoices.TOOL_DECIDED))
         for decide in (agent_service.approve_tool_call, agent_service.deny_tool_call):
             with self.subTest(decide=decide.__name__):
