@@ -1307,6 +1307,31 @@ class TestTheDeadline(TestCase):
                 llm_service._cancellable(times_out_by_itself)("m", [], timeout=60)  # pylint: disable=protected-access
             self.assertEqual(str(raised.exception), "inner")
 
+    def test_each_call_runs_on_one_event_loop_of_the_process(self):
+        """Calls share one loop in the `llm-loop` thread, and a forked process starts its own loop."""
+        seen = []
+
+        async def record_loop(*_args, **_kwargs):
+            seen.append((asyncio.get_running_loop(), threading.current_thread().name))
+
+        def run_one_call():
+            llm_service._cancellable(record_loop)("m", [], timeout=60)  # pylint: disable=protected-access
+            return llm_service._call_loop[1]  # pylint: disable=protected-access
+
+        with mock.patch.object(llm_service, "_call_loop", None):
+            first = run_one_call()
+            self.addCleanup(first.call_soon_threadsafe, first.stop)
+            run_one_call()
+            run_one_call()
+            with mock.patch.object(os, "getpid", return_value=os.getpid() + 1):
+                forked = run_one_call()
+            self.addCleanup(forked.call_soon_threadsafe, forked.stop)
+
+        self.assertEqual({loop for loop, _name in seen[:3]}, {first})
+        self.assertEqual({name for _loop, name in seen}, {"llm-loop"})
+        self.assertIsNot(forked, first)
+        self.assertIs(seen[3][0], forked)
+
     def test_the_deadline_text_has_no_trailing_zero(self):
         """The seconds use the `g` format."""
         work = self.start_blocked_call()

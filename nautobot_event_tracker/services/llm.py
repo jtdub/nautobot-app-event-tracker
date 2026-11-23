@@ -101,6 +101,8 @@ SESSION_ID_FORBIDDEN = re.compile(r"[^A-Za-z0-9._:-]")
 
 _process_session = None  # pylint: disable=invalid-name
 _process_session_lock = threading.Lock()
+_call_loop = None  # pylint: disable=invalid-name
+_call_loop_lock = threading.Lock()
 
 #: The date (per process) on which `_maybe_prune` last ran, so retention costs one DELETE a day
 #: rather than one per call. The same shape as `StatsRecorder._prune`'s bookkeeping.
@@ -774,10 +776,27 @@ def _within_deadline(call, seconds):
     raise TimeoutError(DEADLINE_ERROR.format(seconds=f"{seconds:g}"))
 
 
+def _event_loop():
+    """Return the event loop that runs the model calls of this process, started on first use.
+
+    litellm keeps one client for each event loop, so one loop keeps one set of connections. A forked
+    worker has a new pid, so it starts its own loop. A lock guards the check and the write.
+    """
+    global _call_loop  # pylint: disable=global-statement
+    with _call_loop_lock:
+        pid = os.getpid()
+        if _call_loop is None or _call_loop[0] != pid:
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, name="llm-loop", daemon=True).start()
+            _call_loop = (pid, loop)
+        return _call_loop[1]
+
+
 def _cancellable(entry_point):
     """Return a sync client that runs this async litellm entry point and cancels it at its timeout.
 
-    The cancel closes the connection, so the thread that `_within_deadline` started ends.
+    The call runs on the event loop of `_event_loop()`. The cancel closes the connection of a call that
+    did not finish. A call that finished leaves its connection to the client of litellm, for the next call.
     """
 
     def call(model_string, payload, **kwargs):
@@ -791,7 +810,7 @@ def _cancellable(entry_point):
                     raise
                 raise TimeoutError(DEADLINE_ERROR.format(seconds=f"{kwargs['timeout']:g}")) from error
 
-        return asyncio.run(bounded())
+        return asyncio.run_coroutine_threadsafe(bounded(), _event_loop()).result()
 
     return call
 
