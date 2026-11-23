@@ -98,13 +98,15 @@ Sometimes `timeout_seconds` plus 30 seconds do not fit in the run time limit. Th
 first model call. The Job log has a warning.
 
 If the Job reaches its soft time limit in the middle of a call, the run is Failed. The ticket comment starts
-with "The agent run failed: The Job reached its soft time limit". Each tool call that did not finish is Failed.
-If the call changes the network, its error says that the change might be in effect. Check the device before
-you approve the same change again.
+with "The agent run failed: The Job reached its soft time limit". Each read-only tool call that did not
+finish is Failed. A Mutating tool call that did not finish gets the status Outcome Unknown. Its error says
+that the change might be in effect, and the ticket comment says "The call has the status Outcome Unknown."
+Check the device before you approve the same change again.
 
 The update trail of the ticket has an entry for each call that the soft time limit cut off. The same thing
 happens after a worker dies in the middle of a run. The next run that you start on the ticket marks the
-earlier run and its calls Failed. The app does this only after the hard time limit of the earlier run plus 300
+earlier run Failed. It marks each read-only call that did not finish Failed, and each Mutating call that did
+not finish Outcome Unknown. The app does this only after the hard time limit of the earlier run plus 300
 seconds. Before that time, the Job refuses the new run.
 
 A resumption run makes an approved call. It does not start if two times `tool_timeout_seconds` plus 30
@@ -114,13 +116,16 @@ limit. Then run the agent again.
 
 ### A tool call that reaches its time limit
 
-A tool call that does not finish in two times `tool_timeout_seconds` is Failed. Its error is "The call did
-not finish in 60 seconds." with the defaults. The run continues, and the model reads the error. The update
+A tool call that does not finish in two times `tool_timeout_seconds` is Failed. A Mutating call that the app
+sent is Outcome Unknown, not Failed (see below). Its error is "The call did not finish in 60 seconds." with
+the defaults. The run continues, and the model reads the error. The update
 trail of the ticket has an entry for the call.
 
-A Mutating tool call can fail after the app sent it and before an answer came. The error then also says that
-the change might be in effect. Check the device before you approve the same change again. This is true for
-the time limit and for each other failure at that point.
+A Mutating tool call can fail after the app sent it and before an answer came. The call then gets the status
+Outcome Unknown, not Failed. Its error also says that the change might be in effect. Check the device before
+you approve the same change again. This is true for the time limit and for each other failure at that point.
+
+To find these calls, open the Agent Tool Calls list and select **Outcome Unknown** in the **Status** filter.
 
 If the tool gave its answer and only the close of the session is slow, the call is Executed with the answer.
 The Nautobot log has a warning.
@@ -173,7 +178,8 @@ When the agent asks for a tool that has **Writable** selected, the app does thre
 
 1. It writes an **Agent Tool Call** in `proposed`, with the exact arguments.
 2. It adds a `tool_proposed` entry to the update trail of the ticket. The entry names the server, the tool,
-   and all the arguments.
+   and all the arguments. If the ticket has an earlier call of the same tool with the status Outcome Unknown,
+   the entry says so.
 3. It ends the run as **Waiting for Approval** and gives the worker back.
 
 At this point, the app does not call the tool. The proposal can wait over a weekend at no cost.

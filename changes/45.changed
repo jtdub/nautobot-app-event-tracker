@@ -1,0 +1,2 @@
+Changed a Mutating tool call that a time limit, a stopped worker or a failure left with no answer. Its status is now Outcome Unknown, not Failed.
+Changed the `status` value of these calls in the REST API and GraphQL. A client that filters on `failed` to find them must also filter on `outcome_unknown`.

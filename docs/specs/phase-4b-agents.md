@@ -194,7 +194,7 @@ A `BaseModel` with `graphql`. Written only by `services/`, like every other reco
 | `run` | FK `AgentRun`, CASCADE | |
 | `tool` | FK `MCPTool`, PROTECT | The record outlives a registry edit |
 | `arguments` | JSON, default `{}` | What the model asked for, as it asked |
-| `status` | Choice, indexed | `proposed`, `approved`, `denied`, `executed`, `failed` |
+| `status` | Choice, indexed | `proposed`, `approved`, `denied`, `executing`, `executed`, `failed`, `outcome_unknown` |
 | `decided_by` | FK `users.User`, SET_NULL, null | Who approved or denied. Required to decide (7.3) |
 | `decided_at` | DateTime, null | |
 | `result` | JSON, default `{}` | What came back, capped per M8 |
@@ -202,8 +202,9 @@ A `BaseModel` with `graphql`. Written only by `services/`, like every other reco
 | `latency_ms` | PositiveInteger, default 0 | |
 | `called_at` | DateTime, null | |
 
-A read-only call is written straight to `executed` (or `failed`) and never has a decider. That is
-the whole difference between the two kinds, in one column.
+A read-only call is written straight to `executed` (or `failed`) and never has a decider. A call of a
+writable tool that ends with no answer is `outcome_unknown`, not `failed` (issue 45). These are
+the differences between the two kinds, in one column.
 
 ### 4.5 Choices and migrations
 
@@ -266,7 +267,7 @@ supplies one. No test opens a socket.
 - **M7 — Every call is recorded.** Success or failure, the `AgentToolCall` carries the arguments,
   the result, the latency and the error before the caller sees any of them. L1's rule, applied to
   the other kind of call this app makes. A call that the soft time limit of the Job interrupts is
-  recorded as `failed` before the error goes on.
+  recorded as `failed`, or as `outcome_unknown` for a writable tool, before the error goes on.
 - **M8 — Bounded in both directions.** Each step of a call has a timeout (`tool_timeout_seconds`),
   the full call has one total deadline of two timeouts, and every result is capped at
   `max_tool_result_chars` before it is stored or shown to a model. A tool that returns forty
@@ -274,7 +275,8 @@ supplies one. No test opens a socket.
   the cap, the app makes two kinds of padding short. A run of 10 or more `=`, `-` or `+` becomes 3
   characters. In a line that starts with `|`, a run of 2 or more spaces or tabs becomes one space. A
   result that the app changed in this way has the key `separators_shortened`. A call of a writable
-  tool that the app sent, and that ends with no answer, says that the change might be in effect.
+  tool that the app sent, and that ends with no answer, gets the status `outcome_unknown` and says that the
+  change might be in effect.
 
 ### 5.2 Discovery
 
@@ -318,8 +320,8 @@ logging and the `JobResult`.
   should not exist (T4); an agent fails *closed* because a half-finished investigation reported as
   a finished one is worse than no investigation. A failed run ends `failed`, says why on the
   ticket, and proposes nothing. A run that the soft time limit of the Job interrupts ends `failed`
-  and names the limit, and each call that it left unfinished becomes `failed`. A Mutating call that
-  was cut says that the change might be in effect. Each call that a stop cut gets an entry in the
+  and names the limit, and each read-only call that it left unfinished becomes `failed`. A Mutating call that
+  was cut becomes `outcome_unknown` and says that the change might be in effect. Each call that a stop cut gets an entry in the
   ticket's trail, also when a later launch finds a run whose process died.
 - **A7 — The transcript is the record.** Every system prompt, model message, tool call and tool
   result is stored on the run. Resumption needs it, and a person asking "why did it want to do
@@ -711,3 +713,9 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   close of the session held the call past 40 seconds. One cancel scope now holds the session, from the HTTP
   client to the close. It ends the call after two timeouts. An answer that the app already has is kept. A
   Mutating call that was sent and ends with no answer says that the change might be in effect.
+- **A status for a Mutating call with no answer (issue 45).** Such a call was `failed` with a warning in its
+  error, so the list could not separate it from a call that did not reach the device. It now gets the status
+  `outcome_unknown`. A row has this status if, and only if, the app wrote the warning on it. The run of a call
+  that a stop cut stays `failed`. A refusal of a second call does not rewrite such a row. The trail entry of
+  a later proposal of the same tool on the ticket names the earlier call. There is no data migration, because
+  no release held such rows.

@@ -1,0 +1,2 @@
+Added the status Outcome Unknown for a Mutating tool call that ended with no answer. Filter the Agent Tool Calls list on it to find changes that you must check on a device.
+Added a warning to the trail entry of a proposed tool call. It shows when an earlier call of the same tool on the ticket has the status Outcome Unknown.
