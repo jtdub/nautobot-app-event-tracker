@@ -529,7 +529,13 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
         return self._run(connection, _call)
 
     def _run(self, connection, operation):
-        """Open a session, do one thing, close it, all inside the total deadline of the call."""
+        """Open a session, do one thing, close it, all inside the total deadline of the call.
+
+        The read timeout is not flat: the read side of a streamable HTTP session is a long-lived SSE stream,
+        and a 30-second read deadline cuts it mid-answer. The other three phases keep the integration's
+        number. The client follows redirects, because an endpoint that redirects `/mcp` to `/mcp/` is
+        ordinary and the session fails without it. The SDK's own client factory does the same.
+        """
         sent = []
 
         async def _once():
@@ -540,18 +546,12 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
                     async with self._http_client_class(
                         headers=connection.headers,
                         verify=connection.verify,
-                        # Not a flat timeout. The SDK's own client factory documents why: the read side of
-                        # a streamable HTTP session is a long-lived SSE stream, and a 30-second read
-                        # deadline cuts it mid-answer. The other three phases keep the integration's
-                        # number, which is what an operator set it for.
                         timeout=self._timeout_class(
                             connect=connection.timeout,
                             write=connection.timeout,
                             pool=connection.timeout,
                             read=max(connection.timeout, SSE_READ_TIMEOUT_SECONDS),
                         ),
-                        # An endpoint that redirects `/mcp` to `/mcp/` is ordinary, and without this the
-                        # session simply fails. The SDK's factory sets it for the same reason.
                         follow_redirects=True,
                     ) as http_client:
                         async with self._transport(connection.url, http_client=http_client) as (read, write):

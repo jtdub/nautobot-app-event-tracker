@@ -267,14 +267,14 @@ supplies one. No test opens a socket.
   the result, the latency and the error before the caller sees any of them. L1's rule, applied to
   the other kind of call this app makes. A call that the soft time limit of the Job interrupts is
   recorded as `failed` before the error goes on.
-- **M8 — Bounded in both directions.** Each step of a call has a timeout (`tool_timeout_seconds`), the full call has one
-  total deadline of two timeouts, and every result is capped at `max_tool_result_chars` before it is stored or shown to a model. A tool that
-  returns forty megabytes of interface counters must not become a prompt, and must not become a
-  row either. Before the cap, the app makes two kinds of padding short. A run of 10 or more `=`,
-  `-` or `+` becomes 3 characters. In a line that starts with `|`, a run of 2 or more spaces or
-  tabs becomes one space. A result that the app changed in this way has the key
-  `separators_shortened`. A call of a writable tool that the app sent, and that ends with no answer, says that
-  the change might be in effect.
+- **M8 — Bounded in both directions.** Each step of a call has a timeout (`tool_timeout_seconds`),
+  the full call has one total deadline of two timeouts, and every result is capped at
+  `max_tool_result_chars` before it is stored or shown to a model. A tool that returns forty
+  megabytes of interface counters must not become a prompt, and must not become a row either. Before
+  the cap, the app makes two kinds of padding short. A run of 10 or more `=`, `-` or `+` becomes 3
+  characters. In a line that starts with `|`, a run of 2 or more spaces or tabs becomes one space. A
+  result that the app changed in this way has the key `separators_shortened`. A call of a writable
+  tool that the app sent, and that ends with no answer, says that the change might be in effect.
 
 ### 5.2 Discovery
 
