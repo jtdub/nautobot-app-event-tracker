@@ -419,6 +419,71 @@ class TestCallingATool(CallToolTestCase):
         self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
         self.assertEqual(self.call.error, mcp_service.CUT_CHANGE_ERROR)
 
+    def test_a_call_that_the_deadline_stops_is_recorded_and_raised(self):
+        """AC-10 - the row is failed with the deadline text only, and the error goes on."""
+        error = MCPDeadlineError("The call did not finish in 60 seconds.", call_sent=True)
+
+        with self.assertRaises(MCPDeadlineError):
+            self.call_tool(client=fixtures.FakeMCPCaller(error=error))
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(self.call.result, {})
+        self.assertIsNotNone(self.call.called_at)
+        self.assertEqual(self.call.error, "The call did not finish in 60 seconds.")
+
+    def make_the_call_writable(self):
+        """Make the tool writable and the call approved."""
+        self.tool.writable = True
+        self.tool.validated_save()
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.APPROVED
+        )
+
+    def test_the_warning_follows_the_sent_call(self):
+        """AC-10 - a writable call that was sent and has no answer gets the warning, and no other call does."""
+        warning = mcp_service.CHANGE_MIGHT_BE_IN_EFFECT
+        deadline = "The call did not finish in 60 seconds."
+        cases = {
+            "deadline, sent": (MCPDeadlineError(deadline, call_sent=True), f"{deadline} {warning}"),
+            "deadline, not sent": (MCPDeadlineError(deadline, call_sent=False), deadline),
+            "failure, sent": (
+                MCPCallError("Request 'tools/call' timed out", call_sent=True),
+                f"The call failed: Request 'tools/call' timed out {warning}",
+            ),
+            "failure, no flag": (ValueError("refused"), "The call failed: refused"),
+        }
+        for name, (error, expected) in cases.items():
+            with self.subTest(name):
+                self.make_the_call_writable()
+
+                with self.assertRaises(MCPCallError):
+                    self.call_tool(client=fixtures.FakeMCPCaller(error=error))
+
+                self.call.refresh_from_db()
+                self.assertEqual(self.call.error, expected)
+
+    def test_a_read_only_call_that_was_sent_gets_no_warning(self):
+        """AC-10 - the warning is for a tool that changes the network."""
+        error = MCPDeadlineError("The call did not finish in 60 seconds.", call_sent=True)
+
+        with self.assertRaises(MCPDeadlineError):
+            self.call_tool(client=fixtures.FakeMCPCaller(error=error))
+
+        self.call.refresh_from_db()
+        self.assertNotIn("might be in effect", self.call.error)
+
+    def test_a_long_error_keeps_the_full_warning(self):
+        """The row cap cuts the first part of the error, so the warning stays whole."""
+        self.make_the_call_writable()
+
+        with self.assertRaises(MCPCallError):
+            self.call_tool(client=fixtures.FakeMCPCaller(error=MCPCallError("x" * 2000, call_sent=True)))
+
+        self.call.refresh_from_db()
+        self.assertLessEqual(len(self.call.error), mcp_service.ERROR_TEXT_CAP)
+        self.assertTrue(self.call.error.endswith(mcp_service.CHANGE_MIGHT_BE_IN_EFFECT))
+
     def test_no_sdk_exception_escapes(self):
         """The L4 arrangement, applied to the other kind of call this app makes."""
         with self.assertRaises(MCPCallError):

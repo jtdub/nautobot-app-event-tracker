@@ -28,9 +28,11 @@ Rules implemented here, referenced by number from the Phase 4B spec:
   the call, so two callers cannot both make it.
 * **M7** - every call is on the record - arguments, result, latency, error - before its caller
   sees any of it. Rule L1's promise, made about the other kind of call this app makes. A call that
-  the soft time limit of the Job interrupts is recorded as failed before the error goes on.
-* **M8** - every call is bounded in both directions: a timeout going out, and a cap on the result
-  coming back. Long separator runs and the cell spaces of `|` rows are made short before the cap.
+  the soft time limit of the Job interrupts is recorded as failed before the error goes on. A call
+  of a writable tool that was sent and has no answer says that the change might be in effect.
+* **M8** - every call is bounded in both directions. Each step has a timeout, the call has one total
+  deadline of two timeouts, and the result has a cap. Long separator runs and the cell spaces of `|`
+  rows are made short before the cap.
 """
 
 import asyncio
@@ -217,7 +219,9 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
     error of its own is a `failed` row and not an exception: the server was reached and had
     something to say, and what it said is the model's to read (section 7.4). Raises
     `MCPConfigurationError` when the call is refused before any network I/O, and `MCPCallError`
-    when it left the process and did not come back usable. The soft time limit of the Job is raised again as itself, after the row is written (M7).
+    when it left the process and did not come back usable. A call that does not finish before its total
+    deadline is recorded as failed, then raised as `MCPDeadlineError`. The soft time limit of the Job is raised
+    again as itself, after the row is written (M7).
     """
     cap = int(max_result_chars) if max_result_chars else DEFAULT_MAX_RESULT_CHARS
 
@@ -251,7 +255,7 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
             )
             raise
         # M7 - on the record first, then the caller hears about it.
-        _finish(tool_call, latency_ms=_elapsed_ms(started), error=f"The call failed: {error}")
+        _finish(tool_call, latency_ms=_elapsed_ms(started), error=_failure_text(error, tool))
         # The family the caller expects is preserved: a configuration fault stays one, and a
         # missing extra stays the deployment fault it is (deliberately outside `MCPError`, so
         # nothing on the agent's path swallows it as a bad tool call).
@@ -268,6 +272,15 @@ def call_tool(*, tool_call, timeout=None, max_result_chars=None, client=None):
         error = result.get("text") or "The server reported an error and said nothing about it."
     _finish(tool_call, latency_ms=_elapsed_ms(started), result=result, error=error)
     return tool_call
+
+
+def _failure_text(error, tool):
+    """Return the row text of a failed call, with the warning when a writable tool was sent and has no answer."""
+    text = str(error) if isinstance(error, MCPDeadlineError) else f"The call failed: {error}"
+    if tool.writable and getattr(error, "call_sent", False):
+        room = ERROR_TEXT_CAP - len(CHANGE_MIGHT_BE_IN_EFFECT) - 1
+        text = f"{text[:room]} {CHANGE_MIGHT_BE_IN_EFFECT}"
+    return text
 
 
 def fail_unfinished_calls(run_ids, reason):
