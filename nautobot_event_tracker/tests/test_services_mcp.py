@@ -15,7 +15,7 @@ from unittest import mock
 
 from celery.exceptions import SoftTimeLimitExceeded
 from django.core.exceptions import ImproperlyConfigured
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from nautobot_ai_models.choices import MCPTransportChoices
 from nautobot_ai_models.models import MCPTool
 
@@ -126,6 +126,25 @@ class TestTheConnection(MCPTestCase):
         self.server.external_integration.save()
 
         self.assertEqual(mcp_service.connection_for(self.server).timeout, mcp_service.DEFAULT_TIMEOUT_SECONDS)
+
+
+class TestTheCallDeadline(SimpleTestCase):
+    """M8: one call has one total deadline, made from its timeout."""
+
+    def test_the_deadline_is_two_timeouts(self):
+        """The deadline of a connection is two times its timeout."""
+        connection = mcp_service.MCPConnection(url="http://mcp.example.test/mcp", timeout=30)
+
+        self.assertEqual(connection.deadline, 60)
+        self.assertEqual(mcp_service.call_deadline(30), 60)
+
+    def test_the_warning_text_of_a_cut_call_did_not_change(self):
+        """The split of the constant keeps the value that the rows of today hold."""
+        self.assertEqual(
+            mcp_service.CUT_CHANGE_ERROR,
+            "The call was interrupted before the app got an answer. This tool changes the network, so the change "
+            "might be in effect. Check the device before you approve the same change again.",
+        )
 
 
 class TestTheClientSeam(TestCase):

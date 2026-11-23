@@ -54,6 +54,7 @@ from nautobot_event_tracker.secrets import read_secret
 from nautobot_event_tracker.services.exceptions import (
     MCPCallError,
     MCPConfigurationError,
+    MCPDeadlineError,
     MCPError,
     is_soft_time_limit,
 )
@@ -66,11 +67,25 @@ DEFAULT_TIMEOUT_SECONDS = 30
 SOFT_TIME_LIMIT_CALL_ERROR = "The Job reached its soft time limit before this call finished."
 """The error of a read-only call that the soft time limit of the Job interrupted."""
 
-CUT_CHANGE_ERROR = (
-    "The call was interrupted before the app got an answer. This tool changes the network, so the change might be "
-    "in effect. Check the device before you approve the same change again."
+CALL_DEADLINE_TIMEOUTS = 2
+"""Timeouts that one call can take in total (M8)."""
+
+DEADLINE_CALL_ERROR = "The call did not finish in {seconds} seconds."
+"""The error of a call that its total deadline stopped."""
+
+CHANGE_MIGHT_BE_IN_EFFECT = (
+    "This tool changes the network, so the change might be in effect. "
+    "Check the device before you approve the same change again."
 )
+"""The warning of a call of a writable tool that was sent and has no answer."""
+
+CUT_CHANGE_ERROR = f"The call was interrupted before the app got an answer. {CHANGE_MIGHT_BE_IN_EFFECT}"
 """The error of a call of a writable tool that a stop interrupted."""
+
+
+def call_deadline(timeout):
+    """Return the total deadline, in seconds, of a call with this timeout."""
+    return CALL_DEADLINE_TIMEOUTS * timeout
 
 DEAD_PROCESS_CALL_ERROR = "The process that ran this agent stopped before this call finished."
 """The error of a read-only call that a dead process left unfinished."""
@@ -83,10 +98,8 @@ SHORT_SEPARATOR_LENGTH = 3
 TABLE_ROW_SPACE_RUN = re.compile(r"(?<=\S)[ \t]{2,}")
 """Two or more spaces or tabs after a character that is not whitespace (M8)."""
 
-#: How long the read side of a session may wait. The transport keeps a server-sent-event stream
-#: open, so the read deadline is not the request deadline and must not be set from it. Matches what
-#: the SDK's own HTTP client factory uses.
 SSE_READ_TIMEOUT_SECONDS = 300
+"""The read timeout of the HTTP client. The stream stays open, so it is not the timeout of a request."""
 
 CALLABLE_TRANSPORTS = (MCPTransportChoices.TYPE_STREAMABLE_HTTP,)
 """The transports that this app calls (M2).
@@ -122,6 +135,11 @@ class MCPConnection:
     headers: dict = field(default_factory=dict)
     verify: object = True
     timeout: float = DEFAULT_TIMEOUT_SECONDS
+
+    @property
+    def deadline(self):
+        """Return the total deadline of one call, in seconds."""
+        return call_deadline(self.timeout)
 
     def __repr__(self):
         """Say everything except the header values, one of which is usually the credential.
