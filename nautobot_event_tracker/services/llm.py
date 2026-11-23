@@ -467,6 +467,8 @@ def _response_vector(raw):
 def _litellm_embedding():
     """Return litellm's embedding entry point, the one place it is reached (L2).
 
+    The client runs the async entry point, so that a call can be cancelled.
+
     litellm replaces `max_retries=0` with `litellm.DEFAULT_MAX_RETRIES` for an embedding. This function sets that
     value to 0, so an embedding call makes one attempt.
     """
@@ -479,7 +481,7 @@ def _litellm_embedding():
             "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
     litellm.DEFAULT_MAX_RETRIES = 0
-    return litellm.embedding
+    return _cancellable(litellm.aembedding)
 
 
 def link_usage_records(record_ids, ticket):
@@ -807,7 +809,10 @@ def _rendered(integration, method_name, context):
 
 
 def _litellm_completion():
-    """The one place litellm exists (L2). Imported lazily so the app runs without the extra."""
+    """The one place litellm exists (L2). Imported lazily so the app runs without the extra.
+
+    The client runs the async entry point, so that a call can be cancelled.
+    """
     try:
         import litellm  # pylint: disable=import-outside-toplevel
     except ImportError as error:
@@ -820,7 +825,7 @@ def _litellm_completion():
             f"{type(error).__name__}: {error}. "
             "If it is not installed, install the app with the 'llm' extra: nautobot-event-tracker[llm]."
         ) from error
-    return litellm.completion
+    return _cancellable(litellm.acompletion)
 
 
 def _token_usage(raw):
