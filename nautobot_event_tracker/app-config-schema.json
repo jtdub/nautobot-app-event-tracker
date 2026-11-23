@@ -88,7 +88,7 @@
                 },
                 "timeout_seconds": {
                     "type": "number",
-                    "description": "How long one model call may take.",
+                    "description": "How long one model call may take in total.",
                     "exclusiveMinimum": 0,
                     "default": 60
                 },
@@ -142,7 +142,7 @@
                 },
                 "timeout_seconds": {
                     "type": "number",
-                    "description": "How long one embedding call may take. Exceeding it fails the indexing, never the close (rule R5).",
+                    "description": "How long one embedding call may take in total. Exceeding it fails the indexing, never the close (rule R5).",
                     "exclusiveMinimum": 0,
                     "default": 30
                 }
@@ -304,7 +304,7 @@
                         },
                         "timeout_seconds": {
                             "type": "number",
-                            "description": "Timeout passed on every triage call. The consumer handles one message at a time, so this bounds worst-case throughput.",
+                            "description": "The total time limit of one triage call. The consumer handles one message at a time, so this bounds worst-case throughput.",
                             "exclusiveMinimum": 0,
                             "default": 15
                         },

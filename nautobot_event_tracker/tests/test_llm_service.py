@@ -1272,7 +1272,7 @@ class TestTheDeadline(TestCase):
         """A result goes on, a `None` result goes on, and a result at the deadline goes on."""
         real_join = threading.Thread.join
 
-        def join_without_limit(thread, timeout=None):
+        def join_without_limit(thread, _timeout=None):
             return real_join(thread)
 
         with self.subTest("a value"):
@@ -1300,9 +1300,8 @@ class TestTheDeadline(TestCase):
                 llm_service._cancellable(never_ends)("m", [], timeout=0)  # pylint: disable=protected-access
             self.assertEqual(str(raised.exception), DEADLINE_TEXT.format(seconds=0))
         with self.subTest("a result goes on"):
-            self.assertEqual(
-                llm_service._cancellable(gives_a_value)("m", [], timeout=60), "value"  # pylint: disable=protected-access
-            )
+            client = llm_service._cancellable(gives_a_value)  # pylint: disable=protected-access
+            self.assertEqual(client("m", [], timeout=60), "value")
         with self.subTest("a timeout of the client goes on"):
             with self.assertRaises(TimeoutError) as raised:
                 llm_service._cancellable(times_out_by_itself)("m", [], timeout=60)  # pylint: disable=protected-access

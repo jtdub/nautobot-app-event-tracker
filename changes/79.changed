@@ -1,0 +1,1 @@
+Changed `timeout_seconds` of triage, the agent, and `rag` to limit the full call. A call whose connection and answer together take longer now fails.

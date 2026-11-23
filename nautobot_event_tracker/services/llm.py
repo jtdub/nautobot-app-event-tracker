@@ -334,7 +334,9 @@ def complete(  # pylint: disable=too-many-arguments,too-many-locals
 
     started = time.monotonic()
     try:
-        raw = _within_deadline(lambda: call(model_string, messages, **call_kwargs, **connection), call_kwargs["timeout"])
+        raw = _within_deadline(
+            lambda: call(model_string, messages, **call_kwargs, **connection), call_kwargs["timeout"]
+        )
     except Exception as error:  # pylint: disable=broad-except
         # L4 - whatever the client raised, the caller sees one family, and the failure is on the
         # record first (L1).
@@ -780,8 +782,9 @@ def _cancellable(entry_point):
 
     def call(model_string, payload, **kwargs):
         async def bounded():
+            limit = asyncio.timeout(kwargs["timeout"])
             try:
-                async with asyncio.timeout(kwargs["timeout"]) as limit:
+                async with limit:
                     return await entry_point(model_string, payload, **kwargs)
             except TimeoutError as error:
                 if not limit.expired():

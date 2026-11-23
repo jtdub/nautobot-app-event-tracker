@@ -148,8 +148,9 @@ class TestTheRealClient(TestCase):
             return await original_send(client, request, **kwargs)
 
         model = fixtures.create_llmmodel(name="real-thread-model")
+        real_wrapper = llm_service._within_deadline  # pylint: disable=protected-access
         with (
-            mock.patch.object(llm_service, "_within_deadline", wraps=llm_service._within_deadline) as wrapper,
+            mock.patch.object(llm_service, "_within_deadline", wraps=real_wrapper) as wrapper,
             mock.patch.object(self.httpx.AsyncClient, "send", record_thread),
         ):
             response = self.complete(model)
