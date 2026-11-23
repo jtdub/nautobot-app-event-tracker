@@ -531,10 +531,8 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
     def _run(self, connection, operation):
         """Open a session, do one thing, close it, all inside the total deadline of the call.
 
-        The read timeout is not flat: the read side of a streamable HTTP session is a long-lived SSE stream,
-        and a 30-second read deadline cuts it mid-answer. The other three phases keep the integration's
-        number. The client follows redirects, because an endpoint that redirects `/mcp` to `/mcp/` is
-        ordinary and the session fails without it. The SDK's own client factory does the same.
+        The read timeout of the HTTP client is long, because the read side of the session is a stream that stays
+        open. The client follows redirects, because a server that redirects `/mcp` to `/mcp/` is usual.
         """
         sent = []
 
