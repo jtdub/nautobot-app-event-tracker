@@ -99,7 +99,7 @@ PLUGINS_CONFIG = {
             "max_context_chars": 8000,          # payload cap into the prompt
             "max_transcript_chars": 60000,      # the whole stored transcript (A2)
             "timeout_seconds": 60,              # per model call, with no retry (A2)
-            "tool_timeout_seconds": 30,         # per tool call (M8)
+            "tool_timeout_seconds": 30,         # per step of a tool call; the call gets two (M8)
         },
     },
 }
@@ -267,14 +267,14 @@ supplies one. No test opens a socket.
   the result, the latency and the error before the caller sees any of them. L1's rule, applied to
   the other kind of call this app makes. A call that the soft time limit of the Job interrupts is
   recorded as `failed` before the error goes on.
-- **M8 — Bounded in both directions.** Every call has a timeout (`tool_timeout_seconds`), and every
-  result is capped at `max_tool_result_chars` before it is stored or shown to a model. A tool that
+- **M8 — Bounded in both directions.** Each step of a call has a timeout (`tool_timeout_seconds`), the full call has one
+  total deadline of two timeouts, and every result is capped at `max_tool_result_chars` before it is stored or shown to a model. A tool that
   returns forty megabytes of interface counters must not become a prompt, and must not become a
   row either. Before the cap, the app makes two kinds of padding short. A run of 10 or more `=`,
   `-` or `+` becomes 3 characters. In a line that starts with `|`, a run of 2 or more spaces or
   tabs becomes one space. A result that the app changed in this way has the key
-  `separators_shortened`. The timeout applies to each step of a call, so one call can take two
-  times `tool_timeout_seconds` or more.
+  `separators_shortened`. A call of a writable tool that the app sent, and that ends with no answer, says that
+  the change might be in effect.
 
 ### 5.2 Discovery
 
@@ -299,9 +299,10 @@ logging and the `JobResult`.
   `completed` with what it has and a line saying which limit it hit. The run time limit is the
   lowest of the soft time limit of the Job, its hard time limit, and 600 seconds. Before each model
   call and each read-only tool call, the agent reads a clock. A call starts only if its allowance
-  ends 30 seconds or more before the limit. The allowance is `timeout_seconds` for a model call and
-  two times `tool_timeout_seconds` for a tool call. The allowance is a measured case and not a
-  bound. An unbounded agent is a bill and a liability, and "the model usually stops" is not a
+  ends 30 seconds or more before the limit. The allowance is the total deadline of the call:
+  `timeout_seconds` for a model call, and two times `tool_timeout_seconds` for a tool call. The
+  allowance is a bound. The name lookup of an MCP server is the one step that the deadline does not
+  cover. An unbounded agent is a bill and a liability, and "the model usually stops" is not a
   bound.
 - **A3 — The loop ends at the first mutating proposal.** It never waits (ADR 0009). The proposal
   is written, the ticket's trail says so, the run finishes `waiting_approval`, and the worker slot
@@ -705,3 +706,8 @@ Appended as each PR lands, per the precedent Phases 2, 3 and 4A set.
   grace time of 300 seconds for each run. An operator who raised the limits of the Job could then get a second
   run beside a live run. Each run now stores the hard limit that applied to it (`time_limit_seconds`), and the
   check uses that limit plus 300 seconds. A run with no stored limit uses 660 seconds.
+- **One total deadline for each call (issue 44).** The allowance of issue 31 was a measured case. A tool call
+  with five slow steps lasted 4.3 times its timeout and succeeded, and a server that gave no answer at the
+  close of the session held the call past 40 seconds. One cancel scope now holds the session, from the HTTP
+  client to the close. It ends the call after two timeouts. An answer that the app already has is kept. A
+  Mutating call that was sent and ends with no answer says that the change might be in effect.
