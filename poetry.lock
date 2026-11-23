@@ -6848,12 +6848,12 @@ test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_it
 type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 
 [extras]
-all = ["confluent-kafka", "httpx2", "litellm", "mcp"]
+all = ["anyio", "confluent-kafka", "httpx2", "litellm", "mcp"]
 kafka = ["confluent-kafka"]
 llm = ["litellm"]
-mcp = ["httpx2", "mcp"]
+mcp = ["anyio", "httpx2", "mcp"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.15"
-content-hash = "1032d6a3a5e763a5285dac3380e8ae33326854e045b8c80e35f5a659037a5704"
+content-hash = "6230ced4c054d4d4c00399713c30bac5f9e91419ff77a19413a38eaf2d6c3bb3"

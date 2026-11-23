@@ -478,9 +478,8 @@ class EnrichmentGuardTest(SimpleTestCase):
 class MCPGuardTest(SimpleTestCase):
     """ADR 0007's two mechanical halves: one client, and no way to run a process."""
 
-    #: The MCP client library and the HTTP client it is driven with, importable only in
-    #: `services/mcp.py` (rule M1).
-    MCP_LIBRARIES = ("mcp", "httpx2")
+    MCP_LIBRARIES = ("mcp", "httpx2", "anyio")
+    """The MCP client library, its HTTP client, and the cancel scope library. Only `services/mcp.py` imports them (M1)."""
 
     #: Every way Python starts a process. ADR 0007 refused the stdio transport because it means
     #: process execution driven by database rows; this is that decision, asserted rather than
@@ -515,8 +514,8 @@ class MCPGuardTest(SimpleTestCase):
     def test_the_mcp_client_is_an_optional_dependency(self):
         """A deployment that registers no server installs no MCP client.
 
-        Both packages, because `services/mcp.py` imports both: relying on `httpx2` arriving as one
-        of `mcp`'s own dependencies makes the day that changes look like a missing `mcp` extra.
+        Each package, because `services/mcp.py` imports each one: a package that arrives only as a
+        dependency of `mcp` makes the day that changes look like a missing `mcp` extra.
         """
         poetry = IngestionGuardTest._poetry()  # pylint: disable=protected-access
         for package in self.MCP_LIBRARIES:
