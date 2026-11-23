@@ -330,7 +330,7 @@ class AgentToolCallFilterTest(FilterTestCases.FilterTestCase):  # pylint: disabl
 
     @classmethod
     def setUpTestData(cls):
-        """Three calls: one waiting, one approved, one executed read-only call."""
+        """Four calls: one waiting, one approved, one executed read-only call, one with no known outcome."""
         ticket = fixtures.create_ticket(title="Agent ticket")
         run = fixtures.create_agentrun(ticket=ticket)
         server = fixtures.create_mcpserver()
@@ -349,6 +349,19 @@ class AgentToolCallFilterTest(FilterTestCases.FilterTestCase):  # pylint: disabl
             tool=fixtures.create_mcptool(server=server, name="get_device", writable=False),
             status=AgentToolCallStatusChoices.EXECUTED,
         )
+        fixtures.create_agenttoolcall(
+            run=fixtures.create_agentrun(),
+            tool=fixtures.create_mcptool(server=server, name="apply_config", writable=True),
+            status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN,
+        )
+
+    def test_calls_with_no_known_outcome_are_findable(self):
+        """The list of changes to check on a device, and none of them is `failed`."""
+        unknown = self.filterset({"status": [AgentToolCallStatusChoices.OUTCOME_UNKNOWN]}, self.queryset).qs
+        failed = self.filterset({"status": [AgentToolCallStatusChoices.FAILED]}, self.queryset).qs
+
+        self.assertEqual([call.tool.name for call in unknown], ["apply_config"])
+        self.assertEqual(failed.count(), 0)
 
     def test_proposals_are_findable(self):
         """The queue: what has been asked for and not yet decided."""

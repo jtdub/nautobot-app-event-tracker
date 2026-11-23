@@ -585,6 +585,23 @@ class AgentToolCallAPITest(APITestCase):
         self.call.refresh_from_db()
         self.assertEqual(self.call.status, AgentToolCallStatusChoices.PROPOSED)
 
+    def test_the_list_filters_on_outcome_unknown(self):
+        """A client finds the changes to check on a device without a text search."""
+        self.add_permissions("nautobot_event_tracker.view_agenttoolcall")
+        fixtures.create_agenttoolcall(
+            run=self.run,
+            tool=fixtures.create_mcptool(name="apply_config", enabled=True, writable=True),
+            status="outcome_unknown",
+        )
+
+        unknown = self.client.get(f"{self.list_url}?status=outcome_unknown", **self.header)
+        failed = self.client.get(f"{self.list_url}?status=failed", **self.header)
+
+        self.assertHttpStatus(unknown, 200)
+        self.assertEqual(unknown.data["count"], 1)
+        self.assertEqual(unknown.data["results"][0]["status"], "outcome_unknown")
+        self.assertEqual(failed.data["count"], 0)
+
     def test_there_is_no_create_route(self):
         """A call is asked for by a model, and offered to a person. It is not posted."""
         self.add_permissions("nautobot_event_tracker.add_agenttoolcall")

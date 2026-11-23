@@ -160,9 +160,9 @@ class AgentRunStatusChoices(ChoiceSet):
 class AgentToolCallStatusChoices(ChoiceSet):
     """What became of one tool call an agent asked for.
 
-    A read-only call is written straight to `executed` or `failed` and never has a decider; a
-    mutating one passes through `proposed` and then `approved` or `denied`. That is the entire
-    difference between the two kinds, and it is one column.
+    A read-only call is written straight to `executed` or `failed` and never has a decider. A
+    mutating call passes through `proposed` and then `approved` or `denied`. A mutating call that
+    ends with no answer is `outcome_unknown`, not `failed`.
     """
 
     PROPOSED = "proposed"
@@ -175,6 +175,8 @@ class AgentToolCallStatusChoices(ChoiceSet):
     EXECUTING = "executing"
     EXECUTED = "executed"
     FAILED = "failed"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+    """A call of a writable tool that ended with no answer, so the change might be in effect."""
 
     CHOICES = (
         (PROPOSED, "Proposed"),
@@ -183,6 +185,7 @@ class AgentToolCallStatusChoices(ChoiceSet):
         (EXECUTING, "Executing"),
         (EXECUTED, "Executed"),
         (FAILED, "Failed"),
+        (OUTCOME_UNKNOWN, "Outcome Unknown"),
     )
 
 

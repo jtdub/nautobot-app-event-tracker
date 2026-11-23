@@ -142,3 +142,13 @@ class TicketTransitionFormTest(TestCase):
         """Only the target is mandatory at the form layer; the service enforces the rest."""
         form = forms.TicketTransitionForm(data={"to_status": "triaged"})
         self.assertTrue(form.is_valid(), form.errors)
+
+
+class TestAgentToolCallFilterForm(TestCase):
+    """AgentToolCallFilterForm."""
+
+    def test_the_status_filter_offers_outcome_unknown(self):
+        """The operator selects the status to find the changes to check on a device."""
+        choices = forms.AgentToolCallFilterForm().fields["status"].choices
+
+        self.assertIn(("outcome_unknown", "Outcome Unknown"), choices)

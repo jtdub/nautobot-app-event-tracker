@@ -11,6 +11,7 @@ from nautobot_event_tracker.choices import (
     SEVERITY_WEIGHTS,
     TERMINAL_STATUSES,
     TICKET_STATUS_TRANSITIONS,
+    AgentToolCallStatusChoices,
     SeverityChoices,
     TicketSourceChoices,
     TicketStatusChoices,
@@ -150,3 +151,13 @@ class ShortestTransitionPathTest(SimpleTestCase):
     def test_nothing_leaves_closed(self):
         """Terminal means terminal, and the route finder says so rather than looping."""
         self.assertIsNone(shortest_transition_path(TicketStatusChoices.TRIAGED, from_status=TicketStatusChoices.CLOSED))
+
+
+class TestAgentToolCallStatusChoices(SimpleTestCase):
+    """The statuses of one tool call."""
+
+    def test_outcome_unknown_is_the_last_status(self):
+        """A writable call with no answer has a status of its own, after `failed`."""
+        self.assertEqual(AgentToolCallStatusChoices.OUTCOME_UNKNOWN, "outcome_unknown")
+        self.assertEqual(AgentToolCallStatusChoices.as_dict()["outcome_unknown"], "Outcome Unknown")
+        self.assertEqual(AgentToolCallStatusChoices.values()[-2:], ["failed", "outcome_unknown"])

@@ -1063,6 +1063,21 @@ class TestDecisions(AgentTestCase):
         self.assertIn("approved", entry.message)
         self.assertIn("leaf-01", entry.message)
 
+    def test_a_call_with_no_known_outcome_is_not_decided_again(self):
+        """A call with no answer is final, so approve and deny both refuse it."""
+        self.call.status = AgentToolCallStatusChoices.OUTCOME_UNKNOWN
+        self.call.validated_save()
+        decided_before = len(self.updates(UpdateTypeChoices.TOOL_DECIDED))
+        for decide in (agent_service.approve_tool_call, agent_service.deny_tool_call):
+            with self.subTest(decide=decide.__name__):
+                with self.assertRaises(AgentDecisionError):
+                    decide(tool_call=self.call, user=self.user)
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+        self.assertIsNone(self.call.decided_by)
+        self.assertEqual(len(self.updates(UpdateTypeChoices.TOOL_DECIDED)), decided_before)
+
     def test_denying_ends_the_run(self):
         """13.8 - a denial is the end of the chain, not the start of a negotiation."""
         agent_service.deny_tool_call(tool_call=self.call, user=self.user)

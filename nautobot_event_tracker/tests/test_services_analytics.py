@@ -466,6 +466,20 @@ class TestAgentActivity(AnalyticsTestCase):
         # Declared order, so approved and denied sit in the same place on every render.
         self.assertEqual(decisions["x"], ["Approved", "Denied"])
 
+    def test_outcome_unknown_is_a_slice_after_failed(self):
+        """A change to check on a device is not counted as a plain failure."""
+        run = self.run_for(self.critical)
+        fixtures.create_agenttoolcall(run=run, tool=self.tool, status=AgentToolCallStatusChoices.FAILED)
+        fixtures.create_agenttoolcall(run=run, tool=self.tool, status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+
+        with fixtures.dashboard_settings():
+            decisions = analytics.agent_activity(user=self.user).decisions
+
+        counted = dict(zip(decisions["x"], decisions["series"][0]["data"]))
+        self.assertEqual(decisions["x"][-2:], ["Failed", "Outcome Unknown"])
+        self.assertEqual(counted["Failed"], 1)
+        self.assertEqual(counted["Outcome Unknown"], 1)
+
     def test_a_run_outside_the_window_is_not_counted(self):
         """Rule D4 on the last of the four tables."""
         run = self.run_for(self.critical)

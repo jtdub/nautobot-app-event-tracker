@@ -614,7 +614,9 @@ class AgentToolCall(BaseModel):
     )
     decided_at = models.DateTimeField(null=True, blank=True)
     result = models.JSONField(default=dict, blank=True, help_text="What came back, capped by the service (rule M8).")
-    error = models.TextField(blank=True, help_text="Why the call failed, when it did. Capped by the service.")
+    error = models.TextField(
+        blank=True, help_text="Why the call failed, or why its outcome is not known. Capped by the service."
+    )
     latency_ms = models.PositiveIntegerField(default=0)
     proposed_at = models.DateTimeField(
         default=timezone.now,

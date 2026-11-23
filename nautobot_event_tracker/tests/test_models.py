@@ -583,6 +583,14 @@ class TestAgentToolCall(ModelTestCases.BaseModelTestCase):
         self.assertTrue(call.awaits_decision)
         self.assertFalse(call.is_decided)
 
+    def test_a_call_with_no_known_outcome_is_decided(self):
+        """A call with no answer is final: nobody approves it again."""
+        call = fixtures.create_agenttoolcall(status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+
+        self.assertFalse(call.awaits_decision)
+        self.assertTrue(call.is_decided)
+        self.assertTrue(str(call).endswith("(outcome_unknown)"))
+
     def test_a_decided_call_is_not_waiting(self):
         """A call is decided once (7.3), and this is the check that says so."""
         call = fixtures.create_agenttoolcall(status=AgentToolCallStatusChoices.APPROVED)
