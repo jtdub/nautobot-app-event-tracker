@@ -89,6 +89,7 @@ def call_deadline(timeout):
     """Return the total deadline, in seconds, of a call with this timeout."""
     return CALL_DEADLINE_TIMEOUTS * timeout
 
+
 DEAD_PROCESS_CALL_ERROR = "The process that ran this agent stopped before this call finished."
 """The error of a read-only call that a dead process left unfinished."""
 
@@ -507,9 +508,7 @@ class _StreamableHTTPClient:  # pylint: disable=too-few-public-methods
     An answer that the app already has is kept when only the close is cut.
     """
 
-    def __init__(
-        self, session_class, transport, http_client_class, timeout_class, move_on_after
-    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def __init__(self, session_class, transport, http_client_class, timeout_class, move_on_after):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         """Hold the pieces of the SDK, of its HTTP client and of anyio that this module uses."""
         self._session_class = session_class
         self._transport = transport
