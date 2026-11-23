@@ -74,7 +74,7 @@ class _FakeSession(_Stage):
         if self.initialize_error is not None:
             raise self.initialize_error
 
-    async def call_tool(self, name, arguments, *, read_timeout_seconds=None):
+    async def call_tool(self, *_args, **_kwargs):
         """Record the call, then wait with no end, or fail, or answer."""
         self.called = True
         if self.hang_call:
