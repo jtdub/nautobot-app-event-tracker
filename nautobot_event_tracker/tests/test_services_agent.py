@@ -36,6 +36,7 @@ from nautobot_event_tracker.services.exceptions import (
     LLMCallError,
     LLMConfigurationError,
     MCPConfigurationError,
+    MCPDeadlineError,
     TicketImmutableError,
 )
 from nautobot_event_tracker.tests import fixtures
@@ -737,6 +738,24 @@ class TestReadOnlyCalls(AgentTestCase):
         self.assertEqual(len(complete.calls), 2)
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
 
+    def test_a_read_only_call_that_the_deadline_stops_goes_to_the_model(self):
+        """AC-12 - the run goes on, the model reads the error, and the trail has one entry for the call."""
+        error = MCPDeadlineError("The call did not finish in 60 seconds.", call_sent=True)
+
+        run, _ = self.run_agent(
+            [fixtures.fake_tool_call("get_interface_status", {"device": "leaf-01"})],
+            "Done.",
+            call_tool=_wire_with(error),
+        )
+
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertEqual(
+            self.messages(run, "tool")[0]["content"], "The call failed: The call did not finish in 60 seconds."
+        )
+        entries = self.updates(UpdateTypeChoices.TOOL_EXECUTED)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("(failed,", entries[0].message)
+
     def test_a_shortened_result_reaches_the_model_with_a_note(self):
         """The model reads one note line before text that the app made short, and the record keeps the text."""
         caller = fixtures.FakeToolCaller(text="---", separators_shortened=True)
@@ -1177,6 +1196,17 @@ class TestResumption(AgentTestCase):
         self.assertEqual(run.transcript[0]["role"], "system")
         self.assertGreater(len(complete.calls[0]["messages"]), 3)
 
+    def test_an_approved_call_that_the_deadline_stops_warns_on_the_trail(self):
+        """The row and the trail entry say that the change might be in effect."""
+        error = MCPDeadlineError("The call did not finish in 60 seconds.", call_sent=True)
+
+        self.resume("Done.", call_tool=_wire_with(error))
+
+        self.proposal.refresh_from_db()
+        self.assertIn("the change might be in effect", self.proposal.error)
+        entry = self.updates(UpdateTypeChoices.TOOL_EXECUTED)[-1]
+        self.assertIn("the change might be in effect", entry.message)
+
     def test_the_result_reaches_the_ticket_s_trail(self):
         """7.4 - the call happened, and the ticket says so."""
         self.resume("Done.", call_tool=fixtures.FakeToolCaller(text="config applied"))
@@ -1450,6 +1480,15 @@ class TestTheTimeLimit(AgentTestCase):
         self.assertEqual([answer["tool_call_id"] for answer in self.messages(run, "tool")], ["call-1", "call-2"])
         self.assertIn("520 of 600 seconds used, and one more tool call can take 60 seconds", self.last_comment())
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_the_tool_allowance_is_the_deadline_of_the_mcp_service(self):
+        """AC-11 - the time check takes its allowance from the MCP service, so the two numbers cannot differ."""
+        calls = [fixtures.fake_tool_call("look", identifier=f"call-{number}") for number in (1, 2, 3)]
+
+        with mock.patch.object(mcp_service, "CALL_DEADLINE_TIMEOUTS", 3):
+            self.run_limited(calls, seconds=260)
+
+        self.assertIn("520 of 600 seconds used, and one more tool call can take 90 seconds", self.last_comment())
 
     def test_a_call_that_ends_exactly_30_seconds_before_the_limit_starts(self):
         """AC-1 - 510 + 60 + 30 is 600, which fits."""

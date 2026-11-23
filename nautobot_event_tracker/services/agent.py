@@ -169,9 +169,6 @@ Job never finds out. The run time limit is never above it, so a higher limit on 
 RUN_END_RESERVE_SECONDS = 30
 """Seconds that a call must leave before the run time limit, for the last ticket comment and the row writes."""
 
-TOOL_CALL_TIMEOUTS = 2
-"""Timeouts that one tool call can take: the handshake and the call each get `tool_timeout_seconds`."""
-
 SOFT_TIME_LIMIT_RUN_ERROR = (
     "The Job reached its soft time limit of {limit} seconds in the middle of {activity}. "
     "Lower `timeout_seconds` or `tool_timeout_seconds`, or raise the time limits of the Job."
@@ -527,7 +524,7 @@ def _claim_run(*, ticket, user, job_result, settings, limit, time_limit):  # pyl
 
 def _require_time_for_approved_call(settings, limit):
     """Raise `AgentConfigurationError` if the run time limit leaves no time for the approved call."""
-    allowance = TOOL_CALL_TIMEOUTS * settings.tool_timeout_seconds
+    allowance = mcp_service.call_deadline(settings.tool_timeout_seconds)
     if allowance + RUN_END_RESERVE_SECONDS > limit:
         raise AgentConfigurationError(
             f"The run time limit of {round(limit)} seconds leaves no time for the approved call, "
@@ -938,7 +935,7 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
             if tool.writable:
                 self._propose(tool, call)
                 return False
-            bound = self._time_bound("tool", TOOL_CALL_TIMEOUTS * self.settings.tool_timeout_seconds)
+            bound = self._time_bound("tool", mcp_service.call_deadline(self.settings.tool_timeout_seconds))
             if bound is not None:
                 self._conclude_at_bound(bound)
                 return False
@@ -1088,7 +1085,8 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
     def _time_bound(self, kind, allowance):
         """Return the run time limit as a bound if a call of this kind does not fit, and None if it fits.
 
-        The call fits if its allowance ends `RUN_END_RESERVE_SECONDS` or more before the limit.
+        The call fits if its allowance ends `RUN_END_RESERVE_SECONDS` or more before the limit. The allowance is
+        the total deadline of the call.
         """
         elapsed = self._clock() - self._started
         if elapsed + allowance + RUN_END_RESERVE_SECONDS <= self._limit:
