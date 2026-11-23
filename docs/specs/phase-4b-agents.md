@@ -320,9 +320,9 @@ logging and the `JobResult`.
   should not exist (T4); an agent fails *closed* because a half-finished investigation reported as
   a finished one is worse than no investigation. A failed run ends `failed`, says why on the
   ticket, and proposes nothing. A run that the soft time limit of the Job interrupts ends `failed`
-  and names the limit, and each read-only call that it left unfinished becomes `failed`. A Mutating call that
-  was cut becomes `outcome_unknown` and says that the change might be in effect. Each call that a stop cut gets an entry in the
-  ticket's trail, also when a later launch finds a run whose process died.
+  and names the limit, and each read-only call that it left unfinished becomes `failed`. A Mutating call
+  that was cut becomes `outcome_unknown` and says that the change might be in effect. Each call that a
+  stop cut gets an entry in the ticket's trail, also when a later launch finds a run whose process died.
 - **A7 — The transcript is the record.** Every system prompt, model message, tool call and tool
   result is stored on the run. Resumption needs it, and a person asking "why did it want to do
   *that*" needs it more.

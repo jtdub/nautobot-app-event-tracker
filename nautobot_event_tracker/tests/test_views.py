@@ -700,7 +700,8 @@ class AgentToolCallViewTest(
 
         detail = self.client.get(call.get_absolute_url())
         listing = self.client.get(
-            f"{reverse('plugins:nautobot_event_tracker:agenttoolcall_list')}?status=outcome_unknown"
+            f"{reverse('plugins:nautobot_event_tracker:agenttoolcall_list')}?status=outcome_unknown",
+            headers={"HX-Request": "true"},
         )
 
         self.assertHttpStatus(detail, 200)
@@ -711,6 +712,9 @@ class AgentToolCallViewTest(
         )
         self.assertNotIn(reverse("plugins:nautobot_event_tracker:agenttoolcall_deny", kwargs={"pk": call.pk}), content)
         self.assertHttpStatus(listing, 200)
+        rows = listing.content.decode()
+        self.assertIn(call.get_absolute_url(), rows)
+        self.assertNotIn(AgentToolCall.objects.exclude(pk=call.pk).first().get_absolute_url(), rows)
 
 
 class AgentDecisionViewTest(TestCase):

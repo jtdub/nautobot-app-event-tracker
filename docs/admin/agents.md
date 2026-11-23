@@ -118,8 +118,8 @@ limit. Then run the agent again.
 
 A tool call that does not finish in two times `tool_timeout_seconds` is Failed. A Mutating call that the app
 sent is Outcome Unknown, not Failed (see below). Its error is "The call did not finish in 60 seconds." with
-the defaults. The run continues, and the model reads the error. The update
-trail of the ticket has an entry for the call.
+the defaults. The run continues, and the model reads the error. The update trail of the ticket has an entry
+for the call.
 
 A Mutating tool call can fail after the app sent it and before an answer came. The call then gets the status
 Outcome Unknown, not Failed. Its error also says that the change might be in effect. Check the device before

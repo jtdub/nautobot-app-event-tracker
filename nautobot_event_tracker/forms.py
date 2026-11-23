@@ -358,8 +358,7 @@ class AgentToolCallFilterForm(NautobotFilterForm):  # pylint: disable=too-many-a
     """Filter form for AgentToolCall.
 
     Filter form only, for the same reason. The status filter is the useful one: `proposed` is the
-    queue of decisions waiting on a person.
-    `outcome_unknown` is the list of changes to check on a device.
+    queue of decisions waiting on a person. `outcome_unknown` is the list of changes to check on a device.
     """
 
     model = AgentToolCall
