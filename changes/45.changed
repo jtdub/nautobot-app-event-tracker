@@ -1,0 +1,2 @@
+Changed the status of a Mutating tool call that ends with no answer. It is now Outcome Unknown, not Failed.
+Changed the REST API and GraphQL `status` of a Mutating call with no answer to `outcome_unknown`. Update a client that filters on `failed`.

@@ -1,0 +1,2 @@
+Added the status Outcome Unknown. A Mutating tool call with this status ended with no answer, so check the device.
+Added a warning to a tool proposal on the ticket trail when an earlier call of the same tool is Outcome Unknown.

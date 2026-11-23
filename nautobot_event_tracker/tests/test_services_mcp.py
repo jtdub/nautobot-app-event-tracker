@@ -404,8 +404,8 @@ class TestCallingATool(CallToolTestCase):
         self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
         self.assertEqual(self.call.error, mcp_service.SOFT_TIME_LIMIT_CALL_ERROR)
 
-    def test_the_soft_time_limit_in_a_writable_call_says_the_change_might_be_in_effect(self):
-        """AC-13 - a cut call of a tool that changes the network gets the warning."""
+    def test_the_soft_time_limit_in_a_writable_call_gives_outcome_unknown(self):
+        """AC-2 - a cut call of a tool that changes the network gets the warning and its own status."""
         self.tool.writable = True
         self.tool.validated_save()
         self.call = fixtures.create_agenttoolcall(
@@ -416,7 +416,7 @@ class TestCallingATool(CallToolTestCase):
             self.call_tool(client=fixtures.FakeMCPCaller(error=SoftTimeLimitExceeded()))
 
         self.call.refresh_from_db()
-        self.assertEqual(self.call.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
         self.assertEqual(self.call.error, mcp_service.CUT_CHANGE_ERROR)
 
     def test_a_call_that_the_deadline_stops_is_recorded_and_raised(self):
@@ -440,20 +440,23 @@ class TestCallingATool(CallToolTestCase):
             run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.APPROVED
         )
 
-    def test_the_warning_follows_the_sent_call(self):
-        """AC-10 - a writable call that was sent and has no answer gets the warning, and no other call does."""
+    def test_the_status_and_the_warning_follow_the_sent_call(self):
+        """AC-4 - a writable call that was sent and has no answer gets the warning and the status, and no other call does."""
         warning = mcp_service.CHANGE_MIGHT_BE_IN_EFFECT
         deadline = "The call did not finish in 60 seconds."
+        unknown = AgentToolCallStatusChoices.OUTCOME_UNKNOWN
+        failed = AgentToolCallStatusChoices.FAILED
         cases = {
-            "deadline, sent": (MCPDeadlineError(deadline, call_sent=True), f"{deadline} {warning}"),
-            "deadline, not sent": (MCPDeadlineError(deadline, call_sent=False), deadline),
+            "deadline, sent": (MCPDeadlineError(deadline, call_sent=True), f"{deadline} {warning}", unknown),
+            "deadline, not sent": (MCPDeadlineError(deadline, call_sent=False), deadline, failed),
             "failure, sent": (
                 MCPCallError("Request 'tools/call' timed out", call_sent=True),
                 f"The call failed: Request 'tools/call' timed out {warning}",
+                unknown,
             ),
-            "failure, no flag": (ValueError("refused"), "The call failed: refused"),
+            "failure, no flag": (ValueError("refused"), "The call failed: refused", failed),
         }
-        for name, (error, expected) in cases.items():
+        for name, (error, expected, status) in cases.items():
             with self.subTest(name):
                 self.make_the_call_writable()
 
@@ -462,6 +465,19 @@ class TestCallingATool(CallToolTestCase):
 
                 self.call.refresh_from_db()
                 self.assertEqual(self.call.error, expected)
+                self.assertEqual(self.call.status, status)
+                self.assertEqual(status == unknown, self.call.error.endswith(warning))
+
+    def test_an_error_answer_of_a_writable_tool_is_failed(self):
+        """AC-5 - the server answered, so the call has an outcome and the status is `failed`."""
+        self.make_the_call_writable()
+        answer = fixtures.FakeCallToolResult(text="rejected", is_error=True)
+
+        record = self.call_tool(client=fixtures.FakeMCPCaller(result=answer))
+
+        self.assertEqual(record.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(record.error, "rejected")
+        self.assertTrue(record.result["is_error"])
 
     def test_a_read_only_call_that_was_sent_gets_no_warning(self):
         """AC-10 - the warning is for a tool that changes the network."""
@@ -483,6 +499,7 @@ class TestCallingATool(CallToolTestCase):
         self.call.refresh_from_db()
         self.assertLessEqual(len(self.call.error), mcp_service.ERROR_TEXT_CAP)
         self.assertTrue(self.call.error.endswith(mcp_service.CHANGE_MIGHT_BE_IN_EFFECT))
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
 
     def test_no_sdk_exception_escapes(self):
         """The L4 arrangement, applied to the other kind of call this app makes."""
@@ -557,13 +574,26 @@ class TestUnfinishedCalls(TestCase):
             self.assertEqual(row.error, "Stopped.")
             self.assertIsNotNone(row.called_at)
 
-    def test_a_writable_row_gets_the_warning(self):
+    def test_a_writable_row_gets_outcome_unknown_and_the_warning(self):
         executing = self.call(self.parent, self.writer, AgentToolCallStatusChoices.EXECUTING)
 
         mcp_service.fail_unfinished_calls([self.parent.pk], "Stopped.")
 
         executing.refresh_from_db()
+        self.assertEqual(executing.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
         self.assertEqual(executing.error, mcp_service.CUT_CHANGE_ERROR)
+        self.assertIsNotNone(executing.called_at)
+
+    def test_the_returned_rows_carry_the_new_status(self):
+        self.call(self.parent, self.writer, AgentToolCallStatusChoices.EXECUTING)
+        self.call(self.parent, self.reader, AgentToolCallStatusChoices.EXECUTING)
+
+        changed = mcp_service.fail_unfinished_calls([self.parent.pk], "Stopped.")
+
+        self.assertEqual(
+            {row.status for row in changed},
+            {AgentToolCallStatusChoices.OUTCOME_UNKNOWN, AgentToolCallStatusChoices.FAILED},
+        )
 
     def test_the_other_rows_do_not_change(self):
         proposal = self.call(self.parent, self.writer, AgentToolCallStatusChoices.PROPOSED)
@@ -761,6 +791,45 @@ class TestCallRefusals(CallToolTestCase):
         self.tool.validated_save()
 
         self.assert_refused("not approved")
+
+    def test_a_refused_call_does_not_rewrite_outcome_unknown(self):
+        """AC-10 - a call with no known outcome is final, and a second call leaves its row as it is."""
+        self.tool.writable = True
+        self.tool.validated_save()
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run,
+            tool=self.tool,
+            status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN,
+            error="kept",
+        )
+        caller = fixtures.FakeMCPCaller()
+
+        with self.assertRaises(MCPConfigurationError) as caught:
+            mcp_service.call_tool(tool_call=self.call, client=caller)
+
+        self.assertIn("is writable and this call is 'outcome_unknown', not approved.", str(caught.exception))
+        self.assertEqual(caller.calls, [])
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+        self.assertEqual(self.call.error, "kept")
+
+    def test_a_refused_call_of_a_read_only_tool_does_not_rewrite_outcome_unknown(self):
+        """AC-10 - the same row keeps its status when the tool is read-only."""
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run,
+            tool=self.tool,
+            status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN,
+            error="kept",
+        )
+        caller = fixtures.FakeMCPCaller()
+
+        with self.assertRaises(MCPConfigurationError) as caught:
+            mcp_service.call_tool(tool_call=self.call, client=caller)
+
+        self.assertIn("has already been decided", str(caught.exception))
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+        self.assertEqual(self.call.error, "kept")
 
     def test_an_approved_writable_tool_runs(self):
         """The other half of M6, or the gate would just be a wall."""

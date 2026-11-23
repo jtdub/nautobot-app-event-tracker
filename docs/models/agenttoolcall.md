@@ -11,9 +11,12 @@ An Agent Tool Call is one tool call that an agent asked for, and what happened t
 | **Denied** | A person denied the call. The run ends. |
 | **Executing** | The app makes the call now. |
 | **Executed** | The call ran and the server answered. |
-| **Failed** | The call did not finish, the server reported an error, or the app refused the call. The **Error** field says why. |
+| **Failed** | The call did not finish, the server reported an error, or the app refused the call. The **Error** field says why. A writable call that ended with no answer after the app sent it is **Outcome Unknown**, not **Failed**. |
+| **Outcome Unknown** | A writable call ended with no answer. The app does not know if the change is in effect. The **Error** field says why. |
 
-A read-only call goes to **Executed** or **Failed**. It never has a decider. This is the only difference between a read-only call and a call that changes something. The **Writable** field of the MCP Tool that the call names decides it. The AI Models app owns that field.
+A read-only call goes to **Executed** or **Failed**. It never has a decider, and it never gets **Outcome Unknown**. These are the differences between a read-only call and a call that changes something. The **Writable** field of the MCP Tool that the call names decides it. The AI Models app owns that field.
+
+Only a writable call can get **Outcome Unknown**. The call gets it when a stop of the Job interrupts it, or when it fails after the app sent it. Check the device. A person cannot approve the call again. If the change is still necessary, run the agent again, and the agent proposes a new call. The trail entry of that proposal says that an earlier call of the tool has the status **Outcome Unknown**. A call that ended before this status existed stays **Failed**, and its error has the same warning.
 
 ## Fields
 
@@ -30,7 +33,7 @@ The detail page of a call shows the bold labels below. The list shows **Proposed
 | **Latency Ms** (`latency_ms`) | The time that the call took, in milliseconds. |
 | **Called At** (`called_at`) | The time when the call reached the server. |
 | **Tool Fingerprint** (`tool_fingerprint`) | A digest of the definition, the name and the endpoint of the tool when the agent proposed the call. |
-| **Error** (`error`) | Why the call failed, if it did. The app cuts a long text. See the texts below. |
+| **Error** (`error`) | Why the call failed, or why its outcome is not known. The app cuts a long text. See the texts below. |
 | **Arguments** (`arguments`) | What the model asked for, exactly as it asked. The arguments do not change after the proposal. The detail page shows them in a panel. |
 | **Result** (`result`) | What came back, cut at a limit. The detail page shows it in a panel. |
 
@@ -40,7 +43,9 @@ A call that a stop of the Job interrupted has one of these error texts:
 
 - "The Job reached its soft time limit before this call finished." The call is read-only.
 - "The process that ran this agent stopped before this call finished." The call is read-only.
-- "The call was interrupted before the app got an answer. This tool changes the network, so the change might be in effect. Check the device before you approve the same change again." The call is writable.
+- "The call was interrupted before the app got an answer. This tool changes the network, so the change might be in effect. Check the device before you approve the same change again." The call is writable. Its status is **Outcome Unknown**.
+
+A writable call that fails after the app sent it also has the status **Outcome Unknown**. Its error ends with "This tool changes the network, so the change might be in effect. Check the device before you approve the same change again."
 
 ## Approve or deny a call {#approving-and-denying}
 

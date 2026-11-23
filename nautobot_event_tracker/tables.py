@@ -232,7 +232,7 @@ class AgentToolCallTable(BaseTable):
     """Table for the Agent Tool Call list view, the run panel and the ticket panel.
 
     The status column is the one that matters: `proposed` is somebody's decision waiting to be
-    made, and it is the only state in this table that anybody has to act on.
+    made, and `outcome_unknown` is a change that somebody has to check on a device.
     """
 
     proposed_at = tables.DateTimeColumn(linkify=True, verbose_name="Proposed")

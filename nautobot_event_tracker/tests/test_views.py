@@ -688,6 +688,34 @@ class AgentToolCallViewTest(
         with self.assertRaises(NoReverseMatch):
             reverse("plugins:nautobot_event_tracker:agenttoolcall_add")
 
+    def test_a_call_with_no_known_outcome_has_no_decision_buttons(self):
+        """The call is final. The page shows the status and no Approve or Deny."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.approve_agenttoolcall"
+        )
+        call = fixtures.create_agenttoolcall(
+            tool=fixtures.create_mcptool(name="apply_config", writable=True),
+            status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN,
+        )
+
+        detail = self.client.get(call.get_absolute_url())
+        listing = self.client.get(
+            f"{reverse('plugins:nautobot_event_tracker:agenttoolcall_list')}?status=outcome_unknown",
+            headers={"HX-Request": "true"},
+        )
+
+        self.assertHttpStatus(detail, 200)
+        content = detail.content.decode()
+        self.assertIn("Outcome Unknown", content)
+        self.assertNotIn(
+            reverse("plugins:nautobot_event_tracker:agenttoolcall_approve", kwargs={"pk": call.pk}), content
+        )
+        self.assertNotIn(reverse("plugins:nautobot_event_tracker:agenttoolcall_deny", kwargs={"pk": call.pk}), content)
+        self.assertHttpStatus(listing, 200)
+        rows = listing.content.decode()
+        self.assertIn(call.get_absolute_url(), rows)
+        self.assertNotIn(AgentToolCall.objects.exclude(pk=call.pk).first().get_absolute_url(), rows)
+
 
 class AgentDecisionViewTest(TestCase):
     """The approve and deny routes: who may press them, what they write, and what they refuse."""

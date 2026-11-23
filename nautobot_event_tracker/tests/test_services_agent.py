@@ -283,8 +283,8 @@ class TestStartingARun(AgentTestCase):  # pylint: disable=too-many-public-method
         self.assertIn("(failed,", entry.message)
         self.assertIn(mcp_service.DEAD_PROCESS_CALL_ERROR, entry.message)
 
-    def test_a_dead_resumption_s_cut_approved_call_is_failed_with_the_warning(self):
-        """AC-15 - the call of the parent run gets the warning, the dead run's error ends with it."""
+    def test_a_dead_resumption_s_cut_approved_call_is_outcome_unknown_with_the_warning(self):
+        """AC-3, AC-7, AC-8 - the call of the parent run gets the warning and its status, and the dead run ends with the note."""
         parent = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.SUPERSEDED)
         tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
         row = fixtures.create_agenttoolcall(run=parent, tool=tool, status=AgentToolCallStatusChoices.EXECUTING)
@@ -295,9 +295,11 @@ class TestStartingARun(AgentTestCase):  # pylint: disable=too-many-public-method
         row.refresh_from_db()
         dead.refresh_from_db()
         entry = self.updates(UpdateTypeChoices.TOOL_EXECUTED)[0]
-        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
         self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
-        self.assertTrue(dead.error.endswith(mcp_service.CUT_CHANGE_ERROR))
+        self.assertEqual(dead.status, AgentRunStatusChoices.FAILED)
+        self.assertTrue(dead.error.endswith(mcp_service.CUT_CHANGE_RUN_NOTE))
+        self.assertIn("(outcome_unknown,", entry.message)
         self.assertIn(mcp_service.CUT_CHANGE_ERROR, entry.message)
 
     def test_a_dead_run_with_no_unfinished_call_keeps_its_error(self):
@@ -1008,6 +1010,48 @@ class TestTheGate(AgentTestCase):
         self.assertEqual(proposal.status, AgentToolCallStatusChoices.PROPOSED)
         self.assertEqual(proposal.arguments, {"device": "leaf-01", "config": "shutdown"})
 
+    def test_a_proposal_after_an_outcome_unknown_call_of_the_tool_warns_the_approver(self):
+        """AC-15 - the entry of a new proposal says that an earlier call of the tool has no known outcome."""
+        earlier = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.COMPLETED)
+        fixtures.create_agenttoolcall(run=earlier, tool=self.tool, status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+
+        self.propose()
+
+        entry = self.updates(UpdateTypeChoices.TOOL_PROPOSED)[-1]
+        self.assertTrue(entry.message.endswith(ticket_service.EARLIER_OUTCOME_UNKNOWN_NOTE))
+        self.assertIn("Nothing has been called", entry.message)
+
+    def test_a_proposal_with_no_outcome_unknown_call_of_the_tool_has_no_warning(self):
+        """AC-15 - another status, another tool, or another ticket gives no sentence."""
+        other_tool = fixtures.create_mcptool(name="reload_device", enabled=True, writable=True)
+        other_ticket = fixtures.create_ticket(user=self.user, title="spine-01 bgp down")
+        cases = {
+            "no earlier call": lambda run: None,
+            "earlier failed call": lambda run: fixtures.create_agenttoolcall(
+                run=run, tool=self.tool, status=AgentToolCallStatusChoices.FAILED
+            ),
+            "other tool": lambda run: fixtures.create_agenttoolcall(
+                run=run, tool=other_tool, status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN
+            ),
+            "other ticket": lambda run: fixtures.create_agenttoolcall(
+                run=fixtures.create_agentrun(ticket=other_ticket, status=AgentRunStatusChoices.COMPLETED),
+                tool=self.tool,
+                status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN,
+            ),
+        }
+        for name, make_earlier_call in cases.items():
+            with self.subTest(name):
+                ticket = fixtures.create_ticket(user=self.user, title=f"leaf-02 {name}")
+                make_earlier_call(fixtures.create_agentrun(ticket=ticket, status=AgentRunStatusChoices.COMPLETED))
+                if name == "other ticket":
+                    ticket = fixtures.create_ticket(user=self.user, title="leaf-03 other ticket")
+
+                self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})], ticket=ticket)
+
+                entry = ticket.updates.filter(update_type=UpdateTypeChoices.TOOL_PROPOSED).last()
+                self.assertTrue(entry.message.endswith("this needs a human decision."))
+                self.assertNotIn("Outcome Unknown", entry.message)
+
     def test_the_ticket_s_trail_names_the_server_the_tool_and_the_arguments(self):
         """7.1 - the gate is only as good as the person reading it (section 11)."""
         self.propose({"device": "leaf-01"})
@@ -1062,6 +1106,22 @@ class TestDecisions(AgentTestCase):
         self.assertEqual(entry.user, self.user)
         self.assertIn("approved", entry.message)
         self.assertIn("leaf-01", entry.message)
+
+    def test_a_call_with_no_known_outcome_is_not_decided_again(self):
+        """A call with no answer is final, so approve and deny both refuse it."""
+        self.call = fixtures.create_agenttoolcall(
+            run=self.run, tool=self.tool, status=AgentToolCallStatusChoices.OUTCOME_UNKNOWN
+        )
+        decided_before = len(self.updates(UpdateTypeChoices.TOOL_DECIDED))
+        for decide in (agent_service.approve_tool_call, agent_service.deny_tool_call):
+            with self.subTest(decide=decide.__name__):
+                with self.assertRaises(AgentDecisionError):
+                    decide(tool_call=self.call, user=self.user)
+
+        self.call.refresh_from_db()
+        self.assertEqual(self.call.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+        self.assertIsNone(self.call.decided_by)
+        self.assertEqual(len(self.updates(UpdateTypeChoices.TOOL_DECIDED)), decided_before)
 
     def test_denying_ends_the_run(self):
         """13.8 - a denial is the end of the chain, not the start of a negotiation."""
@@ -1200,12 +1260,21 @@ class TestResumption(AgentTestCase):
         """The row and the trail entry say that the change might be in effect."""
         error = MCPDeadlineError("The call did not finish in 60 seconds.", call_sent=True)
 
-        self.resume("Done.", call_tool=_wire_with(error))
+        run, _ = self.resume("Done.", call_tool=_wire_with(error))
 
         self.proposal.refresh_from_db()
+        self.assertEqual(self.proposal.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
         self.assertIn("the change might be in effect", self.proposal.error)
         entry = self.updates(UpdateTypeChoices.TOOL_EXECUTED)[-1]
         self.assertIn("the change might be in effect", entry.message)
+        self.assertIn("(outcome_unknown,", entry.message)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertEqual(
+            self.messages(run, "tool")[0]["content"],
+            "The outcome of the call is not known: The call did not finish in 60 seconds. "
+            f"{mcp_service.CHANGE_MIGHT_BE_IN_EFFECT}",
+        )
+        self.assertEqual(AgentToolCall.objects.count(), 1)
 
     def test_the_result_reaches_the_ticket_s_trail(self):
         """7.4 - the call happened, and the ticket says so."""
@@ -1689,10 +1758,11 @@ class TestTheSoftTimeLimit(AgentTestCase):
 
         row = AgentToolCall.objects.get()
         self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
-        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
         self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
-        self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_ERROR))
-        self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_ERROR))
+        self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_RUN_NOTE))
+        self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_RUN_NOTE))
+        self.assertIn(AgentToolCallStatusChoices.as_dict()["outcome_unknown"], mcp_service.CUT_CHANGE_RUN_NOTE)
 
     def test_a_cut_approved_call_that_the_service_recorded_still_warns(self):
         """AC-13 - the real `call_tool` writes the row, so the run adds the warning from the call in flight."""
@@ -1703,9 +1773,44 @@ class TestTheSoftTimeLimit(AgentTestCase):
 
         row = AgentToolCall.objects.get()
         self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
         self.assertEqual(row.error, mcp_service.CUT_CHANGE_ERROR)
-        self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_ERROR))
-        self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_ERROR))
+        self.assertTrue(run.error.endswith(mcp_service.CUT_CHANGE_RUN_NOTE))
+        self.assertTrue(self.last_comment().endswith(mcp_service.CUT_CHANGE_RUN_NOTE))
+
+    def test_a_signal_after_the_service_wrote_outcome_unknown_still_warns(self):
+        """AC-8, AC-7 - the signal comes after the service wrote the status and before the loop recorded it."""
+        parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
+        agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+
+        run, _ = self.run_agent("Done.", call_tool=_SignalToolCaller(AgentToolCallStatusChoices.OUTCOME_UNKNOWN))
+
+        entries = self.updates(UpdateTypeChoices.TOOL_EXECUTED)
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertIn(mcp_service.CUT_CHANGE_RUN_NOTE, run.error)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("(outcome_unknown,", entries[0].message)
+        self.assertEqual(AgentToolCall.objects.get().status, AgentToolCallStatusChoices.OUTCOME_UNKNOWN)
+
+    def test_the_note_stays_complete_before_an_earlier_cause(self):
+        """AC-8 - the cap of the run error cuts the earlier cause and never the note."""
+        first_cause = "x" * 2000
+        text = agent_service._soft_time_limit_message(  # pylint: disable=protected-access
+            limit=600, activity="a tool call", cut_change=True, first_cause=first_cause
+        )
+
+        kept = text[: mcp_service.ERROR_TEXT_CAP]
+        end_of_note = kept.index(mcp_service.CUT_CHANGE_RUN_NOTE) + len(mcp_service.CUT_CHANGE_RUN_NOTE)
+        self.assertLess(end_of_note, 500)
+        self.assertTrue(kept[end_of_note:].startswith(agent_service.SOFT_TIME_LIMIT_FIRST_CAUSE))
+        alone = agent_service._soft_time_limit_message(  # pylint: disable=protected-access
+            limit=600, activity="a tool call", cut_change=True, first_cause=""
+        )
+        self.assertTrue(alone.endswith(mcp_service.CUT_CHANGE_RUN_NOTE))
+        plain = agent_service._soft_time_limit_message(  # pylint: disable=protected-access
+            limit=600, activity="a tool call", cut_change=False, first_cause=""
+        )
+        self.assertNotIn(mcp_service.CUT_CHANGE_RUN_NOTE, plain)
 
     def test_an_approved_call_that_was_not_started_carries_no_warning(self):
         """AC-13 - a row that is still approved was not cut, so no warning that the change might be in effect."""
@@ -1797,6 +1902,7 @@ class TestACutCall(AgentTestCase):
 
         entries = self.updates(UpdateTypeChoices.TOOL_EXECUTED)
         self.assertEqual(len(entries), 1)
+        self.assertIn("(outcome_unknown,", entries[0].message)
         self.assertIn(mcp_service.CUT_CHANGE_ERROR, entries[0].message)
 
     def test_a_call_that_the_signal_did_not_cut_has_no_entry(self):
