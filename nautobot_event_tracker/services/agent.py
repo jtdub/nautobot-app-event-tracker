@@ -548,10 +548,12 @@ def _bury(run):
 
     Failed rather than completed: nothing about it finished, and A6 says a run that did not finish
     must not look like one that did. The error says what happened, because "failed" with no reason
-    is the thing somebody would otherwise open a shell to investigate.
+    is the thing somebody would otherwise open a shell to investigate. An approved call that the
+    run did not start becomes failed.
     """
     logger.warning("Agent run %s outlived its Job's time limit and is being marked failed", run.pk)
     cut = mcp_service.fail_unfinished_calls(_chain_ids(run), mcp_service.DEAD_PROCESS_CALL_ERROR)
+    unstarted = mcp_service.fail_unstarted_calls(_chain_ids(run))
     run.status = AgentRunStatusChoices.FAILED
     run.error = (
         "The process running this agent stopped without recording an outcome - a time limit, a "
@@ -561,7 +563,7 @@ def _bury(run):
         run.error = f"{run.error} {mcp_service.CUT_CHANGE_RUN_NOTE}"
     run.finished_at = timezone.now()
     run.save()
-    _record_cut_calls(run.ticket, cut)
+    _record_cut_calls(run.ticket, cut + unstarted)
     return run
 
 
@@ -575,7 +577,7 @@ def _chain_ids(run):
 
 
 def _record_cut_calls(ticket, calls):
-    """Write a trail entry for each call that a stop cut. A ticket that refuses the write is logged."""
+    """Write a trail entry for each call that a stop cut or left unstarted. A ticket that refuses the write is logged."""
     for call in calls:
         try:
             ticket_service.record_tool_result(ticket=ticket, tool_call=call)
@@ -1209,9 +1211,13 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         return AgentToolCall.objects.select_related("tool__mcp_server").filter(pk=self._in_flight.pk).first()
 
     def _fail(self, message):
-        """A6 - end the run visibly, say why on the ticket, and propose nothing."""
+        """A6 - end the run visibly, say why on the ticket, and propose nothing.
+
+        An approved call that the run did not start becomes failed.
+        """
         logger.warning("Agent run %s failed: %s", self.run.pk, message)
         self.run.error = str(message)[:ERROR_TEXT_CAP]
+        _record_cut_calls(self.ticket, mcp_service.fail_unstarted_calls(self._chain_ids()))
         self._comment(f"{FAILURE_COMMENT_PREFIX}{message}")
         self._finish(AgentRunStatusChoices.FAILED)
 
