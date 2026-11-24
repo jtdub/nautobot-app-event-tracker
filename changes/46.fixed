@@ -1,0 +1,2 @@
+Fixed an approved tool call that stayed Approved after its agent run stopped before the call started. The call now becomes Failed.
+Fixed the approval of a tool call whose agent run already ended. The app now refuses it, because no run makes that call.

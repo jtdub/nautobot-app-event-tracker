@@ -114,6 +114,11 @@ seconds do not fit in the run time limit. The call stays approved. Set the limit
 defaults, or lower `tool_timeout_seconds`. To restore a default, clear **Override default value** for the
 limit. Then run the agent again.
 
+A resumption run that starts can also stop before it starts the approved call. The cause can be the soft time
+limit, a worker that died, or a different fault. The app did not send the call, so the tool changed nothing.
+The call gets the status Failed, and its error says that the call did not run. The update trail of the ticket
+has an entry for the call. To get a new proposal, run the agent again.
+
 ### A tool call that reaches its time limit
 
 A tool call that does not finish in two times `tool_timeout_seconds` is Failed. A Mutating call that the app

@@ -1745,7 +1745,7 @@ class _SignalToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-pub
         raise SoftTimeLimitExceeded()
 
 
-class TestTheSoftTimeLimit(AgentTestCase):
+class TestTheSoftTimeLimit(AgentTestCase):  # pylint: disable=too-many-public-methods
     """A6 - a run that the soft time limit interrupts ends failed and names the limit."""
 
     CUT = (

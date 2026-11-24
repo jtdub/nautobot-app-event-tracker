@@ -13,7 +13,7 @@ The **Investigate an Event Ticket** Job starts a run. Click **Investigate with A
 | **Completed** | The run finished. Its conclusion is a comment on the ticket. |
 | **Denied** | A person denied the proposal. The chain ends. |
 | **Failed** | The run did not finish. The ticket comment and the **Error** field say why. |
-| **Superseded** | A resumption run continued this run after an approval. The resumption run makes the approved call. |
+| **Superseded** | A resumption run continued this run after an approval. The resumption run makes the approved call. If the resumption run stops before it starts the call, the call becomes **Failed**. |
 
 **A run with the status Waiting for Approval is a finished run.** It does not block. It does not hold a worker. It does not wait for a lock. The loop reaches the approval gate when it ends. After an approval, a resumption run continues from the stored transcript.
 

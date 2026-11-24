@@ -421,6 +421,8 @@ the agent is not invited to try again with a different argument (13.8).
 - The **tool is frozen** at proposal too, per M6: a call whose tool has been re-advertised since
   the proposal was written is refused at execution rather than run against a definition nobody
   approved.
+- An **approval needs a waiting run**. `_decide` refuses the approval of a call whose run is not
+  `waiting_approval`, because no launch makes that call. A denial is still accepted.
 
 ### 7.4 Executing
 
@@ -431,6 +433,10 @@ the approval and the resumption, the call fails per M4 and the run continues wit
 its transcript, which is the honest thing for the model to see. A resumption starts only if two
 times `tool_timeout_seconds` plus 30 seconds fit in the run time limit. If not, the launch is
 refused and the call stays approved.
+
+A resumption run can end `failed` before it claims the approved call: the soft time limit, a dead
+process, or a different fault. The call then becomes `failed` with the text of `UNSTARTED_CALL_ERROR`,
+`called_at` stays null, and one `tool_executed` update records it. No later launch makes the call.
 
 ## 8. The tool-calling extension to `complete()`
 
