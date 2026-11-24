@@ -782,6 +782,7 @@ class AgentDecisionViewTest(TestCase):
         with mock.patch.object(AgentToolCallDecisionView, "_enqueue_resumption") as enqueue:
             response = self.client.post(url, follow=True)
 
+        self.assertRedirects(response, self.ticket.get_absolute_url())
         self.assertIn("so no run can make the call", response.content.decode())
         enqueue.assert_not_called()
         stale.refresh_from_db()
