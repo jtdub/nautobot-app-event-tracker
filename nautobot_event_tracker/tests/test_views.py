@@ -37,6 +37,7 @@ from nautobot_event_tracker.services import agent as agent_service
 from nautobot_event_tracker.services import analytics as analytics_service
 from nautobot_event_tracker.services import tickets as ticket_service
 from nautobot_event_tracker.tests import fixtures
+from nautobot_event_tracker.views import AgentToolCallDecisionView
 
 
 class EventTypeViewTest(ViewTestCases.OrganizationalObjectViewTestCase):
@@ -770,6 +771,21 @@ class AgentDecisionViewTest(TestCase):
         self.call.refresh_from_db()
         self.assertEqual(self.call.status, AgentToolCallStatusChoices.APPROVED)
         self.assertEqual(self.call.decided_by, self.user)
+
+    def test_approving_a_call_of_a_failed_run_shows_the_refusal_and_starts_no_job(self):
+        """AC-16 - the page shows the text, the call stays proposed, and no resumption starts."""
+        self.add_permissions("nautobot_event_tracker.approve_agenttoolcall")
+        failed_run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.FAILED)
+        stale = fixtures.create_agenttoolcall(run=failed_run, tool=self.tool)
+        url = reverse("plugins:nautobot_event_tracker:agenttoolcall_approve", kwargs={"pk": stale.pk})
+
+        with mock.patch.object(AgentToolCallDecisionView, "_enqueue_resumption") as enqueue:
+            response = self.client.post(url, follow=True)
+
+        self.assertIn("so no run can make the call", response.content.decode())
+        enqueue.assert_not_called()
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, AgentToolCallStatusChoices.PROPOSED)
 
     def test_deciding_twice_is_a_message_rather_than_a_second_decision(self):
         """A call is decided once, and the second press says so."""

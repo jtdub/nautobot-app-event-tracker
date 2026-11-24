@@ -141,6 +141,12 @@ FAILURE_COMMENT_PREFIX = "The agent run failed: "
 BOUND_COMMENT_PREFIX = "The agent stopped at "
 SELF_REPORT_PREFIXES = (FAILURE_COMMENT_PREFIX, BOUND_COMMENT_PREFIX)
 
+RUN_NOT_WAITING_ERROR = (
+    "This call cannot be approved. Its agent run has the status '{status}', "
+    "so no run can make the call. Deny the call, then run the agent again."
+)
+"""The refusal of an approval when the run of the call does not wait for approval."""
+
 SHORTENED_NOTE = "Note: the app shortened separator lines and table spaces in this output."
 """The line before a tool result whose padding the app made short (M8)."""
 
@@ -413,7 +419,8 @@ def _decide(*, tool_call, user, approved):
 
     The user requirement is mechanism rather than policy: `record_tool_decision` is a `source=human`
     write, and S4 refuses one of those without a user. An AI cannot approve its own proposal
-    because the function it would have to call will not let it.
+    because the function it would have to call will not let it. The app refuses an approval when
+    the run of the call does not wait, because no launch makes that call.
     """
     if user is None or not getattr(user, "is_authenticated", False):
         raise AgentDecisionError("A decision on a proposed tool call requires the deciding user.")
@@ -430,6 +437,8 @@ def _decide(*, tool_call, user, approved):
             raise AgentDecisionError(
                 f"This call is already '{tool_call.status}'. A call is decided once; the trail says what happened."
             )
+        if approved and tool_call.run.status != AgentRunStatusChoices.WAITING_APPROVAL:
+            raise AgentDecisionError(RUN_NOT_WAITING_ERROR.format(status=tool_call.run.status))
 
         tool_call.status = AgentToolCallStatusChoices.APPROVED if approved else AgentToolCallStatusChoices.DENIED
         tool_call.decided_by = user

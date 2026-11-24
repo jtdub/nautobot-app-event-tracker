@@ -631,6 +631,22 @@ class AgentToolCallAPITest(APITestCase):
         self.assertEqual(self.call.status, AgentToolCallStatusChoices.APPROVED)
         self.assertEqual(self.call.decided_by, self.user)
 
+    def test_approving_a_call_of_a_failed_run_is_a_conflict(self):
+        """AC-16 - no run makes the call, so the answer is 409 with the text, and the call stays proposed."""
+        self.add_permissions(
+            "nautobot_event_tracker.view_agenttoolcall", "nautobot_event_tracker.approve_agenttoolcall"
+        )
+        failed_run = fixtures.create_agentrun(status=AgentRunStatusChoices.FAILED)
+        stale = fixtures.create_agenttoolcall(run=failed_run, tool=self.tool)
+        url = reverse("plugins-api:nautobot_event_tracker-api:agenttoolcall-approve", args=[stale.pk])
+
+        response = self.client.post(url, {}, format="json", **self.header)
+
+        self.assertHttpStatus(response, 409)
+        self.assertIn("so no run can make the call", str(response.data))
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, AgentToolCallStatusChoices.PROPOSED)
+
     def test_denying_ends_the_run(self):
         """13.8, over REST as in the UI."""
         self.add_permissions(

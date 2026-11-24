@@ -1144,6 +1144,32 @@ class TestDecisions(AgentTestCase):
         self.assertIsNone(self.call.decided_by)
         self.assertEqual(len(self.updates(UpdateTypeChoices.TOOL_DECIDED)), decided_before)
 
+    def test_an_approval_is_refused_when_the_run_does_not_wait(self):
+        """AC-15 - no run makes the call, so the app refuses the approval and writes nothing."""
+        for status in (
+            AgentRunStatusChoices.RUNNING,
+            AgentRunStatusChoices.COMPLETED,
+            AgentRunStatusChoices.DENIED,
+            AgentRunStatusChoices.FAILED,
+            AgentRunStatusChoices.SUPERSEDED,
+        ):
+            with self.subTest(status=status):
+                run = fixtures.create_agentrun(status=status)
+                stale = fixtures.create_agenttoolcall(run=run, tool=self.tool)
+
+                with self.assertRaises(AgentDecisionError) as caught:
+                    agent_service.approve_tool_call(tool_call=stale, user=self.user)
+
+                self.assertEqual(
+                    str(caught.exception),
+                    f"This call cannot be approved. Its agent run has the status '{status}', "
+                    "so no run can make the call. Deny the call, then run the agent again.",
+                )
+                stale.refresh_from_db()
+                self.assertEqual(stale.status, AgentToolCallStatusChoices.PROPOSED)
+                self.assertIsNone(stale.decided_by)
+                self.assertFalse(run.ticket.updates.filter(update_type=UpdateTypeChoices.TOOL_DECIDED).exists())
+
     def test_denying_ends_the_run(self):
         """13.8 - a denial is the end of the chain, not the start of a negotiation."""
         agent_service.deny_tool_call(tool_call=self.call, user=self.user)
@@ -1179,16 +1205,24 @@ class TestDecisions(AgentTestCase):
         self.assertEqual(agent_service.pending_call(run), real)
 
     def test_denying_does_not_rewrite_a_run_that_already_finished(self):
-        """A stale proposal on a completed run must not turn that run into a denied one."""
-        run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.COMPLETED)
-        stale = fixtures.create_agenttoolcall(run=run, tool=self.tool)
+        """AC-17 - a stale proposal on a run that does not wait must not change that run."""
+        for status in (
+            AgentRunStatusChoices.RUNNING,
+            AgentRunStatusChoices.COMPLETED,
+            AgentRunStatusChoices.DENIED,
+            AgentRunStatusChoices.FAILED,
+            AgentRunStatusChoices.SUPERSEDED,
+        ):
+            with self.subTest(status=status):
+                run = fixtures.create_agentrun(status=status)
+                stale = fixtures.create_agenttoolcall(run=run, tool=self.tool)
 
-        agent_service.deny_tool_call(tool_call=stale, user=self.user)
+                agent_service.deny_tool_call(tool_call=stale, user=self.user)
 
-        run.refresh_from_db()
-        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
-        stale.refresh_from_db()
-        self.assertEqual(stale.status, AgentToolCallStatusChoices.DENIED)
+                run.refresh_from_db()
+                stale.refresh_from_db()
+                self.assertEqual(run.status, status)
+                self.assertEqual(stale.status, AgentToolCallStatusChoices.DENIED)
 
     def test_a_decision_without_a_user_is_refused(self):
         """The AI cannot approve its own proposal, because the function will not let it."""
