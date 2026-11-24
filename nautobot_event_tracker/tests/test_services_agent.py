@@ -302,6 +302,27 @@ class TestStartingARun(AgentTestCase):  # pylint: disable=too-many-public-method
         self.assertIn("(outcome_unknown,", entry.message)
         self.assertIn(mcp_service.CUT_CHANGE_ERROR, entry.message)
 
+    def test_a_dead_resumption_s_unstarted_approved_call_is_failed(self):
+        """AC-8 - the next launch marks the approved call that the dead run did not start."""
+        parent = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.SUPERSEDED)
+        tool = fixtures.create_mcptool(name="push_config", enabled=True, writable=True)
+        row = fixtures.create_agenttoolcall(run=parent, tool=tool, status=AgentToolCallStatusChoices.APPROVED)
+        dead = self.dead_run(parent=parent)
+
+        run, _ = self.run_agent("Looked again.")
+
+        row.refresh_from_db()
+        dead.refresh_from_db()
+        entry = self.updates(UpdateTypeChoices.TOOL_EXECUTED)[0]
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.UNSTARTED_CALL_ERROR)
+        self.assertIsNone(row.called_at)
+        self.assertEqual(dead.status, AgentRunStatusChoices.FAILED)
+        self.assertNotIn("might be in effect", dead.error)
+        self.assertIn("(failed, 0 ms)", entry.message)
+        self.assertIn(mcp_service.UNSTARTED_CALL_ERROR, entry.message)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
     def test_a_dead_run_with_no_unfinished_call_keeps_its_error(self):
         """AC-15 - no call, no warning and no trail entry."""
         dead = self.run_agent_dead()
@@ -1123,6 +1144,32 @@ class TestDecisions(AgentTestCase):
         self.assertIsNone(self.call.decided_by)
         self.assertEqual(len(self.updates(UpdateTypeChoices.TOOL_DECIDED)), decided_before)
 
+    def test_an_approval_is_refused_when_the_run_does_not_wait(self):
+        """AC-15 - no run makes the call, so the app refuses the approval and writes nothing."""
+        for status in (
+            AgentRunStatusChoices.RUNNING,
+            AgentRunStatusChoices.COMPLETED,
+            AgentRunStatusChoices.DENIED,
+            AgentRunStatusChoices.FAILED,
+            AgentRunStatusChoices.SUPERSEDED,
+        ):
+            with self.subTest(status=status):
+                run = fixtures.create_agentrun(status=status)
+                stale = fixtures.create_agenttoolcall(run=run, tool=self.tool)
+
+                with self.assertRaises(AgentDecisionError) as caught:
+                    agent_service.approve_tool_call(tool_call=stale, user=self.user)
+
+                self.assertEqual(
+                    str(caught.exception),
+                    f"This call cannot be approved. Its agent run has the status '{status}', "
+                    "so no run can make the call. Deny the call, then run the agent again.",
+                )
+                stale.refresh_from_db()
+                self.assertEqual(stale.status, AgentToolCallStatusChoices.PROPOSED)
+                self.assertIsNone(stale.decided_by)
+                self.assertFalse(run.ticket.updates.filter(update_type=UpdateTypeChoices.TOOL_DECIDED).exists())
+
     def test_denying_ends_the_run(self):
         """13.8 - a denial is the end of the chain, not the start of a negotiation."""
         agent_service.deny_tool_call(tool_call=self.call, user=self.user)
@@ -1158,16 +1205,24 @@ class TestDecisions(AgentTestCase):
         self.assertEqual(agent_service.pending_call(run), real)
 
     def test_denying_does_not_rewrite_a_run_that_already_finished(self):
-        """A stale proposal on a completed run must not turn that run into a denied one."""
-        run = fixtures.create_agentrun(ticket=self.ticket, status=AgentRunStatusChoices.COMPLETED)
-        stale = fixtures.create_agenttoolcall(run=run, tool=self.tool)
+        """AC-17 - a stale proposal on a run that does not wait must not change that run."""
+        for status in (
+            AgentRunStatusChoices.RUNNING,
+            AgentRunStatusChoices.COMPLETED,
+            AgentRunStatusChoices.DENIED,
+            AgentRunStatusChoices.FAILED,
+            AgentRunStatusChoices.SUPERSEDED,
+        ):
+            with self.subTest(status=status):
+                run = fixtures.create_agentrun(status=status)
+                stale = fixtures.create_agenttoolcall(run=run, tool=self.tool)
 
-        agent_service.deny_tool_call(tool_call=stale, user=self.user)
+                agent_service.deny_tool_call(tool_call=stale, user=self.user)
 
-        run.refresh_from_db()
-        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
-        stale.refresh_from_db()
-        self.assertEqual(stale.status, AgentToolCallStatusChoices.DENIED)
+                run.refresh_from_db()
+                stale.refresh_from_db()
+                self.assertEqual(run.status, status)
+                self.assertEqual(stale.status, AgentToolCallStatusChoices.DENIED)
 
     def test_a_decision_without_a_user_is_refused(self):
         """The AI cannot approve its own proposal, because the function will not let it."""
@@ -1213,6 +1268,34 @@ class TestResumption(AgentTestCase):
         self.assertEqual(len(caller.calls), 1)
         self.assertEqual(caller.calls[0]["tool_call"].pk, self.proposal.pk)
         self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+
+    def test_another_fault_before_the_claim_fails_the_approved_call(self):
+        """AC-7 - a fault that is not the signal gives the same row, and keeps its own run error."""
+        run, _ = self.resume("Done.", call_tool=mock.Mock(side_effect=RuntimeError("database gone")))
+
+        self.proposal.refresh_from_db()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(run.error, "The run failed unexpectedly: database gone")
+        self.assertEqual(self.proposal.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(self.proposal.error, mcp_service.UNSTARTED_CALL_ERROR)
+        self.assertEqual(len(self.updates(UpdateTypeChoices.TOOL_EXECUTED)), 1)
+
+    def test_a_run_that_fails_after_the_approved_call_ran_leaves_the_call_executed(self):
+        """The mark finds no approved row when the call ran."""
+        agent_service.approve_tool_call(tool_call=self.proposal, user=self.user)
+
+        with fixtures.agent_settings():
+            run = agent_service.run_agent(
+                ticket=self.ticket,
+                user=self.user,
+                complete=_failing_complete(LLMCallError("boom")),
+                call_tool=fixtures.FakeToolCaller(),
+            )
+
+        self.proposal.refresh_from_db()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(self.proposal.status, AgentToolCallStatusChoices.EXECUTED)
+        self.assertEqual(len(self.updates(UpdateTypeChoices.TOOL_EXECUTED)), 1)
 
     def test_a_resumption_stores_its_own_limit_and_leaves_the_parent_alone(self):
         """AC-3 - the resumption is a new row with its own limit, and the parent keeps the limit it had."""
@@ -1662,7 +1745,7 @@ class _SignalToolCaller(fixtures.FakeToolCaller):  # pylint: disable=too-few-pub
         raise SoftTimeLimitExceeded()
 
 
-class TestTheSoftTimeLimit(AgentTestCase):
+class TestTheSoftTimeLimit(AgentTestCase):  # pylint: disable=too-many-public-methods
     """A6 - a run that the soft time limit interrupts ends failed and names the limit."""
 
     CUT = (
@@ -1812,16 +1895,110 @@ class TestTheSoftTimeLimit(AgentTestCase):
         )
         self.assertNotIn(mcp_service.CUT_CHANGE_RUN_NOTE, plain)
 
-    def test_an_approved_call_that_was_not_started_carries_no_warning(self):
-        """AC-13 - a row that is still approved was not cut, so no warning that the change might be in effect."""
+    def approved_state(self):
+        """Run the agent to a proposal, approve it, and return the parent run."""
         parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
         agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
+        return parent
+
+    def test_an_approved_call_that_the_signal_reached_before_its_claim_is_failed(self):
+        """AC-1, AC-3, AC-5, AC-6, AC-12 - the call did not start, so it is failed and the run text does not change."""
+        parent = self.approved_state()
 
         run, _ = self.run_agent("Done.", call_tool=_SignalToolCaller())
 
+        row = AgentToolCall.objects.get()
+        parent.refresh_from_db()
+        text = self.CUT.format(limit=600, activity="a tool call")
         self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
-        self.assertNotIn("might be in effect", run.error)
-        self.assertEqual(AgentToolCall.objects.get().status, AgentToolCallStatusChoices.APPROVED)
+        self.assertEqual(parent.status, AgentRunStatusChoices.SUPERSEDED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.UNSTARTED_CALL_ERROR)
+        self.assertIsNone(row.called_at)
+        self.assertEqual(run.error, text)
+        self.assertEqual(self.last_comment(), f"{agent_service.FAILURE_COMMENT_PREFIX}{text}")
+
+    def test_a_signal_in_the_claim_of_the_real_service_fails_the_approved_call(self):
+        """AC-1, AC-12 - the signal arrives in the real `call_tool`, before its claim."""
+        self.approved_state()
+
+        with mock.patch.object(mcp_service, "_claim", side_effect=SoftTimeLimitExceeded()):
+            run, _ = self.run_agent("Done.", call_tool=mcp_service.call_tool)
+
+        row = AgentToolCall.objects.get()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.UNSTARTED_CALL_ERROR)
+
+    def test_a_signal_before_the_tool_call_starts_fails_the_approved_call(self):
+        """The signal arrives before `_execute` starts."""
+        self.approved_state()
+
+        with mock.patch.object(agent_service._Loop, "_execute", side_effect=SoftTimeLimitExceeded()):  # pylint: disable=protected-access
+            run, _ = self.run_agent("Done.")
+
+        row = AgentToolCall.objects.get()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(run.error, self.CUT.format(limit=600, activity="its work"))
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.UNSTARTED_CALL_ERROR)
+
+    def test_the_next_launch_after_an_unstarted_call_starts_a_fresh_run(self):
+        """AC-9 - no run makes the call, and the prompt carries the trail entry."""
+        self.approved_state()
+        self.run_agent("Done.", call_tool=_SignalToolCaller())
+        caller = fixtures.FakeToolCaller()
+
+        run, _ = self.run_agent("Looked again.", call_tool=caller)
+
+        self.assertIsNone(run.parent)
+        self.assertEqual(run.status, AgentRunStatusChoices.COMPLETED)
+        self.assertEqual(caller.calls, [])
+        self.assertIn(mcp_service.UNSTARTED_CALL_ERROR, self.messages(run, "user")[0]["content"])
+
+    def test_a_ticket_resolved_before_the_claim_still_fails_the_approved_call(self):
+        """The trail refuses the entry of a resolved ticket, and the row is failed all the same."""
+        self.approved_state()
+
+        def _resolve_then_signal(**_kwargs):
+            ticket_service.walk_to_status(
+                ticket=self.ticket,
+                to_status=TicketStatusChoices.RESOLVED,
+                source=TicketSourceChoices.HUMAN,
+                user=self.user,
+                resolution="Fixed in tests.",
+            )
+            raise SoftTimeLimitExceeded()
+
+        with self.assertLogs("nautobot_event_tracker.services.agent", "WARNING"):
+            run, _ = self.run_agent("Done.", call_tool=_resolve_then_signal)
+
+        row = AgentToolCall.objects.get()
+        self.assertEqual(run.status, AgentRunStatusChoices.FAILED)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.UNSTARTED_CALL_ERROR)
+        self.assertEqual(self.updates(UpdateTypeChoices.TOOL_EXECUTED), [])
+
+    def test_a_signal_in_the_mark_of_an_unstarted_call_keeps_the_first_cause(self):
+        """The first cause stays in the run error when the signal arrives in the mark."""
+        self.approved_state()
+        mark = mcp_service.fail_unstarted_calls
+        calls = []
+
+        def _signal_once(run_ids):
+            calls.append(run_ids)
+            if len(calls) == 1:
+                raise SoftTimeLimitExceeded()
+            return mark(run_ids)
+
+        with mock.patch.object(mcp_service, "fail_unstarted_calls", side_effect=_signal_once):
+            run, _ = self.run_agent("Done.", call_tool=mock.Mock(side_effect=RuntimeError("boom")))
+
+        row = AgentToolCall.objects.get()
+        self.assertTrue(run.error.startswith(self.CUT.format(limit=600, activity="a tool call")))
+        self.assertIn("The run was already ending for this cause: The run failed unexpectedly: boom", run.error)
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, mcp_service.UNSTARTED_CALL_ERROR)
 
     def test_a_call_that_finished_before_the_signal_carries_no_warning(self):
         """AC-13 - a row that is executed was not cut."""
@@ -1905,14 +2082,18 @@ class TestACutCall(AgentTestCase):
         self.assertIn("(outcome_unknown,", entries[0].message)
         self.assertIn(mcp_service.CUT_CHANGE_ERROR, entries[0].message)
 
-    def test_a_call_that_the_signal_did_not_cut_has_no_entry(self):
-        """A row that is still approved was not cut, so the trail does not say it failed."""
+    def test_an_approved_call_that_was_not_started_has_one_entry(self):
+        """AC-4 - the trail says that the call failed, and why."""
         parent, _ = self.run_agent([fixtures.fake_tool_call("push_config", {"device": "leaf-01"})])
         agent_service.approve_tool_call(tool_call=agent_service.pending_call(parent), user=self.user)
 
         self.run_agent("Done.", call_tool=_SignalToolCaller())
 
-        self.assertEqual(self.updates(UpdateTypeChoices.TOOL_EXECUTED), [])
+        entries = self.updates(UpdateTypeChoices.TOOL_EXECUTED)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("Called 'push_config'", entries[0].message)
+        self.assertIn("(failed, 0 ms)", entries[0].message)
+        self.assertIn(mcp_service.UNSTARTED_CALL_ERROR, entries[0].message)
 
 
 class TestFailure(AgentTestCase):

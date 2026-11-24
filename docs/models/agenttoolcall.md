@@ -7,11 +7,11 @@ An Agent Tool Call is one tool call that an agent asked for, and what happened t
 | Status | How a call gets this status |
 | --- | --- |
 | **Proposed** | The agent asked for the call. The app makes a read-only call at once. A writable call stops here and waits for a person. |
-| **Approved** | A person approved the call. The next run makes it. |
+| **Approved** | A person approved the call. The next run makes it. If that run stops before it starts the call, the call becomes **Failed**. |
 | **Denied** | A person denied the call. The run ends. |
 | **Executing** | The app makes the call now. |
 | **Executed** | The call ran and the server answered. |
-| **Failed** | The call did not finish, the server reported an error, or the app refused the call. The **Error** field says why. A writable call that ended with no answer after the app sent it is **Outcome Unknown**, not **Failed**. |
+| **Failed** | The call did not finish, the server reported an error, or the app refused the call. An approved call is also **Failed** when its run stopped before the call started. The **Error** field says why. A writable call that ended with no answer after the app sent it is **Outcome Unknown**, not **Failed**. |
 | **Outcome Unknown** | A writable call ended with no answer. The app does not know if the change is in effect. The **Error** field says why. |
 
 A read-only call goes to **Executed** or **Failed**. It never has a decider, and it never gets **Outcome Unknown**. These are the differences between a read-only call and a call that changes something. The **Writable** field of the MCP Tool that the call names decides it. The AI Models app owns that field.
@@ -47,6 +47,8 @@ A call that a stop of the Job interrupted has one of these error texts:
 
 A writable call that fails after the app sent it also has the status **Outcome Unknown**. Its error ends with "This tool changes the network, so the change might be in effect. Check the device before you approve the same change again."
 
+An approved call that its run did not start has this error text: "The run stopped before it started this approved call. The app did not send the call, so the tool changed nothing. To get a new proposal, run the agent again." Its status is **Failed**, and **Called At** is empty.
+
 ## Approve or deny a call {#approving-and-denying}
 
 Both actions need the permission "Can approve or deny a proposed agent tool call". The `change` permission does not include it. Approval of a call against the network is not the same right as the edit of a row.
@@ -55,10 +57,11 @@ No Nautobot page shows this permission name. In **Admin > Permissions**, an oper
 
 Click **Approve Tool Call** or **Deny Tool Call** on the ticket page. You can also click **Approve** or **Deny** on the page of the call. Both routes accept `POST` only. The REST API has `POST /api/plugins/event-tracker/agent-tool-calls/{id}/approve/` and the same path with `deny/`.
 
-A decision obeys three rules:
+A decision obeys four rules:
 
 - **A decision needs a person.** This is not a policy. The trail entry has the source `human`. The service layer refuses that entry without a user. An AI cannot approve its own proposal, because the function that it must call refuses it.
 - **A person decides a call one time only.** The update trail shows what happened.
+- **A person approves a call only while its run waits.** If the run does not have the status **Waiting for Approval**, the app refuses the approval, because no run can make the call. Deny the call, then run the agent again.
 - **The arguments do not change.** An approval approves the arguments exactly as the agent proposed them. To use different arguments, deny the call. Write the reason in a ticket comment. Then run the agent again.
 
 A denial ends the run. The agent does not answer a denial with a slightly different call. This rule stops a negotiation between the approver and a model.

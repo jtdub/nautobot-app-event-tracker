@@ -141,6 +141,12 @@ FAILURE_COMMENT_PREFIX = "The agent run failed: "
 BOUND_COMMENT_PREFIX = "The agent stopped at "
 SELF_REPORT_PREFIXES = (FAILURE_COMMENT_PREFIX, BOUND_COMMENT_PREFIX)
 
+RUN_NOT_WAITING_ERROR = (
+    "This call cannot be approved. Its agent run has the status '{status}', "
+    "so no run can make the call. Deny the call, then run the agent again."
+)
+"""The refusal of an approval when the run of the call does not wait for approval."""
+
 SHORTENED_NOTE = "Note: the app shortened separator lines and table spaces in this output."
 """The line before a tool result whose padding the app made short (M8)."""
 
@@ -413,7 +419,8 @@ def _decide(*, tool_call, user, approved):
 
     The user requirement is mechanism rather than policy: `record_tool_decision` is a `source=human`
     write, and S4 refuses one of those without a user. An AI cannot approve its own proposal
-    because the function it would have to call will not let it.
+    because the function it would have to call will not let it. The app refuses an approval when
+    the run of the call does not wait, because no launch makes that call.
     """
     if user is None or not getattr(user, "is_authenticated", False):
         raise AgentDecisionError("A decision on a proposed tool call requires the deciding user.")
@@ -430,6 +437,8 @@ def _decide(*, tool_call, user, approved):
             raise AgentDecisionError(
                 f"This call is already '{tool_call.status}'. A call is decided once; the trail says what happened."
             )
+        if approved and tool_call.run.status != AgentRunStatusChoices.WAITING_APPROVAL:
+            raise AgentDecisionError(RUN_NOT_WAITING_ERROR.format(status=tool_call.run.status))
 
         tool_call.status = AgentToolCallStatusChoices.APPROVED if approved else AgentToolCallStatusChoices.DENIED
         tool_call.decided_by = user
@@ -548,10 +557,12 @@ def _bury(run):
 
     Failed rather than completed: nothing about it finished, and A6 says a run that did not finish
     must not look like one that did. The error says what happened, because "failed" with no reason
-    is the thing somebody would otherwise open a shell to investigate.
+    is the thing somebody would otherwise open a shell to investigate. An approved call that the
+    run did not start becomes failed.
     """
     logger.warning("Agent run %s outlived its Job's time limit and is being marked failed", run.pk)
     cut = mcp_service.fail_unfinished_calls(_chain_ids(run), mcp_service.DEAD_PROCESS_CALL_ERROR)
+    unstarted = mcp_service.fail_unstarted_calls(_chain_ids(run))
     run.status = AgentRunStatusChoices.FAILED
     run.error = (
         "The process running this agent stopped without recording an outcome - a time limit, a "
@@ -561,7 +572,7 @@ def _bury(run):
         run.error = f"{run.error} {mcp_service.CUT_CHANGE_RUN_NOTE}"
     run.finished_at = timezone.now()
     run.save()
-    _record_cut_calls(run.ticket, cut)
+    _record_cut_calls(run.ticket, cut + unstarted)
     return run
 
 
@@ -575,7 +586,7 @@ def _chain_ids(run):
 
 
 def _record_cut_calls(ticket, calls):
-    """Write a trail entry for each call that a stop cut. A ticket that refuses the write is logged."""
+    """Write a trail entry for each call that a stop cut or left unstarted. A ticket that refuses the write is logged."""
     for call in calls:
         try:
             ticket_service.record_tool_result(ticket=ticket, tool_call=call)
@@ -1209,9 +1220,13 @@ class _Loop:  # pylint: disable=too-many-instance-attributes
         return AgentToolCall.objects.select_related("tool__mcp_server").filter(pk=self._in_flight.pk).first()
 
     def _fail(self, message):
-        """A6 - end the run visibly, say why on the ticket, and propose nothing."""
+        """A6 - end the run visibly, say why on the ticket, and propose nothing.
+
+        An approved call that the run did not start becomes failed.
+        """
         logger.warning("Agent run %s failed: %s", self.run.pk, message)
         self.run.error = str(message)[:ERROR_TEXT_CAP]
+        _record_cut_calls(self.ticket, mcp_service.fail_unstarted_calls(self._chain_ids()))
         self._comment(f"{FAILURE_COMMENT_PREFIX}{message}")
         self._finish(AgentRunStatusChoices.FAILED)
 

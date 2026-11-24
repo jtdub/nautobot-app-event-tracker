@@ -97,6 +97,13 @@ def call_deadline(timeout):
 DEAD_PROCESS_CALL_ERROR = "The process that ran this agent stopped before this call finished."
 """The error of a read-only call that a dead process left unfinished."""
 
+UNSTARTED_CALL_ERROR = (
+    "The run stopped before it started this approved call. "
+    "The app did not send the call, so the tool changed nothing. "
+    "To get a new proposal, run the agent again."
+)
+"""The error of an approved call that its run did not start."""
+
 SEPARATOR_RUN = re.compile(r"([=+-])\1{9,}")
 """Ten or more of one separator character in a row (M8)."""
 
@@ -321,6 +328,23 @@ def fail_unfinished_calls(run_ids, reason):
         AgentToolCall.objects.filter(pk__in=changed, tool__writable=writable).update(
             status=status, error=str(error)[:ERROR_TEXT_CAP], called_at=now
         )
+    return list(AgentToolCall.objects.filter(pk__in=changed).select_related("tool__mcp_server"))
+
+
+def fail_unstarted_calls(run_ids):
+    """Mark the approved calls of these runs as failed, and return the rows that changed.
+
+    The app did not send these calls, so `called_at` stays empty. A row that a caller claims first does not change.
+    """
+    approved = AgentToolCallStatusChoices.APPROVED
+    candidates = AgentToolCall.objects.filter(run_id__in=run_ids, status=approved).values_list("pk", flat=True)
+    changed = [
+        pk
+        for pk in list(candidates)
+        if AgentToolCall.objects.filter(pk=pk, status=approved).update(
+            status=AgentToolCallStatusChoices.FAILED, error=UNSTARTED_CALL_ERROR
+        )
+    ]
     return list(AgentToolCall.objects.filter(pk__in=changed).select_related("tool__mcp_server"))
 
 
