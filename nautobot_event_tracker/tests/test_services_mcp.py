@@ -17,6 +17,7 @@ from unittest import mock
 from celery.exceptions import SoftTimeLimitExceeded
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 from nautobot_ai_models.choices import MCPTransportChoices
 from nautobot_ai_models.models import MCPTool
 
@@ -545,11 +546,11 @@ class TestCallingATool(CallToolTestCase):
         self.assertEqual(self.caller.calls[0]["connection"].timeout, self.server.external_integration.timeout)
 
 
-class TestUnfinishedCalls(TestCase):
-    """AC-11, AC-13 - the sweep that marks the calls a stop left unfinished."""
+class _ChainCallsTestCase(TestCase):
+    """A parent run and its resumption, with one read-only tool and one writable tool."""
 
     def setUp(self):
-        """A parent run and its resumption, with one read-only tool and one writable tool."""
+        """Make the chain, the tools, and a run of another ticket."""
         self.server = fixtures.create_mcpserver()
         self.reader = fixtures.create_mcptool(server=self.server, name="look", enabled=True, writable=False)
         self.writer = fixtures.create_mcptool(server=self.server, name="push_config", enabled=True, writable=True)
@@ -560,6 +561,10 @@ class TestUnfinishedCalls(TestCase):
     def call(self, run, tool, status):
         """One row on this run in this status."""
         return fixtures.create_agenttoolcall(run=run, tool=tool, status=status)
+
+
+class TestUnfinishedCalls(_ChainCallsTestCase):
+    """AC-11, AC-13 - the sweep that marks the calls a stop left unfinished."""
 
     def test_executing_and_unfinished_read_only_rows_of_the_chain_become_failed(self):
         executing = self.call(self.parent, self.reader, AgentToolCallStatusChoices.EXECUTING)
@@ -610,6 +615,91 @@ class TestUnfinishedCalls(TestCase):
         ):
             row.refresh_from_db()
             self.assertEqual(row.status, status)
+
+
+class TestUnstartedCalls(_ChainCallsTestCase):
+    """AC-2, AC-3, AC-10, AC-11 - the sweep that marks the approved calls a run did not start."""
+
+    UNSTARTED = (
+        "The run stopped before it started this approved call. "
+        "The app did not send the call, so the tool changed nothing. "
+        "To get a new proposal, run the agent again."
+    )
+
+    def test_an_approved_call_becomes_failed_and_keeps_its_decision(self):
+        decider = fixtures.create_user()
+        decided_at = timezone.now()
+        row = fixtures.create_agenttoolcall(
+            run=self.parent,
+            tool=self.writer,
+            status=AgentToolCallStatusChoices.APPROVED,
+            decided_by=decider,
+            decided_at=decided_at,
+        )
+
+        changed = mcp_service.fail_unstarted_calls([self.parent.pk, self.child.pk])
+
+        self.assertEqual([item.pk for item in changed], [row.pk])
+        row.refresh_from_db()
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, self.UNSTARTED)
+        self.assertIsNone(row.called_at)
+        self.assertEqual(row.latency_ms, 0)
+        self.assertEqual(row.decided_by, decider)
+        self.assertEqual(row.decided_at, decided_at)
+
+    def test_an_approved_call_of_a_read_only_tool_becomes_failed(self):
+        row = self.call(self.parent, self.reader, AgentToolCallStatusChoices.APPROVED)
+
+        changed = mcp_service.fail_unstarted_calls([self.parent.pk])
+
+        self.assertEqual([item.pk for item in changed], [row.pk])
+        row.refresh_from_db()
+        self.assertEqual(row.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(row.error, self.UNSTARTED)
+
+    def test_a_call_with_another_status_does_not_change(self):
+        for status in (
+            AgentToolCallStatusChoices.PROPOSED,
+            AgentToolCallStatusChoices.DENIED,
+            AgentToolCallStatusChoices.EXECUTING,
+            AgentToolCallStatusChoices.EXECUTED,
+            AgentToolCallStatusChoices.FAILED,
+            AgentToolCallStatusChoices.OUTCOME_UNKNOWN,
+        ):
+            with self.subTest(status=status):
+                row = self.call(self.parent, self.writer, status)
+                error = row.error
+
+                changed = mcp_service.fail_unstarted_calls([self.parent.pk])
+
+                self.assertEqual(changed, [])
+                row.refresh_from_db()
+                self.assertEqual(row.status, status)
+                self.assertEqual(row.error, error)
+
+    def test_an_approved_call_of_another_run_does_not_change(self):
+        row = self.call(self.other, self.writer, AgentToolCallStatusChoices.APPROVED)
+
+        changed = mcp_service.fail_unstarted_calls([self.parent.pk])
+
+        self.assertEqual(changed, [])
+        row.refresh_from_db()
+        self.assertEqual(row.status, AgentToolCallStatusChoices.APPROVED)
+
+    def test_a_held_instance_of_a_marked_call_is_not_sent(self):
+        held = self.call(self.parent, self.writer, AgentToolCallStatusChoices.APPROVED)
+        client = fixtures.FakeMCPCaller(fixtures.FakeCallToolResult("ok"))
+
+        mcp_service.fail_unstarted_calls([self.parent.pk])
+
+        with self.assertRaises(MCPConfigurationError):
+            mcp_service.call_tool(tool_call=held, client=client)
+        self.assertEqual(client.calls, [])
+        held.refresh_from_db()
+        self.assertEqual(held.status, AgentToolCallStatusChoices.FAILED)
+        self.assertEqual(held.error, self.UNSTARTED)
+        self.assertIsNone(held.called_at)
 
 
 class TestShorteningAResult(CallToolTestCase):
